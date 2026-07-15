@@ -170,9 +170,35 @@ impl PlayerState {
     }
 }
 
+/// Formats a duration in seconds as `m:ss` for the progress readout. Negative or
+/// non-finite inputs clamp to `0:00`.
+///
+/// ```
+/// use manim_dioxus::player::format_time;
+/// assert_eq!(format_time(0.0), "0:00");
+/// assert_eq!(format_time(5.0), "0:05");
+/// assert_eq!(format_time(65.4), "1:05");
+/// assert_eq!(format_time(-3.0), "0:00");
+/// ```
+pub fn format_time(secs: f32) -> String {
+    let s = if secs.is_finite() { secs.max(0.0) } else { 0.0 };
+    let total = s.floor() as u64;
+    format!("{}:{:02}", total / 60, total % 60)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_time_mm_ss() {
+        assert_eq!(format_time(0.0), "0:00");
+        assert_eq!(format_time(9.0), "0:09");
+        assert_eq!(format_time(65.4), "1:05");
+        assert_eq!(format_time(600.0), "10:00");
+        assert_eq!(format_time(-3.0), "0:00");
+        assert_eq!(format_time(f32::NAN), "0:00");
+    }
 
     #[test]
     fn play_pause_toggle() {

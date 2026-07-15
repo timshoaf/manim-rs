@@ -3,12 +3,16 @@
 //! Three text-free scenes (SquareToCircle, an axes plot, a vector field), each
 //! with the built-in controls. See the README for build/run steps.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use dioxus::prelude::*;
 use manim_core::animations::{Create, FadeOut, TransformInto};
-use manim_core::graphing::Axes;
+use manim_core::graphing::{Axes, NumberPlane};
+use manim_core::mobject::AnyId;
 use manim_core::prelude::*;
 use manim_core::vector_field::ArrowVectorField;
-use manim_dioxus::ManimPlayer;
+use manim_dioxus::{LiveUpdater, ManimPlayer};
 
 /// The canonical square → circle animation.
 #[derive(Clone, PartialEq)]
@@ -64,12 +68,47 @@ impl SceneBuilder for FieldScene {
     }
 }
 
+/// A faint grid backdrop for the interactive cursor demo (static; the moving dot
+/// is supplied live by [`cursor_updater`], not by the timeline).
+#[derive(Clone, PartialEq)]
+struct CursorScene;
+impl SceneBuilder for CursorScene {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        scene.add(NumberPlane::new([-7.0, 7.0, 1.0], [-4.0, 4.0, 1.0]));
+        Ok(())
+    }
+}
+
+/// A per-frame updater that makes a dot follow the cursor: it lazily creates the
+/// dot on the first frame (remembering its id), moves it to the pointer's scene
+/// position, and turns it red while a button is held. This runs entirely on the
+/// Dioxus side — no core updater involvement.
+fn cursor_updater() -> LiveUpdater {
+    let dot: Rc<Cell<Option<AnyId>>> = Rc::new(Cell::new(None));
+    LiveUpdater::new(move |state, pointer, _t| {
+        let id = match dot.get() {
+            Some(id) => id,
+            None => {
+                let d = state.add(Dot::new()).erase();
+                dot.set(Some(d));
+                d
+            }
+        };
+        state.move_to(id, pointer.position);
+        let color = if pointer.pressed { RED } else { YELLOW };
+        state.set_style_family(id, |s| {
+            s.set_fill(color, 1.0);
+        });
+    })
+}
+
 /// Which scene the gallery is showing.
 #[derive(Clone, Copy, PartialEq)]
 enum Which {
     Square,
     Plot,
     Field,
+    Cursor,
 }
 
 /// The gallery: a picker plus the selected player.
@@ -91,6 +130,7 @@ fn app() -> Element {
                 button { style: "{pick(Which::Square, sel)}", onclick: move |_| which.set(Which::Square), "Square → Circle" }
                 button { style: "{pick(Which::Plot, sel)}", onclick: move |_| which.set(Which::Plot), "Axes plot" }
                 button { style: "{pick(Which::Field, sel)}", onclick: move |_| which.set(Which::Field), "Vector field" }
+                button { style: "{pick(Which::Cursor, sel)}", onclick: move |_| which.set(Which::Cursor), "Cursor (live)" }
             }
             div { style: "max-width:720px;",
                 match sel {
@@ -102,6 +142,10 @@ fn app() -> Element {
                     },
                     Which::Field => rsx! {
                         ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "405px" }
+                    },
+                    Which::Cursor => rsx! {
+                        ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "405px" }
+                        p { style: "color:#aaa;margin-top:8px;", "Move your cursor over the grid — the dot follows in scene space. Hold a button to turn it red. Space/←/→/R work when the player is focused." }
                     },
                 }
             }

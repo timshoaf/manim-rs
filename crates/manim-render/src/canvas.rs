@@ -173,6 +173,30 @@ impl CanvasSurface {
         &mut self.camera
     }
 
+    /// Converts a pointer position in element (client) pixels to scene
+    /// coordinates, inverting the current letterbox fit and camera projection.
+    ///
+    /// `client_x`/`client_y` are relative to the canvas element's top-left, and
+    /// `elem_w`/`elem_h` are its displayed size (CSS or backing pixels — the fit
+    /// is scale-invariant). Returns `None` for a degenerate (zero-sized) fit. See
+    /// [`layout::client_to_scene`](crate::layout::client_to_scene).
+    pub fn client_to_scene(
+        &self,
+        client_x: f32,
+        client_y: f32,
+        elem_w: f32,
+        elem_h: f32,
+    ) -> Option<glam::Vec3> {
+        crate::layout::client_to_scene(
+            client_x,
+            client_y,
+            elem_w,
+            elem_h,
+            self.aspect,
+            self.camera.view_proj(),
+        )
+    }
+
     /// Tessellates and draws `list` into the canvas, letterboxed with
     /// background-color bars.
     ///
