@@ -1,6 +1,6 @@
 [package]
 name = "manim-text"
-description = "Text and math typesetting for manim_rust (cosmic-text and typst backed) — M4 milestone stub"
+description = "Text and math typesetting for manim_rust (cosmic-text and typst backed) — M4 milestone"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,6 +9,13 @@ rust-version.workspace = true
 
 [dependencies]
 manim-core = { workspace = true }
+manim-math = { workspace = true }
+manim-color = { workspace = true }
+# cosmic-text/ttf-parser are declared directly here (not in the workspace table)
+# so this crate can move independently of the render-agent's wasm work on the
+# root Cargo.toml.
+cosmic-text = { version = "0.12", default-features = false, features = ["std"] }
+ttf-parser = { version = "0.24", default-features = false, features = ["std", "glyph-names"] }
 
 [lints]
 workspace = true
