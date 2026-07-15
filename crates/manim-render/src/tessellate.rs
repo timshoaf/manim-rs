@@ -34,9 +34,10 @@ use lyon::tessellation::{
     StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
 };
 use manim_color::Color;
-use manim_core::display::{DisplayList, DrawItem};
+use manim_core::display::{DisplayList, DrawItem, LinearGradient};
 use manim_core::mobject::AnyId;
 use manim_math::path::Path;
+use manim_math::Point;
 
 /// Scene units of stroke width per manim CE "stroke point".
 ///
@@ -143,21 +144,86 @@ impl MeshData {
 /// GPU.
 pub type FrameMesh = MeshData;
 
-/// One cached mobject mesh together with the generation and zoom bucket it was
-/// built from.
+/// One cached mobject mesh together with the generation, zoom bucket, and paint
+/// hash it was built from.
 struct CacheEntry {
     generation: u64,
     bucket: i32,
+    paint: u64,
     mesh: MeshData,
 }
 
-/// Memoizes per-mobject tessellation, keyed on `(source, generation, zoom
-/// bucket)`.
+/// A cheap order-sensitive hash of a [`DrawItem`]'s paint (fill, stroke, and
+/// background stroke, colors + gradients + widths).
 ///
-/// Re-tessellation happens only when a mobject's `generation` changes or the
-/// camera zoom crosses a bucket boundary (see [`set_zoom`](Self::set_zoom));
-/// entries for mobjects that vanish from the display list are evicted. [`hits`]
-/// and [`misses`] count cache outcomes for tests and diagnostics.
+/// Vertex colors are baked at tessellation time, and mobject `generation` bumps
+/// only on *geometry* change — so paint edits (a new fill color, a gradient)
+/// must invalidate the cached mesh too. Hashing the paint catches every such
+/// change without touching core's generation semantics.
+fn paint_hash(item: &DrawItem) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+
+    fn hash_color(h: &mut impl Hasher, c: &Color) {
+        for v in [c.r, c.g, c.b, c.a] {
+            h.write_u32(v.to_bits());
+        }
+    }
+    fn hash_gradient(h: &mut impl Hasher, g: &Option<LinearGradient>) {
+        match g {
+            None => h.write_u8(0),
+            Some(g) => {
+                h.write_u8(1);
+                for (p, c) in &g.stops {
+                    h.write_u32(p.to_bits());
+                    hash_color(h, c);
+                }
+                for v in [g.start.x, g.start.y, g.end.x, g.end.y] {
+                    h.write_u32(v.to_bits());
+                }
+            }
+        }
+    }
+    fn hash_stroke(h: &mut impl Hasher, width: f32, color: &Color, g: &Option<LinearGradient>) {
+        h.write_u32(width.to_bits());
+        hash_color(h, color);
+        hash_gradient(h, g);
+    }
+
+    match &item.fill {
+        None => h.write_u8(0),
+        Some(f) => {
+            h.write_u8(1);
+            hash_color(&mut h, &f.color);
+            hash_gradient(&mut h, &f.gradient);
+        }
+    }
+    match &item.stroke {
+        None => h.write_u8(0),
+        Some(s) => {
+            h.write_u8(1);
+            hash_stroke(&mut h, s.width, &s.color, &s.gradient);
+        }
+    }
+    match &item.background_stroke {
+        None => h.write_u8(0),
+        Some(s) => {
+            h.write_u8(1);
+            hash_stroke(&mut h, s.width, &s.color, &s.gradient);
+        }
+    }
+    h.finish()
+}
+
+/// Memoizes per-mobject tessellation, keyed on `(source, generation, zoom
+/// bucket, paint hash)`.
+///
+/// Re-tessellation happens only when a mobject's `generation` (geometry)
+/// changes, the camera zoom crosses a bucket boundary (see
+/// [`set_zoom`](Self::set_zoom)), or its paint changes (colors are baked into
+/// vertices, and paint edits don't bump `generation`). Entries for mobjects that
+/// vanish from the display list are evicted. [`hits`] and [`misses`] count cache
+/// outcomes for tests and diagnostics.
 ///
 /// [`hits`]: TessellationCache::hits
 /// [`misses`]: TessellationCache::misses
@@ -298,10 +364,15 @@ impl TessellationCache {
         let mut present: Vec<AnyId> = Vec::with_capacity(list.len());
         for item in list {
             present.push(item.source);
+            let paint = paint_hash(item);
             let stale = self
                 .entries
                 .get(&item.source)
-                .map(|e| e.generation != item.generation || e.bucket != self.zoom_bucket)
+                .map(|e| {
+                    e.generation != item.generation
+                        || e.bucket != self.zoom_bucket
+                        || e.paint != paint
+                })
                 .unwrap_or(true);
             if stale {
                 self.misses += 1;
@@ -311,6 +382,7 @@ impl TessellationCache {
                     CacheEntry {
                         generation: item.generation,
                         bucket: self.zoom_bucket,
+                        paint,
                         mesh,
                     },
                 );
@@ -335,11 +407,14 @@ impl TessellationCache {
     }
 }
 
-/// Tessellates one [`DrawItem`]: its fill (if any) then its stroke (if any),
-/// concatenated into a single [`MeshData`].
+/// Tessellates one [`DrawItem`] into a single [`MeshData`], in paint order:
+/// background stroke, then fill, then stroke.
 ///
-/// The fill is emitted first so an opaque stroke of the same item paints over
-/// the fill edge, matching manim CE's draw order. Tessellation failures on a
+/// The background stroke is emitted first so it reads as an outline behind the
+/// fill (manim's text outline); the fill precedes the stroke so an opaque stroke
+/// paints over the fill edge. Where a fill or stroke carries a
+/// [`LinearGradient`], vertex colors are evaluated per vertex from the vertex
+/// position; otherwise the solid color is used. Tessellation failures on a
 /// degenerate path yield an empty contribution rather than panicking.
 ///
 /// ```
@@ -353,7 +428,7 @@ impl TessellationCache {
 /// let mut scene = SceneState::new();
 /// scene.add(Circle::new());
 /// let mut item = scene.display_list().0.remove(0);
-/// item.fill = Some(Fill { color: BLUE });
+/// item.fill = Some(Fill { color: BLUE, gradient: None });
 /// let mesh = tessellate_item(&item, DEFAULT_TOLERANCE);
 /// assert!(!mesh.is_empty());
 /// ```
@@ -361,14 +436,48 @@ pub fn tessellate_item(item: &DrawItem, tolerance: f32) -> MeshData {
     let mut mesh = MeshData::default();
     let lyon_path = to_lyon_path(&item.path);
 
-    if let Some(fill) = item.fill {
-        append_fill(&mut mesh, &lyon_path, fill.color, tolerance);
+    if let Some(bg) = &item.background_stroke {
+        let width = bg.width * STROKE_WIDTH_CONVERSION;
+        append_stroke(
+            &mut mesh,
+            &lyon_path,
+            bg.color,
+            bg.gradient.as_ref(),
+            width,
+            tolerance,
+        );
     }
-    if let Some(stroke) = item.stroke {
+    if let Some(fill) = &item.fill {
+        append_fill(
+            &mut mesh,
+            &lyon_path,
+            fill.color,
+            fill.gradient.as_ref(),
+            tolerance,
+        );
+    }
+    if let Some(stroke) = &item.stroke {
         let width = stroke.width * STROKE_WIDTH_CONVERSION;
-        append_stroke(&mut mesh, &lyon_path, stroke.color, width, tolerance);
+        append_stroke(
+            &mut mesh,
+            &lyon_path,
+            stroke.color,
+            stroke.gradient.as_ref(),
+            width,
+            tolerance,
+        );
     }
     mesh
+}
+
+/// The premultiplied-linear vertex color at world position `(x, y)`: the
+/// gradient sample if `gradient` is set, else the solid `color`.
+#[inline]
+fn vertex_color(color: Color, gradient: Option<&LinearGradient>, x: f32, y: f32) -> [f32; 4] {
+    match gradient {
+        Some(g) => g.color_at(Point::new(x, y, 0.0)).premultiplied(),
+        None => color.premultiplied(),
+    }
 }
 
 /// Converts a manim [`Path`] into a lyon path, emitting cubic-bezier segments
@@ -392,18 +501,27 @@ fn to_lyon_path(path: &Path) -> LyonPath {
     builder.build()
 }
 
-/// Appends a non-zero-winding fill of `lyon_path` in `color` onto `mesh`.
-fn append_fill(mesh: &mut MeshData, lyon_path: &LyonPath, color: Color, tolerance: f32) {
-    let premul = color.premultiplied();
+/// Appends a non-zero-winding fill of `lyon_path` onto `mesh`, colored by
+/// `gradient` per vertex or the solid `color`.
+fn append_fill(
+    mesh: &mut MeshData,
+    lyon_path: &LyonPath,
+    color: Color,
+    gradient: Option<&LinearGradient>,
+    tolerance: f32,
+) {
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
     let options = FillOptions::tolerance(tolerance).with_fill_rule(FillRule::NonZero);
     let mut tess = FillTessellator::new();
     let ok = tess.tessellate_path(
         lyon_path,
         &options,
-        &mut BuffersBuilder::new(&mut buffers, move |v: FillVertex| Vertex {
-            position: v.position().to_array(),
-            color: premul,
+        &mut BuffersBuilder::new(&mut buffers, |v: FillVertex| {
+            let p = v.position();
+            Vertex {
+                position: p.to_array(),
+                color: vertex_color(color, gradient, p.x, p.y),
+            }
         }),
     );
     if ok.is_ok() {
@@ -423,10 +541,10 @@ fn append_stroke(
     mesh: &mut MeshData,
     lyon_path: &LyonPath,
     color: Color,
+    gradient: Option<&LinearGradient>,
     width: f32,
     tolerance: f32,
 ) {
-    let premul = color.premultiplied();
     let mut buffers: VertexBuffers<Vertex, u32> = VertexBuffers::new();
     let options = StrokeOptions::tolerance(tolerance)
         .with_line_width(width)
@@ -436,9 +554,12 @@ fn append_stroke(
     let ok = tess.tessellate_path(
         lyon_path,
         &options,
-        &mut BuffersBuilder::new(&mut buffers, move |v: StrokeVertex| Vertex {
-            position: v.position().to_array(),
-            color: premul,
+        &mut BuffersBuilder::new(&mut buffers, |v: StrokeVertex| {
+            let p = v.position();
+            Vertex {
+                position: p.to_array(),
+                color: vertex_color(color, gradient, p.x, p.y),
+            }
         }),
     );
     if ok.is_ok() {
@@ -565,12 +686,55 @@ mod tests {
         item.stroke = None;
         let fill_only = tessellate_item(&item, DEFAULT_TOLERANCE);
         // Fill + stroke.
-        item.fill = Some(Fill { color: BLUE });
+        item.fill = Some(Fill {
+            color: BLUE,
+            gradient: None,
+        });
         item.stroke = Some(Stroke {
             color: WHITE,
             width: 4.0,
+            gradient: None,
         });
         let both = tessellate_item(&item, DEFAULT_TOLERANCE);
         assert!(both.indices.len() > fill_only.indices.len());
+    }
+
+    #[test]
+    fn paint_change_invalidates_cache() {
+        // Changing fill color (no geometry change → same generation) must
+        // re-tessellate, because vertex colors are baked at tessellation time.
+        let mut scene = SceneState::new();
+        let c = scene.add(Circle::new());
+        scene.set_style_family(c.erase(), |s| {
+            s.set_fill(BLUE, 1.0);
+        });
+        let mut cache = TessellationCache::new();
+        cache.tessellate(&scene.display_list());
+        assert_eq!((cache.hits(), cache.misses()), (0, 1));
+
+        // Recolor the same mobject; generation is unchanged.
+        scene.set_style_family(c.erase(), |s| {
+            s.set_fill(RED, 1.0);
+        });
+        let mesh = cache.tessellate(&scene.display_list());
+        assert_eq!(cache.misses(), 2, "paint change should be a miss");
+        assert_eq!(mesh.vertices[0].color, RED.premultiplied());
+    }
+
+    #[test]
+    fn gradient_fill_varies_across_vertices() {
+        // A BLUE→RED horizontal gradient fill produces different vertex colors.
+        let mut scene = SceneState::new();
+        let sq = scene.add(Square::new());
+        scene.set_style_family(sq.erase(), |s| {
+            s.set_fill_gradient(manim_core::style::Gradient::from_colors(&[BLUE, RED]));
+        });
+        let mut cache = TessellationCache::new();
+        let mesh = cache.tessellate(&scene.display_list());
+        let first = mesh.vertices[0].color;
+        assert!(
+            mesh.vertices.iter().any(|v| v.color != first),
+            "gradient should vary vertex colors"
+        );
     }
 }

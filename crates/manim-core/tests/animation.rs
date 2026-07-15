@@ -122,7 +122,11 @@ fn fade_in_opacity_ramps() {
 
     let frames: Vec<_> = scene.frames().collect();
     // Opacity of the fill on the first vs. a middle frame increases.
-    let opacity = |dl: &DisplayList| dl.0.first().and_then(|it| it.fill).map(|f| f.color.a);
+    let opacity = |dl: &DisplayList| {
+        dl.0.first()
+            .and_then(|it| it.fill.as_ref())
+            .map(|f| f.color.a)
+    };
     let first = opacity(&frames[0].1).unwrap_or(0.0);
     let mid = opacity(&frames[frames.len() / 2].1).unwrap_or(0.0);
     let last = opacity(&frames.last().unwrap().1).unwrap_or(0.0);

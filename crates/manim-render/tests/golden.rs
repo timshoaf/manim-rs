@@ -14,10 +14,11 @@
 use manim_color::{BLUE, RED, WHITE};
 use manim_core::animations::{Flash, Indicate};
 use manim_core::config::Config;
-use manim_core::geometry::{Arrow, Circle, Square, Triangle};
+use manim_core::geometry::{Arrow, Circle, Line, Square, Triangle};
 use manim_core::mobject::Buildable;
 use manim_core::scene::Scene;
 use manim_core::scene_state::SceneState;
+use manim_core::style::Gradient;
 use manim_math::{LEFT, ORIGIN, RIGHT};
 use manim_render::golden::assert_golden;
 use manim_render::renderer::OffscreenRenderer;
@@ -198,4 +199,66 @@ fn flash_midframe() {
     let mid = &frames[frames.len() / 2];
     let img = renderer.render_frame(mid).unwrap();
     assert_golden("flash_mid", &img);
+}
+
+/// FE-83: a linear fill gradient (BLUE → RED, left to right) across a square.
+#[test]
+fn gradient_fill() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let sq = scene.add(Square::new());
+    scene.set_style_family(sq.erase(), |s| {
+        s.set_fill_gradient(Gradient::from_colors(&[BLUE, RED]));
+    });
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    // Sample inside the square (~60px wide, centered): its left side is bluer,
+    // its right side is redder.
+    let (cx, cy) = (img.width() / 2, img.height() / 2);
+    let left = img.get_pixel(cx - 20, cy).0;
+    let right = img.get_pixel(cx + 20, cy).0;
+    assert!(
+        left[2] > right[2],
+        "left should be bluer: {left:?} vs {right:?}"
+    );
+    assert!(
+        right[0] > left[0],
+        "right should be redder: {right:?} vs {left:?}"
+    );
+    assert_golden("gradient_fill", &img);
+}
+
+/// FE-83: a color gradient along a thick stroked line (`set_color_by_gradient`).
+#[test]
+fn gradient_stroke() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let l = scene.add(Line::new(4.0 * LEFT, 4.0 * RIGHT));
+    scene.set_style_family(l.erase(), |s| {
+        s.set_stroke(WHITE, 30.0, 1.0)
+            .set_color_by_gradient(&[BLUE, RED]);
+    });
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("gradient_stroke", &img);
+}
+
+/// FE-83: a background stroke (thick red) shows behind a translucent blue fill,
+/// forming an outline — the text-outline use case.
+#[test]
+fn background_stroke() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let c = scene.add(Circle::new());
+    scene.set_style_family(c.erase(), |s| {
+        s.set_fill(BLUE, 0.5);
+        s.set_stroke(WHITE, 2.0, 1.0);
+        s.set_background_stroke(RED, 40.0, 1.0);
+    });
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("background_stroke", &img);
 }

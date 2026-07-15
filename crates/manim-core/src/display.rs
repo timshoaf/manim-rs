@@ -11,28 +11,105 @@
 
 use manim_color::Color;
 use manim_math::path::Path;
+use manim_math::Point;
 
 use crate::mobject::AnyId;
+
+/// A resolved linear gradient: `(position, color)` stops along a world-space
+/// axis, with opacity already folded into each stop's alpha.
+///
+/// The renderer evaluates it per vertex by projecting the vertex position onto
+/// the `start → end` axis. Produced from a [`Gradient`](crate::style::Gradient)
+/// when the display list is built (its bounding-box-relative axis resolved to
+/// concrete world points).
+///
+/// ```
+/// use manim_core::display::LinearGradient;
+/// use manim_color::{BLUE, RED};
+/// use manim_math::{Point, RIGHT};
+/// let g = LinearGradient {
+///     stops: vec![(0.0, BLUE), (1.0, RED)],
+///     start: Point::ZERO,
+///     end: RIGHT,
+/// };
+/// // Midpoint is the linear blend of the endpoints.
+/// assert_eq!(g.color_at(Point::new(0.5, 0.0, 0.0)), BLUE.interpolate(&RED, 0.5));
+/// // Off-axis points project onto the axis.
+/// assert_eq!(g.color_at(Point::new(0.5, 9.0, 0.0)), BLUE.interpolate(&RED, 0.5));
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinearGradient {
+    /// `(position, color)` stops with `position ∈ [0, 1]`, opacity folded in.
+    pub stops: Vec<(f32, Color)>,
+    /// World-space axis start (gradient position `0`).
+    pub start: Point,
+    /// World-space axis end (gradient position `1`).
+    pub end: Point,
+}
+
+impl LinearGradient {
+    /// The color at world-space point `p`, projecting it onto the gradient axis
+    /// and interpolating the stops in linear space.
+    ///
+    /// A degenerate axis (`start == end`) or empty stop list falls back to the
+    /// first stop (or transparent black if there are none).
+    pub fn color_at(&self, p: Point) -> Color {
+        let Some(&(_, first)) = self.stops.first() else {
+            return Color::from_rgba(0.0, 0.0, 0.0, 0.0);
+        };
+        let axis = self.end - self.start;
+        let len2 = axis.length_squared();
+        let t = if len2 <= 1e-12 {
+            0.0
+        } else {
+            ((p - self.start).dot(axis) / len2).clamp(0.0, 1.0)
+        };
+        // Find the bracketing stops and interpolate.
+        let mut lo = (0.0_f32, first);
+        let mut hi = *self.stops.last().unwrap();
+        for w in self.stops.windows(2) {
+            if t >= w[0].0 && t <= w[1].0 {
+                lo = w[0];
+                hi = w[1];
+                break;
+            }
+        }
+        let span = hi.0 - lo.0;
+        let local = if span <= 1e-9 {
+            0.0
+        } else {
+            ((t - lo.0) / span).clamp(0.0, 1.0)
+        };
+        lo.1.interpolate(&hi.1, local)
+    }
+}
 
 /// A resolved fill for a [`DrawItem`].
 ///
 /// `color`'s alpha already has the style's fill opacity folded in (see
-/// [`Style::render_fill`](crate::style::Style::render_fill)).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// [`Style::render_fill`](crate::style::Style::render_fill)). When
+/// [`gradient`](Self::gradient) is set it paints the fill per vertex; `color` is
+/// then a representative solid used as a fallback.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Fill {
     /// Fill color with opacity folded into its alpha channel.
     pub color: Color,
+    /// Optional per-vertex gradient (overrides `color` when present).
+    pub gradient: Option<LinearGradient>,
 }
 
 /// A resolved stroke for a [`DrawItem`].
 ///
-/// `color`'s alpha already has the style's stroke opacity folded in.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// `color`'s alpha already has the style's stroke opacity folded in. When
+/// [`gradient`](Self::gradient) is set it paints the stroke per vertex.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     /// Stroke color with opacity folded into its alpha channel.
     pub color: Color,
     /// Stroke width in manim's scene-relative points.
     pub width: f32,
+    /// Optional per-vertex gradient (overrides `color` when present).
+    pub gradient: Option<LinearGradient>,
 }
 
 /// One drawable primitive: a world-space path plus resolved paint.
@@ -47,6 +124,9 @@ pub struct DrawItem {
     pub fill: Option<Fill>,
     /// The resolved stroke, or `None` for no stroke.
     pub stroke: Option<Stroke>,
+    /// A stroke drawn *behind* the fill (manim's background stroke), or `None`.
+    /// Renderers must draw this before the fill so it reads as an outline.
+    pub background_stroke: Option<Stroke>,
     /// Draw order key; higher draws on top.
     pub z_index: i32,
     /// The mobject this item came from.

@@ -951,6 +951,73 @@ pub trait MobjectExt: Mobject {
         self
     }
 
+    /// Colors this mobject with a gradient ramp (manim's `set_color_by_gradient`).
+    ///
+    /// Gradients whichever of fill/stroke is already visible; the display list
+    /// then paints it per vertex along the bounding-box axis.
+    ///
+    /// ```
+    /// use manim_core::geometry::Square;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// use manim_color::{BLUE, RED};
+    /// let mut sq = Square::new();
+    /// sq.set_fill(BLUE, 1.0).set_color_by_gradient(&[BLUE, RED]);
+    /// assert!(sq.data().style.fill_gradient.is_some());
+    /// ```
+    fn set_color_by_gradient(&mut self, colors: &[manim_color::Color]) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().style.set_color_by_gradient(colors);
+        self
+    }
+
+    /// Sets a fill gradient (manim's `set_fill` with a gradient), making the
+    /// fill visible if it was not.
+    ///
+    /// ```
+    /// use manim_core::geometry::Square;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// use manim_core::style::Gradient;
+    /// use manim_color::{BLUE, RED};
+    /// let mut sq = Square::new();
+    /// sq.set_fill_gradient(Gradient::from_colors(&[BLUE, RED]));
+    /// assert!(sq.data().style.render_fill().is_some());
+    /// ```
+    fn set_fill_gradient(&mut self, gradient: crate::style::Gradient) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().style.set_fill_gradient(gradient);
+        self
+    }
+
+    /// Sets a background stroke drawn behind the fill (manim's
+    /// `set_background_stroke`), used to outline text.
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// use manim_color::BLACK;
+    /// let mut c = Circle::new();
+    /// c.set_background_stroke(BLACK, 6.0, 1.0);
+    /// assert_eq!(c.data().style.background_stroke_color, Some(BLACK));
+    /// ```
+    fn set_background_stroke(
+        &mut self,
+        color: manim_color::Color,
+        width: f32,
+        opacity: f32,
+    ) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut()
+            .style
+            .set_background_stroke(color, width, opacity);
+        self
+    }
+
     /// Sets the z-index (draw order) of this mobject.
     ///
     /// ```

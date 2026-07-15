@@ -36,7 +36,7 @@ fn circle_and_square_in_group() {
     assert!((center - 2.0 * UP).length() < 1e-4);
 
     // The circle carries a resolved fill (opacity folded into alpha).
-    let fill = circle_item.fill.expect("circle has fill");
+    let fill = circle_item.fill.as_ref().expect("circle has fill");
     assert!((fill.color.a - 0.5).abs() < 1e-6);
 }
 

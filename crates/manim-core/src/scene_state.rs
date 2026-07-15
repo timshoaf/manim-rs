@@ -21,11 +21,12 @@ use std::sync::{Arc, Mutex};
 use manim_math::{Point, OUT};
 use slotmap::{DefaultKey, SlotMap};
 
-use crate::display::{DisplayList, DrawItem, Fill, Stroke};
+use crate::display::{DisplayList, DrawItem, Fill, LinearGradient, Stroke};
 use crate::mobject::{
     apply_rotate_about, apply_scale_about, apply_shift, bbox_of, AnyId, BoundingBox, Mobject,
     MobjectData, MobjectId,
 };
+use crate::style::{Gradient, GradientAxis};
 
 /// Context passed to an updater each frame (manim's updater `dt`).
 ///
@@ -633,18 +634,43 @@ impl SceneState {
                 if data.path.subpaths.iter().all(|s| s.curves.is_empty()) {
                     continue;
                 }
-                let fill = data.style.render_fill().map(|color| Fill { color });
-                let stroke = data
-                    .style
-                    .render_stroke()
-                    .map(|(color, width)| Stroke { color, width });
-                if fill.is_none() && stroke.is_none() {
+                // Resolve gradient axes against the mobject's bbox, so a
+                // bbox-relative gradient follows the mobject. Only computed when
+                // a gradient is actually present.
+                let bbox = (data.style.fill_gradient.is_some()
+                    || data.style.stroke_gradient.is_some())
+                .then(|| bbox_of(&data.path));
+                let fill = data.style.render_fill().map(|color| Fill {
+                    color,
+                    gradient: data
+                        .style
+                        .render_fill_gradient()
+                        .map(|g| resolve_gradient(&g, bbox.as_ref().unwrap())),
+                });
+                let stroke = data.style.render_stroke().map(|(color, width)| Stroke {
+                    color,
+                    width,
+                    gradient: data
+                        .style
+                        .render_stroke_gradient()
+                        .map(|g| resolve_gradient(&g, bbox.as_ref().unwrap())),
+                });
+                let background_stroke =
+                    data.style
+                        .render_background_stroke()
+                        .map(|(color, width)| Stroke {
+                            color,
+                            width,
+                            gradient: None,
+                        });
+                if fill.is_none() && stroke.is_none() && background_stroke.is_none() {
                     continue;
                 }
                 items.push(DrawItem {
                     path: data.path.clone(),
                     fill,
                     stroke,
+                    background_stroke,
                     z_index: data.z_index,
                     source: member,
                     generation: data.generation,
@@ -793,6 +819,28 @@ impl SceneState {
     }
 }
 
+/// Resolves a style [`Gradient`]'s bbox-relative axis to concrete world-space
+/// endpoints, producing the renderer-facing [`LinearGradient`].
+fn resolve_gradient(g: &Gradient, bb: &BoundingBox) -> LinearGradient {
+    let c = bb.center();
+    let (start, end) = match g.axis {
+        GradientAxis::Horizontal => (
+            Point::new(bb.min.x, c.y, 0.0),
+            Point::new(bb.max.x, c.y, 0.0),
+        ),
+        GradientAxis::Vertical => (
+            Point::new(c.x, bb.min.y, 0.0),
+            Point::new(c.x, bb.max.y, 0.0),
+        ),
+        GradientAxis::Points(a, b) => (a, b),
+    };
+    LinearGradient {
+        stops: g.stops.clone(),
+        start,
+        end,
+    }
+}
+
 impl<M: Mobject> Index<MobjectId<M>> for SceneState {
     type Output = M;
     fn index(&self, id: MobjectId<M>) -> &M {
@@ -812,6 +860,37 @@ mod tests {
     use crate::geometry::{Circle, Square, VGroup};
     use crate::mobject::MobjectExt;
     use manim_math::{RIGHT, UP};
+
+    #[test]
+    fn display_list_carries_fill_gradient() {
+        use manim_color::{BLUE, RED};
+        let mut scene = SceneState::new();
+        let sq = scene.add(Square::new());
+        scene.set_style_family(sq.erase(), |s| {
+            s.set_fill_gradient(Gradient::from_colors(&[BLUE, RED]));
+        });
+        let dl = scene.display_list();
+        let g = dl.0[0].fill.as_ref().unwrap().gradient.as_ref().unwrap();
+        assert_eq!(g.stops.len(), 2);
+        // Horizontal axis resolved from the bbox: start left of end, same y.
+        assert!(g.start.x < g.end.x);
+        assert!((g.start.y - g.end.y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn display_list_carries_background_stroke() {
+        use manim_color::{BLUE, RED};
+        let mut scene = SceneState::new();
+        let c = scene.add(Circle::new());
+        scene.set_style_family(c.erase(), |s| {
+            s.set_fill(BLUE, 1.0);
+            s.set_background_stroke(RED, 8.0, 1.0);
+        });
+        let dl = scene.display_list();
+        let bg = dl.0[0].background_stroke.as_ref().unwrap();
+        assert!((bg.width - 8.0).abs() < 1e-6);
+        assert_eq!(bg.color, RED);
+    }
 
     #[test]
     fn add_and_typed_access() {

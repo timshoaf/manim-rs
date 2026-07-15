@@ -234,6 +234,29 @@ pub fn lerp_style(a: &Style, b: &Style, t: f32) -> Style {
         stroke_opacity: lerp_scalar(a.stroke_opacity, b.stroke_opacity, t),
         stroke_width: lerp_scalar(a.stroke_width, b.stroke_width, t),
         dash_pattern: b.dash_pattern.clone().or_else(|| a.dash_pattern.clone()),
+        // Gradients and background stroke are carried, not cross-interpolated
+        // (gradient stop counts may differ); the target side wins past halfway.
+        fill_gradient: if t < 0.5 {
+            a.fill_gradient.clone()
+        } else {
+            b.fill_gradient.clone()
+        },
+        stroke_gradient: if t < 0.5 {
+            a.stroke_gradient.clone()
+        } else {
+            b.stroke_gradient.clone()
+        },
+        background_stroke_color: mix(a.background_stroke_color, b.background_stroke_color),
+        background_stroke_width: lerp_scalar(
+            a.background_stroke_width,
+            b.background_stroke_width,
+            t,
+        ),
+        background_stroke_opacity: lerp_scalar(
+            a.background_stroke_opacity,
+            b.background_stroke_opacity,
+            t,
+        ),
     }
 }
 
