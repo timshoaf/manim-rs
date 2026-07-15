@@ -200,7 +200,9 @@ pub fn perpendicular_bisector(line: (Point, Point)) -> (Point, Point) {
 /// ```
 pub fn compass_directions(n: usize, start: Point) -> Vec<Point> {
     let angle = TAU / n as f32;
-    (0..n).map(|k| rotate_vector(start, k as f32 * angle)).collect()
+    (0..n)
+        .map(|k| rotate_vector(start, k as f32 * angle))
+        .collect()
 }
 
 /// The vertices of a regular `n`-gon of the given `radius`, plus the resolved
@@ -250,7 +252,11 @@ mod tests {
         for i in 0..8 {
             let a = i as f32 * PI / 4.0;
             let v = rotate_vector(RIGHT, a);
-            assert_relative_eq!(angle_of_vector(v).rem_euclid(TAU), a.rem_euclid(TAU), epsilon = 1e-5);
+            assert_relative_eq!(
+                angle_of_vector(v).rem_euclid(TAU),
+                a.rem_euclid(TAU),
+                epsilon = 1e-5
+            );
         }
         assert_relative_eq!(angle_between_vectors(RIGHT, UP), PI / 2.0, epsilon = 1e-6);
         assert_relative_eq!(angle_between_vectors(RIGHT, RIGHT), 0.0, epsilon = 1e-6);

@@ -4,7 +4,10 @@ A ground-up reimplementation of [Manim Community Edition](https://docs.manim.com
 in Rust, rendering with WebGPU (`wgpu`) — declarative, real-time, and embeddable
 in web apps via Dioxus.
 
-> **Status: early development.** M0 (math & color foundations) in progress.
+> **Status: early development, end-to-end vertical slice working.** M0 (math &
+> color) complete; M1 (mobjects & geometry), M2 (animation engine), and the
+> offscreen wgpu renderer are functional — `SquareToCircle` renders to PNG/mp4
+> (`cargo run -p manim --example square_to_circle`). 600 tests passing.
 > See [`docs/design/`](docs/design/00-vision.md) for the architecture book and
 > the [parity map](docs/design/10-parity-map.md) for coverage of the manim CE API.
 

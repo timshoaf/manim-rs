@@ -104,7 +104,11 @@ fn monotone_rate_fn_endpoints() {
 
 #[test]
 fn there_and_back_family_endpoints() {
-    for f in [rf::there_and_back, rf::there_and_back_with_pause, rf::wiggle] {
+    for f in [
+        rf::there_and_back,
+        rf::there_and_back_with_pause,
+        rf::wiggle,
+    ] {
         assert_relative_eq!(f(0.0), 0.0, epsilon = 1e-4);
         assert_relative_eq!(f(1.0), 0.0, epsilon = 1e-4);
     }

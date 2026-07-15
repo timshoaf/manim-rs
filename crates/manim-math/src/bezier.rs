@@ -379,7 +379,7 @@ pub fn smooth_cubic_handles(anchors: &[Point]) -> Vec<(Point, Point)> {
 /// Solve the open (non-looping) smooth-spline tridiagonal system.
 fn smooth_open_handles(a: &[Point]) -> (Vec<Point>, Vec<Point>) {
     let big_n = a.len() - 1; // number of curves
-    // cp[i] = 1 / (4 - cp[i-1]), cp[0] = 0.5; length N-1.
+                             // cp[i] = 1 / (4 - cp[i-1]), cp[0] = 0.5; length N-1.
     let mut cp = vec![0.0_f32; big_n - 1];
     cp[0] = 0.5;
     for i in 1..big_n - 1 {

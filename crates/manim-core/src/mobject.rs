@@ -45,11 +45,22 @@ use slotmap::DefaultKey;
 
 use crate::style::Style;
 
+/// Process-wide source of geometry revision stamps.
+///
+/// Stamps must be unique across *clones* of a scene state, not merely
+/// monotonic per mobject: timeline playback restores a snapshot and re-applies
+/// an animation every frame, so a per-mobject counter would assign the same
+/// number to different geometry and stale tessellations would be served from
+/// the renderer cache. Starts at 1 so `0` always means "never mutated".
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// The data every mobject carries, matching manim CE's `Mobject` attributes.
 ///
 /// Concrete mobjects embed one of these. [`generation`](Self::generation) is a
-/// monotonically increasing counter bumped on every geometry mutation; the
-/// renderer uses `(id, generation)` as a tessellation cache key.
+/// process-globally unique stamp refreshed on every geometry mutation; the
+/// renderer uses `(id, generation)` as a tessellation cache key. Unchanged
+/// mobjects keep their stamp (including across clones), so caching static
+/// geometry stays effective.
 ///
 /// ```
 /// use manim_core::mobject::MobjectData;
@@ -95,17 +106,19 @@ impl MobjectData {
         }
     }
 
-    /// Bumps the geometry [`generation`](Self::generation), invalidating any
-    /// cached tessellation.
+    /// Refreshes the geometry [`generation`](Self::generation) with a fresh
+    /// process-globally unique stamp, invalidating any cached tessellation.
     ///
     /// ```
     /// use manim_core::mobject::MobjectData;
     /// let mut data = MobjectData::default();
     /// data.bump_generation();
-    /// assert_eq!(data.generation, 1);
+    /// let first = data.generation;
+    /// data.bump_generation();
+    /// assert!(data.generation > first);
     /// ```
     pub fn bump_generation(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
+        self.generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
