@@ -448,9 +448,152 @@ pub(crate) fn record_draw(
     }
 }
 
+/// Draws `mesh` with `main_bg` over `base`, then again scissored into `inset`
+/// with `zoom_bg` (the magnifier), then `border` with `border_bg` — the mesh-path
+/// analogue of [`TextureTarget::render_ops_zoomed`], shared by the surface
+/// renderers (canvas / preview). Clears to `background` over the whole attachment.
+#[cfg(any(
+    all(feature = "preview", not(target_arch = "wasm32")),
+    all(feature = "web", target_arch = "wasm32")
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_draw_zoomed(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    msaa_view: &wgpu::TextureView,
+    resolve_view: &wgpu::TextureView,
+    main_bg: &wgpu::BindGroup,
+    zoom_bg: &wgpu::BindGroup,
+    border_bg: &wgpu::BindGroup,
+    mesh: &FrameMesh,
+    border: &FrameMesh,
+    background: Color,
+    base: crate::layout::Viewport,
+    inset: crate::layout::Viewport,
+    out_w: u32,
+    out_h: u32,
+) {
+    let bg = background.premultiplied();
+    let make = |m: &FrameMesh| {
+        (!m.indices.is_empty()).then(|| {
+            let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("manim-render zoom vertices"),
+                contents: bytemuck::cast_slice(&m.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("manim-render zoom indices"),
+                contents: bytemuck::cast_slice(&m.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            (vb, ib, m.indices.len() as u32)
+        })
+    };
+    let main_buf = make(mesh);
+    let border_buf = make(border);
+
+    let sx = inset.x.max(0.0).round() as u32;
+    let sy = inset.y.max(0.0).round() as u32;
+    let sw = (inset.w.round() as u32).min(out_w.saturating_sub(sx));
+    let sh = (inset.h.round() as u32).min(out_h.saturating_sub(sy));
+
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("manim-render zoom pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: msaa_view,
+            resolve_target: Some(resolve_view),
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: bg[0] as f64,
+                    g: bg[1] as f64,
+                    b: bg[2] as f64,
+                    a: bg[3] as f64,
+                }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    pass.set_pipeline(pipeline);
+    if let Some((vb, ib, count)) = &main_buf {
+        // Main pass, over the letterboxed base viewport.
+        if base.w > 0.0 && base.h > 0.0 {
+            pass.set_viewport(base.x, base.y, base.w, base.h, 0.0, 1.0);
+        }
+        pass.set_bind_group(0, main_bg, &[]);
+        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+        // Zoom pass, confined to the inset.
+        if sw > 0 && sh > 0 {
+            pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
+            pass.set_scissor_rect(sx, sy, sw, sh);
+            pass.set_bind_group(0, zoom_bg, &[]);
+            pass.draw_indexed(0..*count, 0, 0..1);
+            pass.set_viewport(0.0, 0.0, out_w as f32, out_h as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, out_w, out_h);
+        }
+    }
+    if let Some((vb, ib, count)) = &border_buf {
+        // Border in NDC (identity view-projection), full attachment.
+        pass.set_bind_group(0, border_bg, &[]);
+        pass.set_vertex_buffer(0, vb.slice(..));
+        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..*count, 0, 0..1);
+    }
+}
+
 /// Rounds `value` up to the next multiple of `align`.
 fn align_up(value: u32, align: u32) -> u32 {
     value.div_ceil(align) * align
+}
+
+/// Appends an axis-aligned quad (two triangles) spanning `(x0, y0)`–`(x1, y1)`
+/// with solid premultiplied `col` to `mesh`.
+fn push_quad(mesh: &mut FrameMesh, col: [f32; 4], x0: f32, y0: f32, x1: f32, y1: f32) {
+    let base = mesh.vertices.len() as u32;
+    for (x, y) in [(x0, y0), (x1, y0), (x1, y1), (x0, y1)] {
+        mesh.vertices.push(Vertex {
+            position: [x, y, 0.0],
+            color: col,
+        });
+    }
+    mesh.indices
+        .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
+/// Builds the four border bars framing `inset` (in output pixels) as a mesh in
+/// **NDC** clip space — drawn with an identity view-projection. The border sits
+/// just inside the inset edges so it frames the magnified content.
+pub(crate) fn border_mesh_ndc(
+    inset: crate::layout::Viewport,
+    out_w: u32,
+    out_h: u32,
+    thickness_px: f32,
+    color: Color,
+) -> FrameMesh {
+    let (ow, oh) = (out_w.max(1) as f32, out_h.max(1) as f32);
+    let to_ndc_x = |px: f32| px / ow * 2.0 - 1.0;
+    let to_ndc_y = |py: f32| 1.0 - py / oh * 2.0;
+    let xo_l = to_ndc_x(inset.x);
+    let xo_r = to_ndc_x(inset.x + inset.w);
+    let yo_t = to_ndc_y(inset.y);
+    let yo_b = to_ndc_y(inset.y + inset.h);
+    let tx = thickness_px / ow * 2.0;
+    let ty = thickness_px / oh * 2.0;
+    let col = color.premultiplied();
+
+    let mut mesh = FrameMesh::default();
+    // NDC y grows upward, so the top edge has the larger y.
+    push_quad(&mut mesh, col, xo_l, yo_t, xo_r, yo_t - ty); // top bar
+    push_quad(&mut mesh, col, xo_l, yo_b + ty, xo_r, yo_b); // bottom bar
+    push_quad(&mut mesh, col, xo_l, yo_t - ty, xo_l + tx, yo_b + ty); // left bar
+    push_quad(&mut mesh, col, xo_r - tx, yo_t - ty, xo_r, yo_b + ty); // right bar
+    mesh
 }
 
 /// The textured-quad shader for [`ImageMobject`](manim_core::image_mobject::ImageMobject)s.
@@ -629,9 +772,13 @@ pub struct TextureTarget {
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// A second camera uniform holding the orthographic matrix, used to draw
-    /// `fixed_in_frame` HUD content under a 3-D camera.
+    /// `fixed_in_frame` HUD content under a 3-D camera, and (as an identity
+    /// matrix) the zoom-window border in NDC space.
     hud_uniform_buffer: wgpu::Buffer,
     hud_bind_group: wgpu::BindGroup,
+    /// A third camera uniform holding the magnifying camera for a zoom window.
+    zoom_uniform_buffer: wgpu::Buffer,
+    zoom_bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
     color_texture: wgpu::Texture,
@@ -721,6 +868,21 @@ impl TextureTarget {
             }],
         });
 
+        let zoom_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("manim-render zoom camera uniform"),
+            size: std::mem::size_of::<CameraUniform>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let zoom_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("manim-render zoom camera bind group"),
+            layout: &pipeline.bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: zoom_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         let unpadded_bytes_per_row = width * 4;
         let padded_bytes_per_row =
             align_up(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -743,6 +905,8 @@ impl TextureTarget {
             bind_group,
             hud_uniform_buffer,
             hud_bind_group,
+            zoom_uniform_buffer,
+            zoom_bind_group,
             width,
             height,
             color_texture,
@@ -872,6 +1036,87 @@ impl TextureTarget {
         {
             let mut pass = self.begin_ops_pass(&mut encoder, background);
             self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
+        }
+        self.copy_and_read(encoder)
+    }
+
+    /// Renders `ops` with the `main` camera full-frame, then a second time with
+    /// the `zoom` camera scissored into the `inset` pixel rectangle (a magnifying
+    /// window), and finally a border around the inset — all in one pass.
+    ///
+    /// The zoom pass reuses the same tessellated `ops`, so the inset shows the
+    /// identical scene magnified. The border is drawn in NDC with an identity
+    /// matrix (via the shared HUD uniform).
+    ///
+    /// # Errors
+    ///
+    /// As [`render`](Self::render).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_ops_zoomed(
+        &mut self,
+        ops: &[crate::tessellate::FrameOp],
+        main: &Camera2D,
+        zoom: &Camera2D,
+        inset: crate::layout::Viewport,
+        border_color: Color,
+        border_px: f32,
+        background: Color,
+    ) -> Result<RgbaImage, RenderError> {
+        use crate::tessellate::FrameOp;
+
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform::from(main)),
+        );
+        self.queue.write_buffer(
+            &self.zoom_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform::from(zoom)),
+        );
+        // The border is drawn directly in NDC → identity view-projection.
+        self.queue.write_buffer(
+            &self.hud_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform {
+                view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            }),
+        );
+
+        let mut present = Vec::new();
+        for op in ops {
+            if let FrameOp::Image(q) = op {
+                self.ensure_texture(q);
+                present.push(q.source);
+            }
+        }
+        self.texture_cache.retain(|id, _| present.contains(id));
+
+        let gpu_ops = self.build_gpu_ops(ops);
+        let border = border_mesh_ndc(inset, self.width, self.height, border_px, border_color);
+        let border_gpu = self.build_gpu_ops(&[FrameOp::Vector(border)]);
+
+        // Scissor rectangle in attachment pixels, clamped to bounds.
+        let sx = inset.x.max(0.0).round() as u32;
+        let sy = inset.y.max(0.0).round() as u32;
+        let sw = (inset.w.round() as u32).min(self.width.saturating_sub(sx));
+        let sh = (inset.h.round() as u32).min(self.height.saturating_sub(sy));
+
+        let mut encoder = self.begin_ops_encoder();
+        {
+            let mut pass = self.begin_ops_pass(&mut encoder, background);
+            // Main pass, full frame.
+            self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
+            // Zoom pass, confined to the inset.
+            if sw > 0 && sh > 0 {
+                pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
+                pass.set_scissor_rect(sx, sy, sw, sh);
+                self.record_ops(&mut pass, &gpu_ops, &self.zoom_bind_group);
+                // Reset to full frame for the border.
+                pass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
+                pass.set_scissor_rect(0, 0, self.width, self.height);
+                self.record_ops(&mut pass, &border_gpu, &self.hud_bind_group);
+            }
         }
         self.copy_and_read(encoder)
     }
@@ -1293,6 +1538,34 @@ impl OffscreenRenderer {
             );
         }
         let ops = self.cache.tessellate_ops(&frame.display_list);
+        if let Some(zw) = frame.camera.zoom_window {
+            let (w, h) = self.target.size();
+            let base = crate::layout::Viewport {
+                x: 0.0,
+                y: 0.0,
+                w: w as f32,
+                h: h as f32,
+            };
+            let inset =
+                crate::layout::inset_viewport(base, zw.inset_x, zw.inset_y, zw.inset_w, zw.inset_h);
+            let (zw_w, zw_h) = crate::layout::zoom_frame_size(zw.region_width, inset.w, inset.h);
+            let zoom_cam = Camera2D {
+                frame_center: zw.region_center,
+                frame_width: zw_w,
+                frame_height: zw_h,
+                rotation: 0.0,
+                three_d: None,
+            };
+            return self.target.render_ops_zoomed(
+                &ops,
+                &self.camera,
+                &zoom_cam,
+                inset,
+                zw.border_color,
+                zw.border_width,
+                self.background,
+            );
+        }
         self.target.render_ops(&ops, &self.camera, self.background)
     }
 

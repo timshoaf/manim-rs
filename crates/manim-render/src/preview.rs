@@ -30,7 +30,6 @@ use std::time::Instant;
 
 use manim_core::config::Config;
 use manim_core::scene::{Frame, Scene};
-use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -136,6 +135,10 @@ struct Gfx {
     pipeline: Pipeline,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    zoom_uniform: wgpu::Buffer,
+    zoom_bind_group: wgpu::BindGroup,
+    border_uniform: wgpu::Buffer,
+    border_bind_group: wgpu::BindGroup,
     msaa_view: wgpu::TextureView,
 }
 
@@ -208,61 +211,72 @@ impl PreviewApp {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let vp = letterbox(
-            gfx.surface_config.width as f32,
-            gfx.surface_config.height as f32,
-            self.player.aspect,
-        );
+        let (out_w, out_h) = (gfx.surface_config.width, gfx.surface_config.height);
+        let vp = letterbox(out_w as f32, out_h as f32, self.player.aspect);
 
-        let vb = gfx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("preview vertices"),
-                contents: bytemuck::cast_slice(&mesh.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-        let ib = gfx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("preview indices"),
-                contents: bytemuck::cast_slice(&mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-
-        let bg = background.premultiplied();
         let mut encoder = gfx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("preview encoder"),
             });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("preview pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &gfx.msaa_view,
-                    resolve_target: Some(&target),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: bg[0] as f64,
-                            g: bg[1] as f64,
-                            b: bg[2] as f64,
-                            a: bg[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            if !mesh.indices.is_empty() && vp.w > 0.0 && vp.h > 0.0 {
-                pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
-                pass.set_pipeline(&gfx.pipeline.pipeline);
-                pass.set_bind_group(0, &gfx.bind_group, &[]);
-                pass.set_vertex_buffer(0, vb.slice(..));
-                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
-            }
+        if let Some(zw) = frame_data.camera.zoom_window {
+            // A magnifying inset: second pass with a zoom camera + border.
+            let inset =
+                crate::layout::inset_viewport(vp, zw.inset_x, zw.inset_y, zw.inset_w, zw.inset_h);
+            let (zw_w, zw_h) = crate::layout::zoom_frame_size(zw.region_width, inset.w, inset.h);
+            let zoom_cam = Camera2D {
+                frame_center: zw.region_center,
+                frame_width: zw_w,
+                frame_height: zw_h,
+                rotation: 0.0,
+                three_d: None,
+            };
+            gfx.queue.write_buffer(
+                &gfx.zoom_uniform,
+                0,
+                bytemuck::cast_slice(&zoom_cam.view_proj().to_cols_array_2d()),
+            );
+            gfx.queue.write_buffer(
+                &gfx.border_uniform,
+                0,
+                bytemuck::cast_slice(&glam::Mat4::IDENTITY.to_cols_array_2d()),
+            );
+            let border = crate::renderer::border_mesh_ndc(
+                inset,
+                out_w,
+                out_h,
+                zw.border_width,
+                zw.border_color,
+            );
+            crate::renderer::record_draw_zoomed(
+                &gfx.device,
+                &mut encoder,
+                &gfx.pipeline.pipeline,
+                &gfx.msaa_view,
+                &target,
+                &gfx.bind_group,
+                &gfx.zoom_bind_group,
+                &gfx.border_bind_group,
+                &mesh,
+                &border,
+                background,
+                vp,
+                inset,
+                out_w,
+                out_h,
+            );
+        } else {
+            crate::renderer::record_draw(
+                &gfx.device,
+                &mut encoder,
+                &gfx.pipeline.pipeline,
+                &gfx.msaa_view,
+                &target,
+                &gfx.bind_group,
+                &mesh,
+                background,
+                Some(vp),
+            );
         }
         gfx.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -369,20 +383,11 @@ impl PreviewApp {
         surface.configure(&device, &surface_config);
 
         let pipeline = Pipeline::new(&device, format);
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("preview camera uniform"),
-            size: 64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("preview camera bind group"),
-            layout: &pipeline.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform.as_entire_binding(),
-            }],
-        });
+        let (uniform, bind_group) = camera_bind_group(&device, &pipeline, "preview camera");
+        let (zoom_uniform, zoom_bind_group) =
+            camera_bind_group(&device, &pipeline, "preview zoom camera");
+        let (border_uniform, border_bind_group) =
+            camera_bind_group(&device, &pipeline, "preview border");
         let msaa_view = make_msaa(&device, format, w, h);
 
         Ok(Gfx {
@@ -394,9 +399,36 @@ impl PreviewApp {
             pipeline,
             uniform,
             bind_group,
+            zoom_uniform,
+            zoom_bind_group,
+            border_uniform,
+            border_bind_group,
             msaa_view,
         })
     }
+}
+
+/// Creates a camera uniform buffer and its `@group(0)` bind group.
+fn camera_bind_group(
+    device: &wgpu::Device,
+    pipeline: &Pipeline,
+    label: &str,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: 64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &pipeline.bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform.as_entire_binding(),
+        }],
+    });
+    (uniform, bind_group)
 }
 
 impl ApplicationHandler for PreviewApp {

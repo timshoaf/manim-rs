@@ -57,11 +57,18 @@ pub struct CanvasSurface {
     pipeline: Pipeline,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// Magnifying-camera uniform + identity (border) uniform for a zoom window.
+    zoom_uniform: wgpu::Buffer,
+    zoom_bind_group: wgpu::BindGroup,
+    border_uniform: wgpu::Buffer,
+    border_bind_group: wgpu::BindGroup,
     msaa_view: wgpu::TextureView,
     cache: TessellationCache,
     camera: Camera2D,
     aspect: f32,
     background: Color,
+    /// The active zoom window (from the last `render_frame`), or `None`.
+    zoom_window: Option<manim_core::camera::ZoomWindow>,
 }
 
 impl CanvasSurface {
@@ -125,20 +132,11 @@ impl CanvasSurface {
         surface.configure(&device, &surface_config);
 
         let pipeline = Pipeline::new(&device, format);
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("canvas camera uniform"),
-            size: 64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("canvas camera bind group"),
-            layout: &pipeline.bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: uniform.as_entire_binding(),
-            }],
-        });
+        let (uniform, bind_group) = make_camera_bind_group(&device, &pipeline, "canvas camera");
+        let (zoom_uniform, zoom_bind_group) =
+            make_camera_bind_group(&device, &pipeline, "canvas zoom camera");
+        let (border_uniform, border_bind_group) =
+            make_camera_bind_group(&device, &pipeline, "canvas border");
         let msaa_view = make_msaa(&device, format, width, height);
 
         Ok(Self {
@@ -149,11 +147,16 @@ impl CanvasSurface {
             pipeline,
             uniform,
             bind_group,
+            zoom_uniform,
+            zoom_bind_group,
+            border_uniform,
+            border_bind_group,
             msaa_view,
             cache: TessellationCache::new(),
             camera: Camera2D::from(config),
             aspect: config.frame_width / config.frame_height,
             background: config.background_color,
+            zoom_window: None,
         })
     }
 
@@ -224,28 +227,73 @@ impl CanvasSurface {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let vp = letterbox(
-            self.surface_config.width as f32,
-            self.surface_config.height as f32,
-            self.aspect,
-        );
+        let (out_w, out_h) = (self.surface_config.width, self.surface_config.height);
+        let vp = letterbox(out_w as f32, out_h as f32, self.aspect);
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("canvas encoder"),
             });
-        record_draw(
-            &self.device,
-            &mut encoder,
-            &self.pipeline.pipeline,
-            &self.msaa_view,
-            &target,
-            &self.bind_group,
-            &mesh,
-            self.background,
-            Some(vp),
-        );
+        if let Some(zw) = self.zoom_window {
+            // A magnifying inset: second pass with a zoom camera + border.
+            let inset =
+                crate::layout::inset_viewport(vp, zw.inset_x, zw.inset_y, zw.inset_w, zw.inset_h);
+            let (zw_w, zw_h) = crate::layout::zoom_frame_size(zw.region_width, inset.w, inset.h);
+            let zoom_cam = Camera2D {
+                frame_center: zw.region_center,
+                frame_width: zw_w,
+                frame_height: zw_h,
+                rotation: 0.0,
+                three_d: None,
+            };
+            self.queue.write_buffer(
+                &self.zoom_uniform,
+                0,
+                bytemuck::cast_slice(&zoom_cam.view_proj().to_cols_array_2d()),
+            );
+            self.queue.write_buffer(
+                &self.border_uniform,
+                0,
+                bytemuck::cast_slice(&glam::Mat4::IDENTITY.to_cols_array_2d()),
+            );
+            let border = crate::renderer::border_mesh_ndc(
+                inset,
+                out_w,
+                out_h,
+                zw.border_width,
+                zw.border_color,
+            );
+            crate::renderer::record_draw_zoomed(
+                &self.device,
+                &mut encoder,
+                &self.pipeline.pipeline,
+                &self.msaa_view,
+                &target,
+                &self.bind_group,
+                &self.zoom_bind_group,
+                &self.border_bind_group,
+                &mesh,
+                &border,
+                self.background,
+                vp,
+                inset,
+                out_w,
+                out_h,
+            );
+        } else {
+            record_draw(
+                &self.device,
+                &mut encoder,
+                &self.pipeline.pipeline,
+                &self.msaa_view,
+                &target,
+                &self.bind_group,
+                &mesh,
+                self.background,
+                Some(vp),
+            );
+        }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
@@ -265,9 +313,33 @@ impl CanvasSurface {
     pub fn render_frame(&mut self, frame: &Frame) -> Result<(), RenderError> {
         self.camera = Camera2D::from(&frame.camera);
         self.background = frame.camera.background;
+        self.zoom_window = frame.camera.zoom_window;
         self.cache.set_zoom(frame.camera.height);
         self.render(&frame.display_list)
     }
+}
+
+/// Creates a camera uniform buffer and its `@group(0)` bind group.
+fn make_camera_bind_group(
+    device: &wgpu::Device,
+    pipeline: &Pipeline,
+    label: &str,
+) -> (wgpu::Buffer, wgpu::BindGroup) {
+    let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: 64,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout: &pipeline.bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform.as_entire_binding(),
+        }],
+    });
+    (uniform, bind_group)
 }
 
 /// Creates a multisampled color texture view for the canvas surface.

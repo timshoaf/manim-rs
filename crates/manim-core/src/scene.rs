@@ -31,7 +31,7 @@ use std::ops::{Index, IndexMut};
 
 use crate::animation::IntoAnimations;
 use crate::animations::{AnimBuilder, Animate, CameraFrameHandle};
-pub use crate::camera::{Camera2D, CameraFrame};
+pub use crate::camera::{Camera2D, CameraFrame, ZoomWindow};
 use crate::config::Config;
 use crate::display::DisplayList;
 use crate::error::{CoreError, Result};
@@ -390,6 +390,32 @@ impl Scene {
     /// `begin_ambient_camera_rotation` applied per step). No-op in 2-D.
     pub fn rotate_camera(&mut self, d_theta: f32) {
         self.state.camera_mut().rotate_ambient(d_theta);
+    }
+
+    /// Adds a magnifying inset window (manim's `ZoomedScene`): the renderer draws
+    /// the scene a second time through a camera over `region_center` /
+    /// `region_width` scene units into the normalized `inset = [x, y, w, h]`
+    /// rectangle of the output (`[0, 1]`, top-left origin), framed by a border.
+    ///
+    /// The window lives in the camera state, so animating it (moving the region,
+    /// resizing the inset) rides the timeline like any camera motion.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_math::ORIGIN;
+    /// let mut scene = Scene::new(Config::default());
+    /// scene.add_zoom_window(ORIGIN, 1.5, [0.62, 0.05, 0.33, 0.33]);
+    /// assert!(scene.camera().zoom_window.is_some());
+    /// ```
+    pub fn add_zoom_window(
+        &mut self,
+        region_center: Point,
+        region_width: f32,
+        inset: [f32; 4],
+    ) -> &mut Self {
+        self.state.camera_mut().zoom_window =
+            Some(ZoomWindow::new(region_center, region_width, inset));
+        self
     }
 
     /// A handle to the camera frame for animation, mirroring manim's

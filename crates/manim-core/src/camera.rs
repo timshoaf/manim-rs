@@ -65,6 +65,83 @@ impl ThreeDParams {
     }
 }
 
+/// A zoomed inset window (manim CE's `ZoomedScene`): the renderer draws the scene
+/// a second time through a magnifying camera over a small `region_*` of scene
+/// space, into an `inset_*` rectangle of the output, framed by a border.
+///
+/// The `inset_*` rectangle is in **normalized viewport coordinates** — `(0, 0)`
+/// top-left, `(1, 1)` bottom-right of the drawable (letterboxed) area — so it
+/// stays put regardless of output resolution. `region_center`/`region_width` are
+/// scene-space; the region's height is derived from the inset's aspect at render
+/// time so the magnified content is never distorted. All the geometric fields
+/// interpolate, so the window can pan/zoom across a `play`.
+///
+/// ```
+/// use manim_core::camera::ZoomWindow;
+/// use manim_math::ORIGIN;
+/// let zw = ZoomWindow::new(ORIGIN, 1.0, [0.62, 0.05, 0.33, 0.33]);
+/// assert_eq!(zw.region_width, 1.0);
+/// assert_eq!(zw.inset_w, 0.33);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ZoomWindow {
+    /// Scene-space center of the magnified region.
+    pub region_center: Point,
+    /// Scene-space width of the magnified region (height follows the inset aspect).
+    pub region_width: f32,
+    /// Inset left edge, as a fraction `[0, 1]` of the viewport width.
+    pub inset_x: f32,
+    /// Inset top edge, as a fraction `[0, 1]` of the viewport height.
+    pub inset_y: f32,
+    /// Inset width, as a fraction `[0, 1]` of the viewport width.
+    pub inset_w: f32,
+    /// Inset height, as a fraction `[0, 1]` of the viewport height.
+    pub inset_h: f32,
+    /// Border color drawn around the inset.
+    pub border_color: Color,
+    /// Border thickness in output pixels.
+    pub border_width: f32,
+}
+
+impl ZoomWindow {
+    /// A zoom window over `region_center`/`region_width`, placed at the
+    /// normalized `inset = [x, y, w, h]` rectangle, with a default white border.
+    pub fn new(region_center: Point, region_width: f32, inset: [f32; 4]) -> Self {
+        Self {
+            region_center,
+            region_width: region_width.max(1e-4),
+            inset_x: inset[0],
+            inset_y: inset[1],
+            inset_w: inset[2],
+            inset_h: inset[3],
+            border_color: Color::from_rgba(1.0, 1.0, 1.0, 1.0),
+            border_width: 3.0,
+        }
+    }
+
+    /// Sets the border color and pixel width (builder style).
+    pub fn with_border(mut self, color: Color, width: f32) -> Self {
+        self.border_color = color;
+        self.border_width = width;
+        self
+    }
+
+    /// Linearly interpolates the geometric fields; the border is carried from `a`.
+    pub fn lerp(a: &ZoomWindow, b: &ZoomWindow, t: f32) -> ZoomWindow {
+        let l = |x: f32, y: f32| x + (y - x) * t;
+        ZoomWindow {
+            region_center: a.region_center + (b.region_center - a.region_center) * t,
+            region_width: l(a.region_width, b.region_width),
+            inset_x: l(a.inset_x, b.inset_x),
+            inset_y: l(a.inset_y, b.inset_y),
+            inset_w: l(a.inset_w, b.inset_w),
+            inset_h: l(a.inset_h, b.inset_h),
+            border_color: a.border_color.interpolate(&b.border_color, t),
+            border_width: l(a.border_width, b.border_width),
+        }
+    }
+}
+
 /// The camera / frame state: what region of scene space is visible, its
 /// rotation, and the background color.
 ///
@@ -89,6 +166,8 @@ pub struct Camera2D {
     pub background: Color,
     /// 3-D orientation, or `None` for an orthographic 2-D camera (the default).
     pub three_d: Option<ThreeDParams>,
+    /// A magnifying inset window (manim's `ZoomedScene`), or `None`.
+    pub zoom_window: Option<ZoomWindow>,
 }
 
 impl Default for Camera2D {
@@ -100,6 +179,7 @@ impl Default for Camera2D {
             rotation: 0.0,
             background: Color::from_rgba(0.0, 0.0, 0.0, 1.0),
             three_d: None,
+            zoom_window: None,
         }
     }
 }
@@ -114,6 +194,7 @@ impl Camera2D {
             rotation: 0.0,
             background: config.background_color,
             three_d: None,
+            zoom_window: None,
         }
     }
 
@@ -186,6 +267,12 @@ impl Camera2D {
             (None, Some(pb)) => Some(pb),
             (None, None) => None,
         };
+        let zoom_window = match (a.zoom_window, b.zoom_window) {
+            (Some(za), Some(zb)) => Some(ZoomWindow::lerp(&za, &zb, t)),
+            (Some(za), None) => Some(za),
+            (None, Some(zb)) => Some(zb),
+            (None, None) => None,
+        };
         Camera2D {
             frame_center: a.frame_center + (b.frame_center - a.frame_center) * t,
             frame_width: l(a.frame_width, b.frame_width),
@@ -193,6 +280,7 @@ impl Camera2D {
             rotation: l(a.rotation, b.rotation),
             background: a.background.interpolate(&b.background, t),
             three_d,
+            zoom_window,
         }
     }
 }
@@ -219,6 +307,8 @@ pub struct CameraFrame {
     pub background: Color,
     /// 3-D orientation, or `None` for an orthographic 2-D frame.
     pub three_d: Option<ThreeDParams>,
+    /// A magnifying inset window (manim's `ZoomedScene`), or `None`.
+    pub zoom_window: Option<ZoomWindow>,
 }
 
 impl From<&Camera2D> for CameraFrame {
@@ -230,6 +320,46 @@ impl From<&Camera2D> for CameraFrame {
             rotation: c.rotation,
             background: c.background,
             three_d: c.three_d,
+            zoom_window: c.zoom_window,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use manim_math::{ORIGIN, RIGHT};
+
+    #[test]
+    fn zoom_window_lerp_interpolates_geometry() {
+        let a = ZoomWindow::new(ORIGIN, 2.0, [0.0, 0.0, 0.2, 0.2]);
+        let b = ZoomWindow::new(4.0 * RIGHT, 1.0, [0.6, 0.6, 0.4, 0.4]);
+        let mid = ZoomWindow::lerp(&a, &b, 0.5);
+        assert!((mid.region_center.x - 2.0).abs() < 1e-6);
+        assert!((mid.region_width - 1.5).abs() < 1e-6);
+        assert!((mid.inset_x - 0.3).abs() < 1e-6);
+        assert!((mid.inset_w - 0.3).abs() < 1e-6);
+    }
+
+    #[test]
+    fn camera_lerp_carries_and_blends_zoom_window() {
+        let mut a = Camera2D::default();
+        let mut b = Camera2D::default();
+        // Present on only one side → carried through.
+        b.zoom_window = Some(ZoomWindow::new(ORIGIN, 2.0, [0.5, 0.5, 0.3, 0.3]));
+        let mid = Camera2D::lerp(&a, &b, 0.5);
+        assert!(mid.zoom_window.is_some());
+        // Present on both → interpolated.
+        a.zoom_window = Some(ZoomWindow::new(ORIGIN, 4.0, [0.0, 0.0, 0.3, 0.3]));
+        let mid2 = Camera2D::lerp(&a, &b, 0.5);
+        assert!((mid2.zoom_window.unwrap().region_width - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn camera_frame_carries_zoom_window() {
+        let mut cam = Camera2D::default();
+        cam.zoom_window = Some(ZoomWindow::new(ORIGIN, 1.0, [0.6, 0.05, 0.3, 0.3]));
+        let frame = CameraFrame::from(&cam);
+        assert!(frame.zoom_window.is_some());
     }
 }

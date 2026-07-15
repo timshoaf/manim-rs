@@ -516,6 +516,59 @@ fn torus_3d() {
     assert_golden("torus_3d", &img);
 }
 
+/// FE-120: a `ZoomedScene` inset — a cluster of small shapes near the origin,
+/// magnified ~4× into a bordered top-right inset via `add_zoom_window`.
+#[test]
+fn zoomed_inset() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = Scene::new(test_config());
+    // A big reference ring so the full frame reads, plus a tiny cluster at the
+    // origin that is only legible through the magnifier.
+    scene.add(Circle::new().with_scale(2.5).with_stroke(WHITE, 3.0, 1.0));
+    scene.add(
+        Circle::new()
+            .with_scale(0.28)
+            .with_fill(BLUE, 1.0)
+            .with_shift(0.35 * LEFT),
+    );
+    scene.add(
+        Square::new()
+            .with_scale(0.22)
+            .with_fill(RED, 1.0)
+            .with_shift(0.35 * RIGHT),
+    );
+    scene.add(
+        Triangle::new()
+            .with_scale(0.22)
+            .with_fill(GREEN, 1.0)
+            .with_shift(0.35 * UP),
+    );
+    // ~4× magnification of a 1.2-unit region into a top-right inset.
+    scene.add_zoom_window(ORIGIN, 1.2, [0.60, 0.05, 0.35, 0.35]);
+
+    let frame = manim_core::scene::Frame {
+        t: 0.0,
+        display_list: scene.display_list(),
+        camera: manim_core::camera::CameraFrame::from(scene.camera()),
+    };
+    assert!(frame.camera.zoom_window.is_some());
+    let img = renderer.render_frame(&frame).unwrap();
+    // The inset's top-right corner region should contain a bright border pixel.
+    let (w, h) = (img.width(), img.height());
+    let inset_x = (0.60 * w as f32) as u32;
+    let inset_y = (0.05 * h as f32) as u32;
+    assert!(
+        (inset_x..w).any(|x| (inset_y..(inset_y + 20).min(h)).any(|y| {
+            let p = img.get_pixel(x, y).0;
+            p[0] > 150 && p[1] > 150 && p[2] > 150
+        })),
+        "zoom inset border not found"
+    );
+    assert_golden("zoomed_inset", &img);
+}
+
 /// FE-101: an embedded raster image drawn between two vector shapes (z-order).
 #[test]
 fn image_between_shapes() {

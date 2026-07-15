@@ -102,6 +102,37 @@ fn cursor_updater() -> LiveUpdater {
     })
 }
 
+/// A `ZoomedScene`: a tiny cluster of shapes magnified into a bordered inset.
+#[derive(Clone, PartialEq)]
+struct ZoomScene;
+impl SceneBuilder for ZoomScene {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        scene.add(Circle::new().with_scale(2.6).with_stroke(WHITE, 3.0, 1.0));
+        scene.add(
+            Circle::new()
+                .with_scale(0.3)
+                .with_fill(BLUE, 1.0)
+                .with_shift(0.4 * LEFT),
+        );
+        scene.add(
+            Square::new()
+                .with_scale(0.24)
+                .with_fill(RED, 1.0)
+                .with_shift(0.4 * RIGHT),
+        );
+        scene.add(
+            Triangle::new()
+                .with_scale(0.24)
+                .with_fill(GREEN, 1.0)
+                .with_shift(0.4 * UP),
+        );
+        // ~4× magnifier over a 1.3-unit region into a top-right inset.
+        scene.add_zoom_window(ORIGIN, 1.3, [0.60, 0.05, 0.35, 0.35]);
+        scene.wait(0.6);
+        Ok(())
+    }
+}
+
 /// Which scene the gallery is showing.
 #[derive(Clone, Copy, PartialEq)]
 enum Which {
@@ -109,44 +140,95 @@ enum Which {
     Plot,
     Field,
     Cursor,
+    Zoom,
 }
 
-/// The gallery: a picker plus the selected player.
+/// The scene picker entries, in display order: `(variant, label, caption)`.
+const SCENES: &[(Which, &str, &str)] = &[
+    (
+        Which::Square,
+        "Square → Circle",
+        "The canonical transform: create, rotate, morph, fade.",
+    ),
+    (
+        Which::Plot,
+        "Axes plot",
+        "Axes with an animated sine curve — a plotting demo.",
+    ),
+    (
+        Which::Field,
+        "Vector field",
+        "A rotational field f(x,y) = (−y, x), colored by magnitude.",
+    ),
+    (
+        Which::Cursor,
+        "Cursor (live)",
+        "Live input: a dot follows your cursor in scene space (hold to turn it red).",
+    ),
+    (
+        Which::Zoom,
+        "Zoomed inset",
+        "A ZoomedScene: a tiny cluster magnified ~4× into a bordered inset.",
+    ),
+];
+
+/// The gallery: a scene picker driving the selected `<ManimPlayer>`.
 fn app() -> Element {
     let mut which = use_signal(|| Which::Square);
-    let pick = |target: Which, current: Which| -> &'static str {
-        if target == current {
-            "padding:6px 12px;margin-right:6px;background:#4b8;color:#000;border:none;border-radius:4px;"
-        } else {
-            "padding:6px 12px;margin-right:6px;background:#333;color:#eee;border:none;border-radius:4px;"
-        }
-    };
     let sel = which();
+    let caption = SCENES
+        .iter()
+        .find(|(w, ..)| *w == sel)
+        .map(|(.., c)| *c)
+        .unwrap_or_default();
+
     rsx! {
         div {
-            style: "font-family:system-ui;background:#1a1a1a;color:#eee;min-height:100vh;padding:2rem;",
-            h1 { "manim_rust · Dioxus gallery" }
-            div { style: "margin:1rem 0;",
-                button { style: "{pick(Which::Square, sel)}", onclick: move |_| which.set(Which::Square), "Square → Circle" }
-                button { style: "{pick(Which::Plot, sel)}", onclick: move |_| which.set(Which::Plot), "Axes plot" }
-                button { style: "{pick(Which::Field, sel)}", onclick: move |_| which.set(Which::Field), "Vector field" }
-                button { style: "{pick(Which::Cursor, sel)}", onclick: move |_| which.set(Which::Cursor), "Cursor (live)" }
-            }
-            div { style: "max-width:720px;",
-                match sel {
-                    Which::Square => rsx! {
-                        ManimPlayer { scene: SquareToCircle, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "405px" }
-                    },
-                    Which::Plot => rsx! {
-                        ManimPlayer { scene: PlotScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "405px" }
-                    },
-                    Which::Field => rsx! {
-                        ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "405px" }
-                    },
-                    Which::Cursor => rsx! {
-                        ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "405px" }
-                        p { style: "color:#aaa;margin-top:8px;", "Move your cursor over the grid — the dot follows in scene space. Hold a button to turn it red. Space/←/→/R work when the player is focused." }
-                    },
+            style: "font-family:system-ui;background:#141414;color:#eee;min-height:100vh;padding:2rem 1.5rem;box-sizing:border-box;",
+            div { style: "max-width:760px;margin:0 auto;",
+                h1 { style: "margin:0 0 4px;font-size:1.6rem;", "manim_rust · Dioxus gallery" }
+                p { style: "margin:0 0 1.2rem;color:#9aa;",
+                    "manim scenes rendered to a live "
+                    code { style: "color:#7cd;", "<canvas>" }
+                    " through wgpu. Pick a scene:"
+                }
+                div { style: "display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem;",
+                    for (w , label , _) in SCENES.iter().copied() {
+                        button {
+                            style: if w == sel {
+                                "padding:7px 13px;background:#4b8;color:#062;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
+                            } else {
+                                "padding:7px 13px;background:#2a2a2a;color:#ddd;border:none;border-radius:6px;cursor:pointer;"
+                            },
+                            onclick: move |_| which.set(w),
+                            "{label}"
+                        }
+                    }
+                }
+                div { style: "border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#000;",
+                    match sel {
+                        Which::Square => rsx! {
+                            ManimPlayer { scene: SquareToCircle, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                        },
+                        Which::Plot => rsx! {
+                            ManimPlayer { scene: PlotScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                        },
+                        Which::Field => rsx! {
+                            ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "428px" }
+                        },
+                        Which::Cursor => rsx! {
+                            ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
+                        },
+                        Which::Zoom => rsx! {
+                            ManimPlayer { scene: ZoomScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                        },
+                    }
+                }
+                p { style: "color:#9aa;margin:0.9rem 0 0;min-height:1.2em;", "{caption}" }
+                p { style: "color:#666;margin-top:1.6rem;font-size:0.85rem;",
+                    "Keyboard (focus the player): Space play/pause · ←/→ scrub · R restart. Build with "
+                    code { style: "color:#888;", "dx serve" }
+                    " (see README)."
                 }
             }
         }

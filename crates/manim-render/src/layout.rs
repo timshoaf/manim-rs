@@ -127,6 +127,42 @@ pub fn letterbox(surface_w: f32, surface_h: f32, aspect: f32) -> Viewport {
     }
 }
 
+/// The pixel [`Viewport`] of a zoom inset placed at the normalized rectangle
+/// `(ix, iy, iw, ih)` (fractions of `base`, top-left origin) within `base`.
+///
+/// ```
+/// use manim_render::layout::{inset_viewport, Viewport};
+/// let base = Viewport { x: 0.0, y: 0.0, w: 1000.0, h: 800.0 };
+/// let vp = inset_viewport(base, 0.6, 0.05, 0.35, 0.35);
+/// assert_eq!((vp.x, vp.y, vp.w, vp.h), (600.0, 40.0, 350.0, 280.0));
+/// ```
+pub fn inset_viewport(base: Viewport, ix: f32, iy: f32, iw: f32, ih: f32) -> Viewport {
+    Viewport {
+        x: base.x + ix * base.w,
+        y: base.y + iy * base.h,
+        w: iw * base.w,
+        h: ih * base.h,
+    }
+}
+
+/// The zoom camera's frame `(width, height)` for a magnified region of scene
+/// width `region_width` shown undistorted in an inset of pixel size
+/// `inset_w × inset_h`. The height follows the inset aspect so nothing stretches.
+///
+/// ```
+/// use manim_render::layout::zoom_frame_size;
+/// // A 2-unit-wide region in a 2:1 inset → a 1-unit-tall camera frame.
+/// let (w, h) = zoom_frame_size(2.0, 400.0, 200.0);
+/// assert!((w - 2.0).abs() < 1e-6 && (h - 1.0).abs() < 1e-6);
+/// ```
+pub fn zoom_frame_size(region_width: f32, inset_w: f32, inset_h: f32) -> (f32, f32) {
+    let w = region_width.max(1e-4);
+    if inset_w <= 0.0 || !inset_w.is_finite() {
+        return (w, w);
+    }
+    (w, w * (inset_h / inset_w))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +269,33 @@ mod tests {
     fn client_to_scene_none_on_degenerate() {
         let cam = frame_camera();
         assert!(client_to_scene(0.0, 0.0, 0.0, 100.0, 1.5, cam.view_proj()).is_none());
+    }
+
+    #[test]
+    fn inset_viewport_places_within_base() {
+        let base = Viewport {
+            x: 100.0,
+            y: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let vp = inset_viewport(base, 0.5, 0.5, 0.25, 0.25);
+        assert_eq!((vp.x, vp.y, vp.w, vp.h), (500.0, 300.0, 200.0, 150.0));
+        // The inset stays inside the base rectangle.
+        assert!(vp.x + vp.w <= base.x + base.w + 1e-3);
+        assert!(vp.y + vp.h <= base.y + base.h + 1e-3);
+    }
+
+    #[test]
+    fn zoom_frame_size_matches_inset_aspect() {
+        // Square inset → square region frame.
+        let (w, h) = zoom_frame_size(3.0, 300.0, 300.0);
+        assert!((w - 3.0).abs() < 1e-6 && (h - 3.0).abs() < 1e-6);
+        // Wide inset → short frame (undistorted magnification).
+        let (w2, h2) = zoom_frame_size(4.0, 400.0, 100.0);
+        assert!((w2 - 4.0).abs() < 1e-6 && (h2 - 1.0).abs() < 1e-6);
+        // Degenerate inset falls back to square.
+        assert_eq!(zoom_frame_size(2.0, 0.0, 100.0), (2.0, 2.0));
     }
 
     #[test]
