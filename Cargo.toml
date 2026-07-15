@@ -30,6 +30,7 @@ manim-dioxus = { path = "crates/manim-dioxus" }
 
 dioxus = "0.6"
 glam = "0.30"
+usvg = "0.47"
 slotmap = "1.0"
 thiserror = "2.0"
 smallvec = "1.13"

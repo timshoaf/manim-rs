@@ -36,19 +36,23 @@
 //! - [`geometry`] — the concrete shape catalog (Circle, Square, Line, Arrow, …).
 //! - [`config`] — scene [`Config`].
 
+pub mod animated_boundary;
 pub mod animation;
 pub mod animations;
+pub mod boolean;
 pub mod camera;
 pub mod config;
 pub mod display;
 pub mod error;
 pub mod geometry;
 pub mod graphing;
+pub mod image_mobject;
 pub mod mobject;
 pub mod network;
 pub mod scene;
 pub mod scene_state;
 pub mod style;
+pub mod svg;
 pub mod timeline;
 pub mod vector_field;
 
@@ -74,8 +78,10 @@ pub use timeline::Section;
 /// let _ = scene.add(Circle::new());
 /// ```
 pub mod prelude {
+    pub use crate::animated_boundary::AnimatedBoundary;
     pub use crate::animation::{AnimConfig, Animation, IntoAnimations};
-    pub use crate::animations::Animate;
+    pub use crate::animations::{Animate, TransformMatchingShapes};
+    pub use crate::boolean::{Cutout, Difference, Exclusion, Intersection, Union};
     pub use crate::camera::{Camera2D, CameraFrame};
     pub use crate::config::Config;
     pub use crate::display::{DisplayList, DrawItem, Fill, Stroke};
@@ -85,6 +91,7 @@ pub mod prelude {
         Axes, BarChart, ComplexPlane, CoordSystem, FunctionGraph, NumberLine, NumberPlane,
         ParametricFunction, PolarPlane,
     };
+    pub use crate::image_mobject::ImageMobject;
     pub use crate::mobject::{
         AnyId, BoundingBox, Buildable, Mobject, MobjectData, MobjectExt, MobjectId, RefTarget,
     };
@@ -92,6 +99,7 @@ pub mod prelude {
     pub use crate::scene::{Frame, Scene, SceneBuilder};
     pub use crate::scene_state::{SceneState, UpdaterCtx};
     pub use crate::style::Style;
+    pub use crate::svg::SVGMobject;
     pub use crate::timeline::Section;
     pub use crate::vector_field::{ArrowVectorField, StreamLines, VectorField};
 

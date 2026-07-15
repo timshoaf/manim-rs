@@ -30,7 +30,10 @@ impl SceneBuilder for HelloMath {
         scene.play(Write::new(euler).run_time(2.0))?;
         scene.wait(0.5);
 
-        scene.play((FadeOut::new(title).shift(UP), FadeOut::new(euler).shift(DOWN)))?;
+        scene.play((
+            FadeOut::new(title).shift(UP),
+            FadeOut::new(euler).shift(DOWN),
+        ))?;
         Ok(())
     }
 }

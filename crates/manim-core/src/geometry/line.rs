@@ -8,7 +8,7 @@ use manim_math::{Point, ORIGIN, PI};
 
 use super::polygon_subpath;
 use crate::impl_mobject;
-use crate::mobject::MobjectData;
+use crate::mobject::{Mobject, MobjectData};
 use crate::style::Style;
 
 /// manim CE's default arrow tip length.
@@ -541,6 +541,71 @@ fn arrow_path(start: Point, end: Point, buff: f32, tip_length: f32, double: bool
     }
     subpaths.push(end_tip);
     Path { subpaths }
+}
+
+/// A straight line tangent to another mobject's outline at arc-length proportion
+/// `alpha`. Port of manim CE's `TangentLine`.
+///
+/// The direction is estimated by finite difference of the outline around
+/// `alpha`; the segment of the requested `length` is centered on the tangent
+/// point.
+///
+/// ```
+/// use manim_core::geometry::{Circle, Line, TangentLine};
+/// use manim_math::{Point, UP};
+/// let circle = Circle::new();
+/// // At the rightmost point of the unit circle the tangent is vertical.
+/// let t = TangentLine::new(&circle, 0.0, 2.0);
+/// assert!((t.get_length() - 2.0).abs() < 1e-3);
+/// // The segment is vertical: its endpoints share an x.
+/// assert!((t.get_end().x - t.get_start().x).abs() < 1e-2);
+/// let _ = UP;
+/// ```
+#[derive(Clone)]
+pub struct TangentLine {
+    data: MobjectData,
+    start: Point,
+    end: Point,
+}
+impl_mobject!(TangentLine);
+
+impl TangentLine {
+    /// A tangent to `mob` at proportion `alpha`, of the given `length`.
+    pub fn new(mob: &dyn Mobject, alpha: f32, length: f32) -> Self {
+        let path = &mob.data().path;
+        let a = alpha.clamp(0.0, 1.0);
+        let eps = 1e-3;
+        let before = path.point_from_proportion((a - eps).max(0.0));
+        let after = path.point_from_proportion((a + eps).min(1.0));
+        let center = path.point_from_proportion(a);
+        let dir = normalize_or_zero(after - before);
+        let half = dir * (length / 2.0);
+        let start = center - half;
+        let end = center + half;
+        Self {
+            data: MobjectData::new(
+                Path::from_corners(&[start, end], false),
+                Style::stroked(WHITE),
+            ),
+            start,
+            end,
+        }
+    }
+
+    /// The start point.
+    pub fn get_start(&self) -> Point {
+        self.start
+    }
+
+    /// The end point.
+    pub fn get_end(&self) -> Point {
+        self.end
+    }
+
+    /// The length of the tangent segment.
+    pub fn get_length(&self) -> f32 {
+        (self.end - self.start).length()
+    }
 }
 
 #[cfg(test)]

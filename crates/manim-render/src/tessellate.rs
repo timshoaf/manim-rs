@@ -34,7 +34,7 @@ use lyon::tessellation::{
     StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
 };
 use manim_color::Color;
-use manim_core::display::{DisplayList, DrawItem, LinearGradient};
+use manim_core::display::{DisplayList, DrawItem, ImagePaint, LinearGradient};
 use manim_core::mobject::AnyId;
 use manim_math::path::Path;
 use manim_math::Point;
@@ -360,7 +360,26 @@ impl TessellationCache {
     /// assert!(!mesh.indices.is_empty());
     /// ```
     pub fn tessellate(&mut self, list: &DisplayList) -> FrameMesh {
-        // Refresh the cache: (re)tessellate changed items, note which survive.
+        self.refresh(list);
+
+        // Concatenate in painter's order: ascending z, stable within a tie.
+        let mut order: Vec<(usize, &DrawItem)> = list.iter().enumerate().collect();
+        order.sort_by_key(|(i, it)| (it.z_index, *i));
+
+        let mut frame = FrameMesh::default();
+        for (_, item) in order {
+            if let Some(entry) = self.entries.get(&item.source) {
+                frame.append(&entry.mesh);
+            }
+        }
+        frame
+    }
+
+    /// Refreshes the per-mobject mesh cache for `list`: re-tessellates items
+    /// whose `(generation, zoom bucket, paint)` changed and evicts vanished
+    /// ones. Shared by [`tessellate`](Self::tessellate) and
+    /// [`tessellate_ops`](Self::tessellate_ops).
+    fn refresh(&mut self, list: &DisplayList) {
         let mut present: Vec<AnyId> = Vec::with_capacity(list.len());
         for item in list {
             present.push(item.source);
@@ -390,21 +409,102 @@ impl TessellationCache {
                 self.hits += 1;
             }
         }
-        // Evict meshes whose mobject vanished from the list.
         self.entries.retain(|id, _| present.contains(id));
+    }
 
-        // Concatenate in painter's order: ascending z, stable within a tie.
+    /// Builds an ordered list of [`FrameOp`]s in painter's order, batching
+    /// consecutive vector items into one mesh and emitting a separate
+    /// [`ImageQuad`] for each image item — so raster images draw interleaved
+    /// with vector shapes, respecting `z_index`.
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_render::tessellate::{FrameOp, TessellationCache};
+    ///
+    /// let mut scene = SceneState::new();
+    /// scene.add(Circle::new());
+    /// let mut cache = TessellationCache::new();
+    /// let ops = cache.tessellate_ops(&scene.display_list());
+    /// // No images → a single vector batch.
+    /// assert_eq!(ops.len(), 1);
+    /// assert!(matches!(ops[0], FrameOp::Vector(_)));
+    /// ```
+    pub fn tessellate_ops(&mut self, list: &DisplayList) -> Vec<FrameOp> {
+        self.refresh(list);
+
         let mut order: Vec<(usize, &DrawItem)> = list.iter().enumerate().collect();
         order.sort_by_key(|(i, it)| (it.z_index, *i));
 
-        let mut frame = FrameMesh::default();
+        let mut ops: Vec<FrameOp> = Vec::new();
+        let mut batch = MeshData::default();
         for (_, item) in order {
-            if let Some(entry) = self.entries.get(&item.source) {
-                frame.append(&entry.mesh);
+            if let Some(paint) = &item.image {
+                if !batch.is_empty() {
+                    ops.push(FrameOp::Vector(std::mem::take(&mut batch)));
+                }
+                if let Some(quad) = image_quad(item, paint.clone()) {
+                    ops.push(FrameOp::Image(quad));
+                }
+            } else if let Some(entry) = self.entries.get(&item.source) {
+                batch.append(&entry.mesh);
             }
         }
-        frame
+        if !batch.is_empty() {
+            ops.push(FrameOp::Vector(batch));
+        }
+        ops
     }
+}
+
+/// One ordered draw in a frame: a batch of vector triangles or a textured quad.
+pub enum FrameOp {
+    /// A concatenated mesh of consecutive vector items.
+    Vector(MeshData),
+    /// A single raster-image quad.
+    Image(ImageQuad),
+}
+
+/// A world-space textured quad extracted from an image [`DrawItem`].
+pub struct ImageQuad {
+    /// The four corners `[TL, TR, BR, BL]` in world space (from the item's
+    /// quad path), matching the UVs `(0,0),(1,0),(1,1),(0,1)`.
+    pub corners: [[f32; 2]; 4],
+    /// The image pixels and sampler.
+    pub paint: ImagePaint,
+    /// The source mobject (texture cache key).
+    pub source: AnyId,
+    /// The source generation (texture cache key).
+    pub generation: u64,
+}
+
+/// Extracts the four quad corners from an image item's path (the first four
+/// subpath anchors), or `None` if the path is not a quad.
+fn image_quad(item: &DrawItem, paint: ImagePaint) -> Option<ImageQuad> {
+    let sub = item.path.subpaths.first()?;
+    // A closed rect through 4 corners is 3 line segments; the 4th corner is the
+    // last segment's endpoint.
+    if sub.curves.len() < 3 {
+        return None;
+    }
+    let last = sub.curves.len() - 1;
+    let corners = [
+        sub.curves[0].p0,
+        sub.curves[1].p0,
+        sub.curves[2].p0,
+        sub.curves[last].p3,
+    ];
+    Some(ImageQuad {
+        corners: [
+            [corners[0].x, corners[0].y],
+            [corners[1].x, corners[1].y],
+            [corners[2].x, corners[2].y],
+            [corners[3].x, corners[3].y],
+        ],
+        paint,
+        source: item.source,
+        generation: item.generation,
+    })
 }
 
 /// Tessellates one [`DrawItem`] into a single [`MeshData`], in paint order:

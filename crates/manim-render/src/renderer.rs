@@ -453,16 +453,161 @@ fn align_up(value: u32, align: u32) -> u32 {
     value.div_ceil(align) * align
 }
 
+/// The textured-quad shader for [`ImageMobject`](manim_core::image_mobject::ImageMobject)s.
+const IMAGE_SHADER: &str = r#"
+struct Camera { view_proj: mat4x4<f32> };
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var samp: sampler;
+
+struct VsIn { @location(0) pos: vec2<f32>, @location(1) uv: vec2<f32> };
+struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex
+fn vs_main(in: VsIn) -> VsOut {
+    var out: VsOut;
+    out.clip = camera.view_proj * vec4<f32>(in.pos, 0.0, 1.0);
+    out.uv = in.uv;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    // sRGB texture → linear rgb, straight alpha; premultiply for (One, 1-srcA).
+    let c = textureSample(tex, samp, in.uv);
+    return vec4<f32>(c.rgb * c.a, c.a);
+}
+"#;
+
+/// A textured quad vertex: position + UV.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct ImageVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+}
+
+/// The image (textured-quad) pipeline, sharing the camera bind-group layout at
+/// `@group(0)` with the vector [`Pipeline`] and adding a texture+sampler layout
+/// at `@group(1)`.
+struct ImagePipeline {
+    pipeline: wgpu::RenderPipeline,
+    texture_layout: wgpu::BindGroupLayout,
+}
+
+impl ImagePipeline {
+    fn new(
+        device: &wgpu::Device,
+        camera_layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+    ) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("manim-render image shader"),
+            source: wgpu::ShaderSource::Wgsl(IMAGE_SHADER.into()),
+        });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("manim-render image texture layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("manim-render image pipeline layout"),
+            bind_group_layouts: &[camera_layout, &texture_layout],
+            push_constant_ranges: &[],
+        });
+        const ATTRS: [wgpu::VertexAttribute; 2] =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
+        let vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<ImageVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &ATTRS,
+        };
+        let blend = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("manim-render image pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[vertex_layout],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            texture_layout,
+        }
+    }
+}
+
+/// A cached uploaded texture, keyed by the source mobject's generation.
+struct CachedTexture {
+    generation: u64,
+    bind_group: wgpu::BindGroup,
+}
+
 /// An offscreen render target: an MSAA texture resolved to an sRGB texture, plus
 /// a padded readback buffer, sized once and reused frame to frame.
 ///
-/// [`TextureTarget::render`] draws a [`FrameMesh`] and returns the pixels as an
-/// [`image::RgbaImage`]. It owns clones of the device/queue/pipeline (wgpu
-/// handles are cheap, reference-counted clones), so it is self-contained.
+/// [`TextureTarget::render_ops`] draws a z-ordered list of vector batches and
+/// textured quads and returns the pixels as an [`image::RgbaImage`]. It owns
+/// clones of the device/queue/pipeline (wgpu handles are cheap, reference-counted
+/// clones), so it is self-contained.
 pub struct TextureTarget {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    image_pipeline: ImagePipeline,
+    texture_cache: std::collections::HashMap<manim_core::mobject::AnyId, CachedTexture>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     width: u32,
@@ -549,10 +694,14 @@ impl TextureTarget {
             mapped_at_creation: false,
         });
 
+        let image_pipeline = ImagePipeline::new(device, &pipeline.bind_group_layout, TARGET_FORMAT);
+
         Self {
             device: device.clone(),
             queue: queue.clone(),
             pipeline: pipeline.pipeline.clone(),
+            image_pipeline,
+            texture_cache: std::collections::HashMap::new(),
             uniform_buffer,
             bind_group,
             width,
@@ -566,9 +715,236 @@ impl TextureTarget {
         }
     }
 
+    /// Ensures the texture for image quad `q` is uploaded and cached (keyed by
+    /// source generation), then returns its texture bind group.
+    fn ensure_texture(&mut self, q: &crate::tessellate::ImageQuad) {
+        if let Some(c) = self.texture_cache.get(&q.source) {
+            if c.generation == q.generation {
+                return;
+            }
+        }
+        let data = &q.paint.data;
+        let (w, h) = (data.width.max(1), data.height.max(1));
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("manim-render image texture"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let filter = match q.paint.sampler {
+            manim_core::display::Sampler::Linear => wgpu::FilterMode::Linear,
+            manim_core::display::Sampler::Nearest => wgpu::FilterMode::Nearest,
+        };
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("manim-render image sampler"),
+            mag_filter: filter,
+            min_filter: filter,
+            ..Default::default()
+        });
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("manim-render image bind group"),
+            layout: &self.image_pipeline.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+        self.texture_cache.insert(
+            q.source,
+            CachedTexture {
+                generation: q.generation,
+                bind_group,
+            },
+        );
+    }
+
     /// The target size in pixels, `(width, height)`.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// Renders a z-ordered list of [`FrameOp`]s (vector batches interleaved with
+    /// textured image quads) under `camera` over `background`, returning the
+    /// pixels.
+    ///
+    /// # Errors
+    ///
+    /// As [`render`](Self::render).
+    pub fn render_ops(
+        &mut self,
+        ops: &[crate::tessellate::FrameOp],
+        camera: &Camera2D,
+        background: Color,
+    ) -> Result<RgbaImage, RenderError> {
+        use crate::tessellate::FrameOp;
+
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform::from(camera)),
+        );
+
+        // Upload/refresh textures, then evict vanished ones.
+        let mut present = Vec::new();
+        for op in ops {
+            if let FrameOp::Image(q) = op {
+                self.ensure_texture(q);
+                present.push(q.source);
+            }
+        }
+        self.texture_cache.retain(|id, _| present.contains(id));
+
+        // Pre-build GPU buffers per op (must outlive the render pass).
+        enum GpuOp {
+            Vector {
+                vb: wgpu::Buffer,
+                ib: wgpu::Buffer,
+                count: u32,
+            },
+            Image {
+                vb: wgpu::Buffer,
+                ib: wgpu::Buffer,
+                source: manim_core::mobject::AnyId,
+            },
+        }
+        let mut gpu_ops = Vec::new();
+        for op in ops {
+            match op {
+                FrameOp::Vector(mesh) if !mesh.indices.is_empty() => {
+                    gpu_ops.push(GpuOp::Vector {
+                        vb: self
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("manim-render vertices"),
+                                contents: bytemuck::cast_slice(&mesh.vertices),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            }),
+                        ib: self
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("manim-render indices"),
+                                contents: bytemuck::cast_slice(&mesh.indices),
+                                usage: wgpu::BufferUsages::INDEX,
+                            }),
+                        count: mesh.indices.len() as u32,
+                    });
+                }
+                FrameOp::Vector(_) => {}
+                FrameOp::Image(q) => {
+                    // Two triangles over corners [TL,TR,BR,BL] with UVs.
+                    let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+                    let verts: Vec<ImageVertex> = (0..4)
+                        .map(|i| ImageVertex {
+                            position: q.corners[i],
+                            uv: uvs[i],
+                        })
+                        .collect();
+                    let idx: [u32; 6] = [0, 1, 2, 0, 2, 3];
+                    gpu_ops.push(GpuOp::Image {
+                        vb: self
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("manim-render image vertices"),
+                                contents: bytemuck::cast_slice(&verts),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            }),
+                        ib: self
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("manim-render image indices"),
+                                contents: bytemuck::cast_slice(&idx),
+                                usage: wgpu::BufferUsages::INDEX,
+                            }),
+                        source: q.source,
+                    });
+                }
+            }
+        }
+
+        let bg = background.premultiplied();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("manim-render ops encoder"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("manim-render ops pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,
+                    resolve_target: Some(&self.color_view),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: bg[0] as f64,
+                            g: bg[1] as f64,
+                            b: bg[2] as f64,
+                            a: bg[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            for op in &gpu_ops {
+                match op {
+                    GpuOp::Vector { vb, ib, count } => {
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_bind_group(0, &self.bind_group, &[]);
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..*count, 0, 0..1);
+                    }
+                    GpuOp::Image { vb, ib, source } => {
+                        if let Some(tex) = self.texture_cache.get(source) {
+                            pass.set_pipeline(&self.image_pipeline.pipeline);
+                            pass.set_bind_group(0, &self.bind_group, &[]);
+                            pass.set_bind_group(1, &tex.bind_group, &[]);
+                            pass.set_vertex_buffer(0, vb.slice(..));
+                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                            pass.draw_indexed(0..6, 0, 0..1);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.copy_and_read(encoder)
     }
 
     /// Renders `mesh` under `camera` over `background`, returning the pixels.
@@ -610,6 +986,13 @@ impl TextureTarget {
             None,
         );
 
+        self.copy_and_read(encoder)
+    }
+
+    /// Copies the resolved color texture into the readback buffer, submits, waits,
+    /// and builds the tightly-packed [`RgbaImage`].
+    fn copy_and_read(&self, encoder: wgpu::CommandEncoder) -> Result<RgbaImage, RenderError> {
+        let mut encoder = encoder;
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.color_texture,
@@ -751,8 +1134,8 @@ impl OffscreenRenderer {
     ///
     /// Propagates [`TextureTarget::render`] failures.
     pub fn render_display_list(&mut self, list: &DisplayList) -> Result<RgbaImage, RenderError> {
-        let mesh = self.cache.tessellate(list);
-        self.target.render(&mesh, &self.camera, self.background)
+        let ops = self.cache.tessellate_ops(list);
+        self.target.render_ops(&ops, &self.camera, self.background)
     }
 
     /// Renders a [`Frame`](manim_core::scene::Frame), following its camera.
@@ -777,8 +1160,8 @@ impl OffscreenRenderer {
         self.camera = Camera2D::from(&frame.camera);
         self.background = frame.camera.background;
         self.cache.set_zoom(frame.camera.height);
-        let mesh = self.cache.tessellate(&frame.display_list);
-        self.target.render(&mesh, &self.camera, self.background)
+        let ops = self.cache.tessellate_ops(&frame.display_list);
+        self.target.render_ops(&ops, &self.camera, self.background)
     }
 
     /// Renders `list` and writes it to `path` as a PNG.

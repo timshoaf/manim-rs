@@ -5,7 +5,7 @@
 //! | --- | --- |
 //! | creation | [`Create`], [`Uncreate`], [`DrawBorderThenFill`], [`ShowIncreasingSubsets`], [`ShowSubmobjectsOneByOne`] |
 //! | fading | [`FadeIn`], [`FadeOut`] |
-//! | transform | [`Transform`], [`TransformInto`], [`ReplacementTransform`], [`TransformFromCopy`], [`FadeTransform`], [`Restore`], [`ScaleInPlace`], [`ShrinkToCenter`], [`Swap`], [`CyclicReplace`] |
+//! | transform | [`Transform`], [`TransformInto`], [`ReplacementTransform`], [`TransformFromCopy`], [`FadeTransform`], [`Restore`], [`ScaleInPlace`], [`ShrinkToCenter`], [`Swap`], [`CyclicReplace`], [`TransformMatchingShapes`] |
 //! | movement/rotation | [`Shift`], [`MoveTo`], [`Rotate`], [`Rotating`], [`MoveAlongPath`] |
 //! | apply | [`Homotopy`], [`ApplyPointwiseFunction`], [`ApplyFunction`], [`ApplyMatrix`], [`MaintainPositionRelativeTo`] |
 //! | indication | [`Indicate`], [`Flash`], [`FocusOn`], [`Circumscribe`], [`Wiggle`], [`ApplyWave`], [`ShowPassingFlash`], [`ChangeSpeed`] |
@@ -27,6 +27,7 @@ mod indication;
 mod movement_rotation;
 pub mod paths;
 mod transform;
+mod transform_matching;
 mod updaters;
 mod value_tracker;
 
@@ -53,5 +54,6 @@ pub use transform::{
     CyclicReplace, FadeTransform, ReplacementTransform, Restore, ScaleInPlace, ShrinkToCenter,
     Swap, Transform, TransformFromCopy, TransformInto,
 };
+pub use transform_matching::{match_shapes, MatchResult, TransformMatchingShapes};
 pub use updaters::{UpdateFromAlphaFunc, UpdateFromFunc, UpdaterCtx};
 pub use value_tracker::{ComplexValueTracker, SetValue, ValueTracker};

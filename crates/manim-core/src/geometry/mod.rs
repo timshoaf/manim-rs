@@ -19,16 +19,21 @@
 //! | `VGroup` | [`VGroup`] |
 
 mod arc;
+mod brace;
 mod group;
 mod line;
 mod polygram;
 mod vectorized;
 
 pub use arc::{AnnularSector, Annulus, Arc, ArcBetweenPoints, Circle, Dot, Ellipse, Sector};
+pub use brace::Brace;
 pub use group::VGroup;
-pub use line::{Angle, Arrow, DashedLine, DoubleArrow, Elbow, Line, RightAngle, Vector};
+pub use line::{
+    Angle, Arrow, DashedLine, DoubleArrow, Elbow, Line, RightAngle, TangentLine, Vector,
+};
 pub use polygram::{
-    Polygon, Polygram, Rectangle, RegularPolygon, RoundedRectangle, Square, Star, Triangle,
+    Polygon, Polygram, Rectangle, RegularPolygon, RegularPolygram, RoundedRectangle, Square, Star,
+    Triangle,
 };
 pub use vectorized::{
     CurvesAsSubmobjects, DashedVMobject, TracedPath, VDict, VMobject, VectorizedPoint,

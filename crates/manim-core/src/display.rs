@@ -9,11 +9,72 @@
 //! Build one with
 //! [`SceneState::display_list`](crate::scene_state::SceneState::display_list).
 
+use std::sync::Arc;
+
 use manim_color::Color;
 use manim_math::path::Path;
 use manim_math::Point;
 
 use crate::mobject::AnyId;
+
+/// Raw RGBA8 pixel data for an [`ImagePaint`], row-major, 4 bytes per pixel.
+#[derive(Clone, PartialEq)]
+pub struct ImageData {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// `width × height × 4` RGBA bytes (sRGB, straight alpha).
+    pub rgba: Vec<u8>,
+}
+
+impl std::fmt::Debug for ImageData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageData")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bytes", &self.rgba.len())
+            .finish()
+    }
+}
+
+/// Texture sampling mode for an [`ImagePaint`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sampler {
+    /// Bilinear filtering (smooth); manim's default.
+    Linear,
+    /// Nearest-neighbor (crisp pixels).
+    Nearest,
+}
+
+/// A resolved raster-image paint: the pixels plus the sampler. Carried by an
+/// [`ImageMobject`](crate::image_mobject::ImageMobject)'s [`DrawItem`], whose
+/// `path` is the world-space quad the texture maps onto.
+///
+/// Equality is by pixel-buffer identity ([`Arc`] pointer) plus sampler, so a
+/// renderer can cache the uploaded texture cheaply.
+#[derive(Clone)]
+pub struct ImagePaint {
+    /// The shared pixel data.
+    pub data: Arc<ImageData>,
+    /// How the texture is sampled.
+    pub sampler: Sampler,
+}
+
+impl PartialEq for ImagePaint {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.data, &other.data) && self.sampler == other.sampler
+    }
+}
+
+impl std::fmt::Debug for ImagePaint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImagePaint")
+            .field("data", &self.data)
+            .field("sampler", &self.sampler)
+            .finish()
+    }
+}
 
 /// A resolved linear gradient: `(position, color)` stops along a world-space
 /// axis, with opacity already folded into each stop's alpha.
@@ -127,6 +188,10 @@ pub struct DrawItem {
     /// A stroke drawn *behind* the fill (manim's background stroke), or `None`.
     /// Renderers must draw this before the fill so it reads as an outline.
     pub background_stroke: Option<Stroke>,
+    /// A raster image mapped onto the item's quad [`path`](Self::path), or
+    /// `None`. When set, the renderer draws the textured quad (respecting
+    /// `z_index`) instead of vector fill.
+    pub image: Option<ImagePaint>,
     /// Draw order key; higher draws on top.
     pub z_index: i32,
     /// The mobject this item came from.

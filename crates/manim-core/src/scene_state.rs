@@ -663,7 +663,12 @@ impl SceneState {
                             width,
                             gradient: None,
                         });
-                if fill.is_none() && stroke.is_none() && background_stroke.is_none() {
+                let image = data.image.clone();
+                if fill.is_none()
+                    && stroke.is_none()
+                    && background_stroke.is_none()
+                    && image.is_none()
+                {
                     continue;
                 }
                 items.push(DrawItem {
@@ -671,6 +676,7 @@ impl SceneState {
                     fill,
                     stroke,
                     background_stroke,
+                    image,
                     z_index: data.z_index,
                     source: member,
                     generation: data.generation,

@@ -84,6 +84,9 @@ pub struct MobjectData {
     pub parent: Option<AnyId>,
     /// Geometry revision counter; bumped on every geometry mutation.
     pub generation: u64,
+    /// A raster image paint for image mobjects (the `path` is its quad); `None`
+    /// for ordinary vector mobjects.
+    pub image: Option<crate::display::ImagePaint>,
 }
 
 impl MobjectData {

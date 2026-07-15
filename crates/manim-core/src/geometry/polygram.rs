@@ -384,6 +384,77 @@ impl Polygram {
     }
 }
 
+/// A regular star polygon `{n/d}`: the vertices of a regular `num_vertices`-gon
+/// connected in steps of `density`, forming `gcd(num_vertices, density)` closed
+/// loops. Port of manim CE's `RegularPolygram`.
+///
+/// ```
+/// use manim_core::geometry::RegularPolygram;
+/// use manim_core::mobject::Mobject;
+/// // A pentagram {5/2} is a single self-intersecting loop.
+/// assert_eq!(RegularPolygram::new(5, 2).data().path.subpaths.len(), 1);
+/// // A hexagram {6/2} is two overlaid triangles.
+/// assert_eq!(RegularPolygram::new(6, 2).data().path.subpaths.len(), 2);
+/// ```
+#[derive(Clone)]
+pub struct RegularPolygram {
+    data: MobjectData,
+    num_vertices: usize,
+    density: usize,
+}
+impl_mobject!(RegularPolygram);
+
+impl RegularPolygram {
+    /// A `{num_vertices / density}` polygram of circumradius `1`, pointing up.
+    pub fn new(num_vertices: usize, density: usize) -> Self {
+        let n = num_vertices.max(2);
+        let d = density.max(1).min(n - 1);
+        let start_angle = PI / 2.0;
+        let verts: Vec<Point> = (0..n)
+            .map(|k| {
+                let a = start_angle + TAU * k as f32 / n as f32;
+                Point::new(a.cos(), a.sin(), 0.0)
+            })
+            .collect();
+        // Walk vertices in steps of `d`; each unvisited start seeds one loop.
+        let mut visited = vec![false; n];
+        let mut subpaths = Vec::new();
+        for s in 0..n {
+            if visited[s] {
+                continue;
+            }
+            let mut loop_pts = Vec::new();
+            let mut i = s;
+            loop {
+                visited[i] = true;
+                loop_pts.push(verts[i]);
+                i = (i + d) % n;
+                if i == s {
+                    break;
+                }
+            }
+            if loop_pts.len() >= 2 {
+                subpaths.push(super::polygon_subpath(&loop_pts));
+            }
+        }
+        Self {
+            data: MobjectData::new(Path { subpaths }, Style::stroked(WHITE)),
+            num_vertices: n,
+            density: d,
+        }
+    }
+
+    /// The number of outer vertices.
+    pub fn num_vertices(&self) -> usize {
+        self.num_vertices
+    }
+
+    /// The connection step (star density).
+    pub fn density(&self) -> usize {
+        self.density
+    }
+}
+
 /// A closed axis-aligned rectangle path of the given size, centered at the
 /// origin.
 fn rect_path(width: f32, height: f32) -> Path {

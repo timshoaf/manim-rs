@@ -16,13 +16,14 @@ use manim_core::animations::{Flash, Indicate};
 use manim_core::config::Config;
 use manim_core::geometry::{Arrow, Circle, Line, Square, Triangle};
 use manim_core::graphing::{Axes, NumberPlane};
+use manim_core::image_mobject::ImageMobject;
 use manim_core::mobject::Buildable;
 use manim_core::network::{Graph, GraphLayout};
 use manim_core::scene::Scene;
 use manim_core::scene_state::SceneState;
 use manim_core::style::Gradient;
 use manim_core::vector_field::{ArrowVectorField, StreamLines};
-use manim_math::{Point, LEFT, ORIGIN, RIGHT};
+use manim_math::{Point, DOWN, LEFT, ORIGIN, RIGHT};
 use manim_render::golden::assert_golden;
 use manim_render::renderer::OffscreenRenderer;
 
@@ -380,4 +381,44 @@ fn graph_circular() {
     scene.add(graph);
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("graph_circular", &img);
+}
+
+/// FE-101: an embedded raster image drawn between two vector shapes (z-order).
+#[test]
+fn image_between_shapes() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    // An 8×8 green/white checkerboard.
+    let mut px = Vec::with_capacity(8 * 8 * 4);
+    for y in 0..8u32 {
+        for x in 0..8u32 {
+            if (x + y) % 2 == 0 {
+                px.extend([0, 200, 80, 255]);
+            } else {
+                px.extend([255, 255, 255, 255]);
+            }
+        }
+    }
+
+    let mut scene = SceneState::new();
+    // Behind (z = -1): a large red square, so its border frames the image.
+    scene.add(
+        Square::new()
+            .with_fill(RED, 1.0)
+            .with_scale(1.6)
+            .with_z_index(-1),
+    );
+    // Middle (z = 0): the checkerboard image (default 2×2 scene units).
+    scene.add(ImageMobject::from_rgba(8, 8, px).with_z_index(0));
+    // Front (z = 1): a translucent blue circle overlapping a corner.
+    scene.add(
+        Circle::new()
+            .with_fill(BLUE, 0.7)
+            .with_shift(0.9 * RIGHT + 0.9 * DOWN)
+            .with_z_index(1),
+    );
+
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("image_between_shapes", &img);
 }

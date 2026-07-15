@@ -55,6 +55,7 @@ pub(crate) fn shared() -> MutexGuard<'static, FontSystem> {
 /// On wasm (no filesystem font discovery) this is identical to the embedded-only
 /// system.
 pub(crate) fn with_system() -> FontSystem {
+    #[cfg_attr(target_arch = "wasm32", allow(unused_mut))]
     let mut fs = FontSystem::new_with_fonts(embedded_sources());
     #[cfg(not(target_arch = "wasm32"))]
     fs.db_mut().load_system_fonts();
