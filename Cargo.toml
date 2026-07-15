@@ -7,10 +7,11 @@ members = [
     "crates/manim-render",
     "crates/manim-text",
     "crates/manim",
+    "crates/manim-dioxus",
 ]
-# Standalone wasm demo: a separate crate with path deps, kept out of the main
+# Standalone wasm demos: separate crates with path deps, kept out of the main
 # workspace so native builds stay lean and window/ffmpeg-free.
-exclude = ["examples/web-vanilla"]
+exclude = ["examples/web-vanilla", "examples/dioxus-app"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,7 +26,9 @@ manim-color = { path = "crates/manim-color" }
 manim-core = { path = "crates/manim-core" }
 manim-render = { path = "crates/manim-render" }
 manim-text = { path = "crates/manim-text" }
+manim-dioxus = { path = "crates/manim-dioxus" }
 
+dioxus = "0.6"
 glam = "0.30"
 slotmap = "1.0"
 thiserror = "2.0"

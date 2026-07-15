@@ -1,0 +1,16 @@
+[package]
+name = "manim-dioxus-gallery"
+description = "Standalone Dioxus web gallery for manim_rust's <ManimPlayer>"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Standalone — excluded from the root workspace (see the workspace `exclude`), so
+# the heavy dioxus tree doesn't burden native workspace builds. Path deps reach
+# the real crates.
+
+[dependencies]
+dioxus = { version = "0.6", features = ["web"] }
+manim-dioxus = { path = "../../crates/manim-dioxus" }
+manim-core = { path = "../../crates/manim-core" }

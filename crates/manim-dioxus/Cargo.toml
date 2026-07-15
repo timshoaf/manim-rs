@@ -1,0 +1,24 @@
+[package]
+name = "manim-dioxus"
+description = "Dioxus <ManimPlayer> component: manim_rust scenes as first-class web components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dioxus = { workspace = true }
+manim-core = { workspace = true }
+
+# wasm: the web renderer, the canvas surface, and the browser glue.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+dioxus = { workspace = true, features = ["web"] }
+manim-render = { workspace = true, features = ["web"] }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true }
+
+# NOTE: this crate intentionally does NOT inherit `[lints] workspace` — dioxus's
+# `#[component]` / `Props` derive macros generate public items that fight
+# `missing_docs = "deny"`. Every hand-written public item is still documented.

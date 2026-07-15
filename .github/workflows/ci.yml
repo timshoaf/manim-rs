@@ -38,5 +38,8 @@ jobs:
       # Renderer + facade, default (no window/ffmpeg) and with the browser `web` feature.
       - run: cargo check -p manim-render -p manim --target wasm32-unknown-unknown
       - run: cargo check -p manim-render -p manim --target wasm32-unknown-unknown --features web
-      # Standalone browser demo (excluded from the workspace).
+      # Dioxus <ManimPlayer> component.
+      - run: cargo check -p manim-dioxus --target wasm32-unknown-unknown
+      # Standalone browser demos (excluded from the workspace).
       - run: cargo build --target wasm32-unknown-unknown --manifest-path examples/web-vanilla/Cargo.toml
+      - run: cargo build --target wasm32-unknown-unknown --manifest-path examples/dioxus-app/Cargo.toml
