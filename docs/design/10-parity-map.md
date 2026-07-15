@@ -8,19 +8,26 @@ This file is the source of truth for the Linear backlog; update as work lands.
 ### geometry (M1)
 | CE | Rust | Status |
 |---|---|---|
-| Arc, ArcBetweenPoints, CurvedArrow, CurvedDoubleArrow | `geometry::arc` | ⬜ |
-| Circle, Dot, AnnotationDot, LabeledDot, Ellipse, Annulus, AnnularSector, Sector | `geometry::arc` | ⬜ |
-| Line, DashedLine, TangentLine, Elbow, Arrow, Vector, DoubleArrow | `geometry::line` | ⬜ |
-| Angle, RightAngle | `geometry::line` | ⬜ |
-| Polygram, Polygon, RegularPolygram, RegularPolygon, Star, Triangle | `geometry::polygram` | ⬜ |
-| Rectangle, Square, RoundedRectangle, Cutout | `geometry::polygram` | ⬜ |
-| ArrowTip variants (triangle/square/circle/stealth, filled/open) | `geometry::tips` | ⬜ |
+| Arc, ArcBetweenPoints, CurvedArrow, CurvedDoubleArrow | `geometry::arc` | ✅ |
+| Circle, Dot, AnnotationDot, LabeledDot, Ellipse, Annulus, AnnularSector, Sector | `geometry::arc` | 🟨 (LabeledDot/AnnotationDot need text) |
+| Line, DashedLine, TangentLine, Elbow, Arrow, Vector, DoubleArrow | `geometry::line` | 🟨 (TangentLine pending) |
+| Angle, RightAngle | `geometry::line` | ✅ |
+| Polygram, Polygon, RegularPolygram, RegularPolygon, Star, Triangle | `geometry::polygram` | 🟨 (RegularPolygram pending) |
+| Rectangle, Square, RoundedRectangle, Cutout | `geometry::polygram` | 🟨 (Cutout needs boolean ops) |
+| ArrowTip variants (triangle/square/circle/stealth, filled/open) | `geometry::tips` | 🟨 (filled triangle tip only) |
 | ArcPolygon, ArcPolygonFromArcs | `geometry::arc` | ⬜ |
 | Union, Difference, Intersection, Exclusion (boolean_ops) | `geometry::boolean_ops` | ⬜ (post-v1, via lyon/kurbo boolean) |
 
 ### types (M1)
-VMobject, VGroup, VDict, VectorizedPoint, CurvesAsSubmobjects, DashedVMobject,
-Group, Mobject, PMobject/Point (point clouds), ImageMobject — ⬜
+VMobject ✅, VGroup ✅, VDict ✅, VectorizedPoint ✅, CurvesAsSubmobjects ✅,
+DashedVMobject ✅, Mobject ✅; Group, PMobject/Point (point clouds),
+ImageMobject — ⬜
+
+### animation (M2) — core catalog ✅
+creation/fading/transform/movement/rotation/growing/apply/composition families,
+`.animate()`, updaters, ValueTracker, transform path functions all landed;
+remaining: indication (in progress), speedmodifier, TransformMatchingShapes,
+number animations (M4 dependency).
 
 ### text (M4)
 Text, Paragraph, MarkupText, Tex, MathTex, SingleStringMathTex, BulletedList,
