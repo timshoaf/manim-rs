@@ -1,10 +1,10 @@
 //! Dioxus `<ManimPlayer>` component: manim_rust scenes as first-class web
 //! components (FE-113 + FE-114 interactivity).
 //!
-//! Give [`ManimPlayer`] a scene ([`SceneBuilder`](manim_core::scene::SceneBuilder)
-//! that is also `Clone + PartialEq`) and it mounts a `<canvas>`, precomputes the
-//! scene's frames, and plays them by wall clock through
-//! [`CanvasSurface`](manim_render::CanvasSurface). Playback state lives in a
+//! Give [`ManimPlayer`] a scene (a `SceneBuilder` from `manim-core` that is
+//! also `Clone + PartialEq`) and it mounts a `<canvas>`, precomputes the
+//! scene's frames, and plays them by wall clock through `manim-render`'s
+//! `CanvasSurface` (a wasm-only type, hence no doc link). Playback state lives in a
 //! framework-independent [`PlayerState`] driven by a `requestAnimationFrame`
 //! loop that runs *outside* the Dioxus virtual DOM; the component only touches
 //! it through [`Signal`]s and the [`SceneController`] handle.
@@ -74,9 +74,9 @@ use manim_core::scene_state::SceneState;
 /// The pointer's state over a player, in **scene** coordinates.
 ///
 /// `position` is the cursor mapped through the letterbox fit and camera
-/// projection (see
-/// [`CanvasSurface::client_to_scene`](manim_render::CanvasSurface::client_to_scene)),
-/// so it is directly usable in a scene (move a mobject to `pointer.position`).
+/// projection (see `CanvasSurface::client_to_scene` in `manim-render`,
+/// a wasm-only item), so it is directly usable in a scene (move a mobject to
+/// `pointer.position`).
 /// Defaults to the origin, not pressed.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct PointerState {
