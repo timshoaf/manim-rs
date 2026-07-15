@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc dcb40a0800851c012b365db79a7272e174abb94bd6b9c37bde77c5f4dc81dff0 # shrinks to a = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.645141 }, b = Color { r: 0.0, g: 0.0, b: 0.0, a: 0.13572423 }
+cc 9120ee4495deb7bab694c0144b8348da159257d8716a2a2ef52cca613c5da666 # shrinks to stops = [Color { r: 0.0, g: 0.0, b: 0.0, a: 0.4949653 }, Color { r: 0.0, g: 0.0, b: 0.0, a: 0.23547365 }], length = 2
