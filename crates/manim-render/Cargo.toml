@@ -18,6 +18,12 @@ pollster = { workspace = true }
 bytemuck = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
+winit = { workspace = true, optional = true }
+
+[features]
+## Realtime winit preview window (`RealtimePlayer`). Off by default so headless,
+## CI, and wasm builds stay lean and window-system-free.
+preview = ["dep:winit"]
 
 [dev-dependencies]
 approx = { workspace = true }

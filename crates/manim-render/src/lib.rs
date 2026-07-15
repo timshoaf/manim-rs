@@ -17,6 +17,11 @@
 //!   [`Pipeline`](renderer::Pipeline), offscreen
 //!   [`TextureTarget`](renderer::TextureTarget), and the high-level
 //!   [`OffscreenRenderer`](renderer::OffscreenRenderer).
+//! - [`export`] — [`VideoExporter`](export::VideoExporter): MP4 (via `ffmpeg`)
+//!   and PNG-sequence output.
+//! - [`layout`] — letterbox math for fitting a fixed-aspect frame in a window.
+//! - [`preview`] *(feature `preview`)* — the winit
+//!   [`RealtimePlayer`](preview::RealtimePlayer) window.
 //!
 //! # Quickstart
 //!
@@ -34,15 +39,24 @@
 //! # Ok::<(), manim_render::RenderError>(())
 //! ```
 //!
-//! Windowed rendering (a `SurfaceTarget`) is deferred to FE-95; the
-//! [`Pipeline`](renderer::Pipeline) already renders into any
-//! [`wgpu::TextureView`], so it slots in without a redesign.
+//! Realtime windowed playback lives in [`preview`] (behind the `preview`
+//! feature); it reuses the same [`Pipeline`](renderer::Pipeline), which renders
+//! into any [`wgpu::TextureView`] — surface or offscreen.
 
 pub mod camera;
+pub mod export;
 pub mod golden;
+pub mod layout;
 pub mod renderer;
 pub mod tessellate;
 
+#[cfg(feature = "preview")]
+pub mod preview;
+
 pub use camera::Camera2D;
+pub use export::VideoExporter;
 pub use renderer::{GpuContext, OffscreenRenderer, Pipeline, RenderError, TextureTarget};
 pub use tessellate::{FrameMesh, MeshData, TessellationCache, Vertex};
+
+#[cfg(feature = "preview")]
+pub use preview::RealtimePlayer;

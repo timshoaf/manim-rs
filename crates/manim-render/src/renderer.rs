@@ -76,6 +76,15 @@ pub enum RenderError {
     /// Encoding the output image failed.
     #[error("image encode error: {0}")]
     Image(#[from] image::ImageError),
+    /// `ffmpeg` was not found on `PATH` (needed for video export).
+    #[error("ffmpeg not found on PATH; install ffmpeg to export video")]
+    FfmpegNotFound,
+    /// `ffmpeg` ran but exited with a failure status.
+    #[error("ffmpeg failed: {0}")]
+    FfmpegFailed(String),
+    /// Building the scene (running its `construct`) failed.
+    #[error(transparent)]
+    Core(#[from] manim_core::error::CoreError),
 }
 
 /// The trivial vertex+fragment shader: transform by the camera, pass color.

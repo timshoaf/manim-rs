@@ -22,14 +22,12 @@
 //!     }
 //! }
 //!
-//! let mut scene = Scene::build(&SquareToCircle, Config::low())?;
-//! let mut renderer = OffscreenRenderer::new(scene.config())?;
-//! for (t, list) in scene.frames() {
-//!     let _image = renderer.render_display_list(&list)?;
-//!     let _ = t; // encode, save, or stream the frame
-//! }
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! // One-liner render to MP4 (needs `ffmpeg` on PATH):
+//! manim::render(&SquareToCircle, Config::low(), "square_to_circle.mp4")?;
+//! # Ok::<(), manim::render::RenderError>(())
 //! ```
+
+use std::path::Path;
 
 pub use manim_color as color;
 pub use manim_core as core;
@@ -38,6 +36,77 @@ pub use manim_render as render;
 
 pub use manim_core::animations;
 pub use manim_core::error::{CoreError, Result};
+
+use manim_core::config::Config;
+use manim_core::scene::{Scene, SceneBuilder};
+use manim_render::export::VideoExporter;
+use manim_render::RenderError;
+
+/// Builds `builder` into a [`Scene`] and renders it to an MP4 at `out`.
+///
+/// This is the batteries-included offline entry point: it runs the scene's
+/// `construct`, then streams every frame through `ffmpeg` (which must be on
+/// `PATH`). For a PNG sequence or finer control, use
+/// [`render::VideoExporter`](manim_render::export::VideoExporter) directly.
+///
+/// # Errors
+///
+/// [`RenderError::Core`](manim_render::RenderError::Core) if `construct` fails,
+/// [`RenderError::FfmpegNotFound`](manim_render::RenderError::FfmpegNotFound) if
+/// `ffmpeg` is missing, or a GPU/encode error.
+///
+/// ```no_run
+/// use manim::prelude::*;
+/// # use manim::animations::Create;
+/// struct Demo;
+/// impl SceneBuilder for Demo {
+///     fn construct(&self, scene: &mut Scene) -> Result<()> {
+///         let c = scene.add(Circle::new());
+///         scene.play(Create::new(c))?;
+///         Ok(())
+///     }
+/// }
+/// manim::render(&Demo, Config::low(), "demo.mp4")?;
+/// # Ok::<(), manim::render::RenderError>(())
+/// ```
+pub fn render(
+    builder: &dyn SceneBuilder,
+    config: Config,
+    out: impl AsRef<Path>,
+) -> std::result::Result<(), RenderError> {
+    let mut scene = Scene::build(builder, config.clone())?;
+    VideoExporter::render_to_mp4(&mut scene, out, &config)
+}
+
+/// Builds `builder` into a [`Scene`] and opens a realtime preview window.
+///
+/// Available with the `preview` feature. Blocks until the user closes the
+/// window (Space play/pause, ←/→ seek, R restart, Esc quit).
+///
+/// # Errors
+///
+/// [`RenderError::Core`](manim_render::RenderError::Core) if `construct` fails,
+/// or a window/GPU-surface error.
+///
+/// ```no_run
+/// use manim::prelude::*;
+/// # use manim::animations::Create;
+/// # struct Demo;
+/// # impl SceneBuilder for Demo {
+/// #     fn construct(&self, scene: &mut Scene) -> Result<()> {
+/// #         let c = scene.add(Circle::new());
+/// #         scene.play(Create::new(c))?;
+/// #         Ok(())
+/// #     }
+/// # }
+/// manim::preview(&Demo, Config::low())?;
+/// # Ok::<(), manim::render::RenderError>(())
+/// ```
+#[cfg(feature = "preview")]
+pub fn preview(builder: &dyn SceneBuilder, config: Config) -> std::result::Result<(), RenderError> {
+    let mut scene = Scene::build(builder, config)?;
+    manim_render::RealtimePlayer::new(&mut scene).run()
+}
 
 /// Everything you need to build scenes, in one import.
 ///

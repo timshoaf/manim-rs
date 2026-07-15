@@ -13,8 +13,17 @@ manim-color = { workspace = true }
 manim-core = { workspace = true }
 manim-render = { workspace = true }
 
+[features]
+## Realtime winit preview window (re-exports `manim-render`'s `preview`). Off by
+## default so headless/CI/wasm builds stay window-system-free.
+preview = ["manim-render/preview"]
+
 [dev-dependencies]
 approx = { workspace = true }
+
+[[example]]
+name = "preview"
+required-features = ["preview"]
 
 [lints]
 workspace = true
