@@ -20,6 +20,9 @@ manim-text = { workspace = true }
 preview = ["manim-render/preview"]
 ## Browser canvas rendering on wasm32 (re-exports `manim-render`'s `web`).
 web = ["manim-render/web"]
+## Syntax-highlighted `Code` mobject (re-exports `manim-text`'s `code`; pulls in
+## `syntect`). Off by default to keep base builds lean.
+code = ["manim-text/code"]
 
 [dev-dependencies]
 approx = { workspace = true }

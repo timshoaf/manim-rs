@@ -2536,6 +2536,7 @@ dependencies = [
  "manim-color",
  "manim-core",
  "manim-math",
+ "syntect",
  "ttf-parser 0.24.1",
  "typst",
  "typst-assets",

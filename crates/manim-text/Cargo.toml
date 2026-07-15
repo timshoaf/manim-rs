@@ -20,6 +20,16 @@ ttf-parser = { version = "0.24", default-features = false, features = ["std", "g
 # fonts (New Computer Modern) via typst-assets.
 typst = "0.13"
 typst-assets = { version = "0.13", features = ["fonts"] }
+# Syntax highlighting for `Code`, behind the off-by-default `code` feature so the
+# base build stays lean and wasm-strict. `default-fancy` uses the pure-Rust
+# fancy-regex engine (no C `onig` dependency) and bundles default syntaxes+themes.
+syntect = { version = "5", default-features = false, features = [
+    "default-fancy",
+], optional = true }
+
+[features]
+## Syntax-highlighted `Code` mobject (pulls in `syntect`). Off by default.
+code = ["dep:syntect"]
 
 [lints]
 workspace = true

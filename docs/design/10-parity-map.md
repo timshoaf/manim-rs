@@ -41,8 +41,9 @@ Text ✅, Paragraph ✅, MarkupText ✅, Tex ✅, MathTex ✅, Typst ✅,
 BulletedList ✅, Title ✅, DecimalNumber ✅, Integer ✅, Variable ✅, Write ✅.
 MathTex substring **isolation** ✅ (FE-99: `get_parts_by_tex` / `set_color_by_tex`
 via typst glyph spans, occurrence-level; synthesized glyphs fall back to
-shape-matching). Gaps: `Code` (syntax highlighting), monospace/`tt` runs (FE-100)
-⬜; `SingleStringMathTex` folded into `MathTex`.
+shape-matching). `Code` ✅ + monospace/`tt` markup runs ✅ (FE-100: syntect
+highlighting behind the off-by-default `code` feature; `<tt>` uses bundled DejaVu
+Sans Mono). `SingleStringMathTex` folded into `MathTex`.
 
 ### svg / braces (M4) ✅
 SVGMobject ✅, Brace ✅ (+ `Brace::attached_to`), BraceLabel ✅ (`manim-text`).
@@ -100,8 +101,6 @@ Multi-camera zoomed display — ⬜ (ZoomedScene, FE-120).
 - **3D rendering** waits on FE-107 (camera/projection/depth-sort); the geometry is
   already headless-testable.
 - **ZoomedScene** and **sound** (`add_sound`) — pending.
-- **Code** (FE-100) — syntax-highlighted code blocks pending. (MathTex substring
-  isolation, FE-99, is done — see the text row.)
 - OpenGL-renderer-specific API (CE's experimental opengl namespace): n/a — our
   renderer IS the GPU renderer.
 - `manim cfg` / plugin system: replaced by Cargo features & Rust traits.

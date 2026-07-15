@@ -16,6 +16,9 @@ use cosmic_text::FontSystem;
 /// The default bundled font family name.
 pub const DEFAULT_FONT: &str = "DejaVu Sans";
 
+/// The bundled monospace font family (for `<tt>` markup and [`Code`](crate::Code)).
+pub const MONO_FONT: &str = "DejaVu Sans Mono";
+
 /// Embedded DejaVu Sans regular.
 pub(crate) static DEJAVU_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 /// Embedded DejaVu Sans bold.
@@ -25,14 +28,20 @@ pub(crate) static DEJAVU_OBLIQUE: &[u8] = include_bytes!("../assets/DejaVuSans-O
 /// Embedded DejaVu Sans bold oblique.
 pub(crate) static DEJAVU_BOLD_OBLIQUE: &[u8] =
     include_bytes!("../assets/DejaVuSans-BoldOblique.ttf");
+/// Embedded DejaVu Sans Mono regular.
+pub(crate) static DEJAVU_MONO: &[u8] = include_bytes!("../assets/DejaVuSansMono.ttf");
+/// Embedded DejaVu Sans Mono bold.
+pub(crate) static DEJAVU_MONO_BOLD: &[u8] = include_bytes!("../assets/DejaVuSansMono-Bold.ttf");
 
-/// The four embedded DejaVu faces as `fontdb` sources.
+/// The embedded DejaVu faces (sans + mono) as `fontdb` sources.
 fn embedded_sources() -> Vec<fontdb::Source> {
     [
         DEJAVU_REGULAR,
         DEJAVU_BOLD,
         DEJAVU_OBLIQUE,
         DEJAVU_BOLD_OBLIQUE,
+        DEJAVU_MONO,
+        DEJAVU_MONO_BOLD,
     ]
     .into_iter()
     .map(|bytes| fontdb::Source::Binary(Arc::new(bytes.to_vec())))

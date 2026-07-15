@@ -36,6 +36,8 @@
 //! `SVGMobject` are later issues (FE-99–102).
 
 mod brace_label;
+#[cfg(feature = "code")]
+mod code;
 mod decimal;
 mod digits;
 mod extras;
@@ -56,9 +58,11 @@ mod vector_labels;
 mod write;
 
 pub use brace_label::{BraceLabel, BRACE_LABEL_BUFF, BRACE_LABEL_FONT_SIZE};
+#[cfg(feature = "code")]
+pub use code::{Code, CODE_CORNER_RADIUS, CODE_PADDING, DEFAULT_CODE_THEME};
 pub use decimal::{ChangeDecimalToValue, ChangingDecimal, DecimalNumber, Integer, Variable};
 pub use extras::{BulletedList, Title, LIST_BUFF};
-pub use font::DEFAULT_FONT;
+pub use font::{DEFAULT_FONT, MONO_FONT};
 pub use graph_labels::{AxesLabels, BarChartLabels, CoordinateLabels, GraphLabel, LABEL_FONT_SIZE};
 pub use labeled_dot::{
     LabeledArrow, LabeledDot, LabeledLine, LABELED_DOT_RADIUS, LABELED_LINE_FONT_SIZE,

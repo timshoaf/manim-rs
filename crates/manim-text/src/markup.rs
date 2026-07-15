@@ -1,10 +1,11 @@
 //! [`MarkupText`]: a pragmatic subset of Pango markup rendered as styled glyphs.
 //!
 //! Supported tags: `<b>` (bold), `<i>` (italic), `<u>` (underline), `<s>`
-//! (strikethrough), `<sub>`/`<sup>` (subscript/superscript), and
-//! `<span foreground="#hex" size="…">` (color and size). Weight/slant reuse the
-//! same rich-text span shaping as [`Text`](crate::Text)'s `t2w`/`t2s`; underline
-//! and strike become thin filled rules. Unknown tags are a clear error.
+//! (strikethrough), `<tt>` (monospace), `<sub>`/`<sup>` (subscript/superscript),
+//! and `<span foreground="#hex" size="…">` (color and size). Weight/slant reuse
+//! the same rich-text span shaping as [`Text`](crate::Text)'s `t2w`/`t2s`;
+//! underline and strike become thin filled rules; `<tt>` selects the bundled
+//! `MONO_FONT` (DejaVu Sans Mono). Unknown tags are a clear error.
 //!
 //! `<sub>`/`<sup>` shrink the run to 65% and offset the baseline ±0.35 em;
 //! cosmic-text shapes each run at its own size (so horizontal advances stay
@@ -76,6 +77,8 @@ struct Attr {
     baseline_em: f32,
     /// Whether a `<sub>`/`<sup>` is already open (nesting is rejected).
     script: bool,
+    /// Whether this run is monospace (`<tt>`).
+    mono: bool,
 }
 
 impl Default for Attr {
@@ -90,6 +93,7 @@ impl Default for Attr {
             abs_pt: None,
             baseline_em: 0.0,
             script: false,
+            mono: false,
         }
     }
 }
@@ -171,6 +175,7 @@ fn apply_open_tag(tag: &str, attr: &mut Attr) -> Result<(), MarkupError> {
         "i" => attr.italic = true,
         "u" => attr.underline = true,
         "s" => attr.strike = true,
+        "tt" => attr.mono = true,
         "sub" | "sup" => {
             if attr.script {
                 return Err(MarkupError::NestedScript);
@@ -350,10 +355,15 @@ fn shape(spans: &[Span], font_size: f32) -> (Path, Vec<GlyphInfo>) {
                 .abs_pt
                 .unwrap_or(font_size * span.attr.scale)
                 .max(1.0);
+            let family = if span.attr.mono {
+                font::MONO_FONT
+            } else {
+                font::DEFAULT_FONT
+            };
             (
                 span.text.as_str(),
                 Attrs::new()
-                    .family(Family::Name(font::DEFAULT_FONT))
+                    .family(Family::Name(family))
                     .metrics(Metrics::new(eff_fs, eff_fs * 1.2))
                     .weight(if span.attr.bold {
                         Weight::BOLD
@@ -543,6 +553,24 @@ mod tests {
         assert!((named[0].attr.scale - 1.44).abs() < 1e-4);
         let abs = parse(r#"<span size="12">x</span>"#).unwrap();
         assert_eq!(abs[0].attr.abs_pt, Some(12.0));
+    }
+
+    #[test]
+    fn tt_is_monospace() {
+        // Center-to-center gap of two identical glyphs = that glyph's advance.
+        let gap = |markup: &str| -> f32 {
+            let mut scene = SceneState::new();
+            let m = MarkupText::new(markup).unwrap().add_to(&mut scene);
+            let kids = scene.get_dyn(m.erase()).data().children.clone();
+            scene.family_bounding_box(kids[1]).center().x
+                - scene.family_bounding_box(kids[0]).center().x
+        };
+        // Monospace: 'I' and 'M' advance identically → equal gaps.
+        let (mi, mm) = (gap("<tt>II</tt>"), gap("<tt>MM</tt>"));
+        assert!((mi - mm).abs() < 0.05, "mono gaps {mi} vs {mm}");
+        // Proportional (default): 'I' is narrower than 'M' → smaller gap.
+        let (pi, pm) = (gap("II"), gap("MM"));
+        assert!(pi < pm - 0.05, "prop gaps {pi} vs {pm}");
     }
 
     #[test]
