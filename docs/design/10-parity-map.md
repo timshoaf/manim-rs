@@ -63,10 +63,10 @@ multi-camera (zoomed display); ThreeDCamera phi/theta/gamma/focal_distance.
 ## utils
 | CE module | Rust home | Milestone |
 |---|---|---|
-| bezier | manim-math::bezier | M0 |
-| rate_functions | manim-math::rate_functions | M0 |
-| space_ops | manim-math::space_ops | M0 |
-| color | manim-color | M0 |
+| bezier | manim-math::bezier | M0 ✅ |
+| rate_functions | manim-math::rate_functions | M0 ✅ |
+| space_ops | manim-math::space_ops | M0 ✅ |
+| color | manim-color | M0 ✅ (XKCD/X11 feature catalogs pending) |
 | paths (straight/arc/spiral path funcs for transforms) | manim-math::paths | M2 |
 | config | manim-core::config | M1 |
 | images/ipython/hashing/caching | n/a (Python-specific) | — |

@@ -54,12 +54,22 @@ impl Config {
     /// assert_eq!(Config::low().pixel_width, 854);
     /// ```
     pub fn low() -> Self {
-        Self { pixel_width: 854, pixel_height: 480, fps: 15, ..Self::default() }
+        Self {
+            pixel_width: 854,
+            pixel_height: 480,
+            fps: 15,
+            ..Self::default()
+        }
     }
 
     /// manim CE's `-qm` quality preset: 1280×720 at 30 fps.
     pub fn medium() -> Self {
-        Self { pixel_width: 1280, pixel_height: 720, fps: 30, ..Self::default() }
+        Self {
+            pixel_width: 1280,
+            pixel_height: 720,
+            fps: 30,
+            ..Self::default()
+        }
     }
 
     /// manim CE's `-qh` quality preset: 1920×1080 at 60 fps.
@@ -69,7 +79,12 @@ impl Config {
 
     /// manim CE's `-qk` quality preset: 3840×2160 at 60 fps.
     pub fn fourk() -> Self {
-        Self { pixel_width: 3840, pixel_height: 2160, fps: 60, ..Self::default() }
+        Self {
+            pixel_width: 3840,
+            pixel_height: 2160,
+            fps: 60,
+            ..Self::default()
+        }
     }
 
     /// Sets the background color (builder style).
