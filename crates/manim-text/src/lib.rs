@@ -36,12 +36,16 @@
 //! `SVGMobject` are later issues (FE-99–102).
 
 mod font;
+pub mod latex;
+mod math;
 mod outline;
 mod paragraph;
 mod text;
 mod write;
 
 pub use font::DEFAULT_FONT;
+pub use latex::MathError;
+pub use math::{MathTex, Tex, Typst, DEFAULT_MATH_FONT_SIZE};
 pub use paragraph::Paragraph;
 pub use text::{Alignment, Slant, Text, Weighting, DEFAULT_FONT_SIZE, SCENE_UNITS_PER_PIXEL};
 pub use write::Write;

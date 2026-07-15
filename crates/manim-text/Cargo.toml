@@ -16,6 +16,10 @@ manim-color = { workspace = true }
 # root Cargo.toml.
 cosmic-text = { version = "0.12", default-features = false, features = ["std"] }
 ttf-parser = { version = "0.24", default-features = false, features = ["std", "glyph-names"] }
+# typst math typesetting (FE-99). Heavy but deterministic; bundles its own math
+# fonts (New Computer Modern) via typst-assets.
+typst = "0.13"
+typst-assets = { version = "0.13", features = ["fonts"] }
 
 [lints]
 workspace = true
