@@ -45,10 +45,12 @@ pub mod error;
 pub mod geometry;
 pub mod graphing;
 pub mod mobject;
+pub mod network;
 pub mod scene;
 pub mod scene_state;
 pub mod style;
 pub mod timeline;
+pub mod vector_field;
 
 pub use animation::{AnimConfig, Animation, IntoAnimations};
 pub use camera::{Camera2D, CameraFrame};
@@ -86,10 +88,12 @@ pub mod prelude {
     pub use crate::mobject::{
         AnyId, BoundingBox, Buildable, Mobject, MobjectData, MobjectExt, MobjectId, RefTarget,
     };
+    pub use crate::network::{DiGraph, Graph, GraphLayout};
     pub use crate::scene::{Frame, Scene, SceneBuilder};
     pub use crate::scene_state::{SceneState, UpdaterCtx};
     pub use crate::style::Style;
     pub use crate::timeline::Section;
+    pub use crate::vector_field::{ArrowVectorField, StreamLines, VectorField};
 
     pub use manim_color::{Color, BLACK, BLUE, GREEN, ORANGE, PINK, PURPLE, RED, WHITE, YELLOW};
     pub use manim_math::rate_functions::RateFn;

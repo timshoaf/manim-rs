@@ -17,10 +17,12 @@ use manim_core::config::Config;
 use manim_core::geometry::{Arrow, Circle, Line, Square, Triangle};
 use manim_core::graphing::{Axes, NumberPlane};
 use manim_core::mobject::Buildable;
+use manim_core::network::{Graph, GraphLayout};
 use manim_core::scene::Scene;
 use manim_core::scene_state::SceneState;
 use manim_core::style::Gradient;
-use manim_math::{LEFT, ORIGIN, RIGHT};
+use manim_core::vector_field::{ArrowVectorField, StreamLines};
+use manim_math::{Point, LEFT, ORIGIN, RIGHT};
 use manim_render::golden::assert_golden;
 use manim_render::renderer::OffscreenRenderer;
 
@@ -322,4 +324,60 @@ fn riemann_rectangles() {
     });
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("riemann_rectangles", &img);
+}
+
+/// FE-106: an arrow vector field of the rotational field f(x,y)=(-y,x),
+/// colored by magnitude.
+#[test]
+fn arrow_vector_field() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let field = ArrowVectorField::new(|p: Point| Point::new(-p.y, p.x, 0.0))
+        .with_x_range([-3.0, 3.0, 0.75])
+        .with_y_range([-2.0, 2.0, 0.75]);
+    field.add_to(&mut scene);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("arrow_vector_field", &img);
+}
+
+/// FE-106: stream lines of the rotational field (concentric orbits).
+#[test]
+fn stream_lines() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let lines = StreamLines::new(|p: Point| Point::new(-p.y, p.x, 0.0))
+        .with_x_range([-3.0, 3.0, 0.6])
+        .with_y_range([-2.5, 2.5, 0.6])
+        .with_integration(0.05, 130);
+    lines.add_to(&mut scene);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("stream_lines", &img);
+}
+
+/// FE-105: a 6-cycle with chords, circular layout.
+#[test]
+fn graph_circular() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let edges = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+        (5, 0), // the 6-cycle
+        (0, 3),
+        (1, 4),
+        (2, 5), // long chords
+    ];
+    let graph = Graph::new(6, &edges, GraphLayout::Circular { radius: 2.5 });
+    scene.add(graph);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("graph_circular", &img);
 }
