@@ -2,8 +2,7 @@
 //!
 //! All mobjects live in a [`slotmap`] arena; users hold cheap, `Copy`, typed
 //! [`MobjectId`] handles. Hierarchy (submobjects) is stored as parent/children
-//! key lists inside each mobject's
-//! [`MobjectData`](crate::mobject::MobjectData), exactly like manim CE's
+//! key lists inside each mobject's [`MobjectData`], exactly like manim CE's
 //! `submobjects`. This gives O(1) stable handles, generational stale-handle
 //! detection, and a `Clone`-able scene value (needed by the animation phase for
 //! state snapshots). See `docs/design/03-mobject-model.md`.
@@ -15,7 +14,9 @@
 //! ([`SceneState::shift`], [`SceneState::rotate_about`], …) apply to a mobject
 //! **and all its descendants**, which is what group transforms need.
 
+use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
+use std::sync::{Arc, Mutex};
 
 use manim_math::{Point, OUT};
 use slotmap::{DefaultKey, SlotMap};
@@ -23,8 +24,39 @@ use slotmap::{DefaultKey, SlotMap};
 use crate::display::{DisplayList, DrawItem, Fill, Stroke};
 use crate::mobject::{
     apply_rotate_about, apply_scale_about, apply_shift, bbox_of, AnyId, BoundingBox, Mobject,
-    MobjectId,
+    MobjectData, MobjectId,
 };
+
+/// Context passed to an updater each frame (manim's updater `dt`).
+///
+/// ```
+/// use manim_core::scene_state::UpdaterCtx;
+/// let ctx = UpdaterCtx { dt: 1.0 / 60.0, time: 0.5 };
+/// assert!((ctx.dt - 1.0 / 60.0).abs() < 1e-6);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdaterCtx {
+    /// Seconds elapsed since the previous frame.
+    pub dt: f32,
+    /// Absolute scene time in seconds.
+    pub time: f32,
+}
+
+/// The stored form of an updater callback.
+///
+/// The closure receives the whole [`SceneState`] plus the id it was registered
+/// on, so it can read any other mobject (e.g. a dot following a tracker). It is
+/// held behind `Arc<Mutex<…>>` so [`SceneState`] stays `Clone` (snapshots share
+/// the same callback instance) and `Send + Sync`.
+type UpdaterFn = dyn FnMut(&mut SceneState, AnyId, UpdaterCtx) + Send + Sync;
+
+/// One registered updater.
+#[derive(Clone)]
+struct UpdaterEntry {
+    id: AnyId,
+    active: bool,
+    func: Arc<Mutex<UpdaterFn>>,
+}
 
 /// One slot in the arena: a boxed mobject and its visibility flag.
 struct Entry {
@@ -62,6 +94,10 @@ pub struct SceneState {
     arena: SlotMap<DefaultKey, Entry>,
     /// Top-level mobjects (no parent), in insertion order.
     roots: Vec<DefaultKey>,
+    /// Saved mobject snapshots for `save_state` / `Restore`.
+    saved_states: HashMap<DefaultKey, MobjectData>,
+    /// Registered per-mobject updaters, in registration order.
+    updaters: Vec<UpdaterEntry>,
 }
 
 impl SceneState {
@@ -161,6 +197,8 @@ impl SceneState {
         for member in self.family(id) {
             self.arena.remove(member.0);
             self.roots.retain(|k| *k != member.0);
+            self.saved_states.remove(&member.0);
+            self.updaters.retain(|u| u.id != member);
         }
     }
 
@@ -434,6 +472,133 @@ impl SceneState {
     /// ```
     pub fn set_style_family(&mut self, id: AnyId, mut f: impl FnMut(&mut crate::style::Style)) {
         self.apply_to_family(id, |m| f(&mut m.data_mut().style));
+    }
+
+    // --- Saved states (manim's `save_state` / `restore`) ---
+
+    /// Saves a snapshot of `id`'s current data, retrievable by
+    /// [`restore`](Self::restore) or animated by
+    /// [`Restore`](crate::animations::Restore). No-op on a stale handle.
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_math::RIGHT;
+    /// let mut scene = SceneState::new();
+    /// let c = scene.add(Circle::new());
+    /// scene.save_state(c.erase());
+    /// scene.get_mut(c).shift(3.0 * RIGHT);
+    /// scene.restore(c.erase());
+    /// assert!(scene.get(c).get_center().length() < 1e-6);
+    /// ```
+    pub fn save_state(&mut self, id: AnyId) {
+        if let Some(e) = self.arena.get(id.0) {
+            self.saved_states.insert(id.0, e.mobject.data().clone());
+        }
+    }
+
+    /// Whether a saved snapshot exists for `id`.
+    pub fn has_saved_state(&self, id: AnyId) -> bool {
+        self.saved_states.contains_key(&id.0)
+    }
+
+    /// The saved snapshot for `id`, if any.
+    pub fn saved_state(&self, id: AnyId) -> Option<&MobjectData> {
+        self.saved_states.get(&id.0)
+    }
+
+    /// Restores `id` to its last [`save_state`](Self::save_state) snapshot.
+    /// No-op if there is no snapshot or the handle is stale.
+    pub fn restore(&mut self, id: AnyId) {
+        if let (Some(data), true) = (
+            self.saved_states.get(&id.0).cloned(),
+            self.arena.contains_key(id.0),
+        ) {
+            *self.arena[id.0].mobject.data_mut() = data;
+        }
+    }
+
+    // --- Updaters (manim's `add_updater` / `remove_updater`) ---
+
+    /// Registers an updater on `id`, run each frame with an [`UpdaterCtx`].
+    ///
+    /// The closure receives the whole scene and its own id, so it can read other
+    /// mobjects (a dot following a tracker, say). Updaters run during
+    /// [`Scene`](crate::scene::Scene) playback, not during a pure seek.
+    ///
+    /// ```
+    /// use manim_core::geometry::Dot;
+    /// use manim_core::scene_state::{SceneState, UpdaterCtx};
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_math::{Point, RIGHT};
+    /// let mut scene = SceneState::new();
+    /// let d = scene.add(Dot::new());
+    /// scene.add_updater(d.erase(), |s, id, _ctx| {
+    ///     s.get_dyn_mut(id).data_mut().path.apply(|p| p + RIGHT);
+    /// });
+    /// scene.run_updaters(UpdaterCtx { dt: 1.0 / 60.0, time: 0.0 });
+    /// assert!((scene.get(d).get_center() - RIGHT).length() < 1e-6);
+    /// ```
+    pub fn add_updater(
+        &mut self,
+        id: AnyId,
+        func: impl FnMut(&mut SceneState, AnyId, UpdaterCtx) + Send + Sync + 'static,
+    ) {
+        self.updaters.push(UpdaterEntry {
+            id,
+            active: true,
+            func: Arc::new(Mutex::new(func)),
+        });
+    }
+
+    /// Removes all updaters registered on `id`.
+    pub fn remove_updaters(&mut self, id: AnyId) {
+        self.updaters.retain(|u| u.id != id);
+    }
+
+    /// Whether any updater is registered on `id`.
+    pub fn has_updaters(&self, id: AnyId) -> bool {
+        self.updaters.iter().any(|u| u.id == id)
+    }
+
+    /// Suspends (pauses) updaters registered on `id`.
+    pub fn suspend_updating(&mut self, id: AnyId) {
+        for u in &mut self.updaters {
+            if u.id == id {
+                u.active = false;
+            }
+        }
+    }
+
+    /// Resumes previously-suspended updaters on `id`.
+    pub fn resume_updating(&mut self, id: AnyId) {
+        for u in &mut self.updaters {
+            if u.id == id {
+                u.active = true;
+            }
+        }
+    }
+
+    /// Runs every active updater once with `ctx` (manim's per-frame updater
+    /// pass). Updaters whose target has been removed are skipped.
+    pub fn run_updaters(&mut self, ctx: UpdaterCtx) {
+        // Clone the Arc handles so the borrow of `self.updaters` ends before we
+        // hand `&mut self` to each callback.
+        let entries: Vec<(AnyId, Arc<Mutex<UpdaterFn>>)> = self
+            .updaters
+            .iter()
+            .filter(|u| u.active)
+            .map(|u| (u.id, Arc::clone(&u.func)))
+            .collect();
+        for (id, func) in entries {
+            if !self.contains(id) {
+                continue;
+            }
+            if let Ok(mut f) = func.lock() {
+                f(self, id, ctx);
+            }
+        }
     }
 
     /// Builds the display list: visible roots, then their families, in
