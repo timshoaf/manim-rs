@@ -12,6 +12,7 @@ manim-math = { workspace = true }
 manim-color = { workspace = true }
 manim-core = { workspace = true }
 manim-render = { workspace = true }
+manim-text = { workspace = true }
 
 [features]
 ## Realtime winit preview window (re-exports `manim-render`'s `preview`). Off by

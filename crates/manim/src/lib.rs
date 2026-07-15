@@ -31,6 +31,7 @@ pub use manim_color as color;
 pub use manim_core as core;
 pub use manim_math as math;
 pub use manim_render as render;
+pub use manim_text as text;
 
 pub use manim_core::animations;
 pub use manim_core::error::{CoreError, Result};
@@ -135,4 +136,5 @@ pub mod prelude {
         Uncreate, UpdateFromFunc, ValueTracker,
     };
     pub use manim_core::prelude::*;
+    pub use manim_text::{MathTex, Paragraph, Text, Typst, Write};
 }
