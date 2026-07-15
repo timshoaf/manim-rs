@@ -1,6 +1,8 @@
 //! Integration tests for `MathTex`/`Typst`/`Tex`: typst-backed math typesetting
 //! and its integration with the core scene/animation machinery.
 
+use std::error::Error;
+
 use manim_core::animations::Create;
 use manim_core::prelude::*;
 use manim_text::{MathError, MathTex, Tex, Typst, Write};
@@ -48,10 +50,19 @@ fn mathtex_matches_equivalent_typst_baseline() {
 
 #[test]
 fn unknown_command_lists_the_token() {
-    match MathTex::new(r"\frac{a}{b} + \bogus") {
-        Err(MathError::UnknownCommand(cmd)) => assert_eq!(cmd, "bogus"),
-        Err(other) => panic!("expected UnknownCommand, got {other:?}"),
+    // MathTex::new now returns CoreError; the underlying MathError is recoverable
+    // via the error's source().
+    let err = match MathTex::new(r"\frac{a}{b} + \bogus") {
         Ok(_) => panic!("expected an error for \\bogus"),
+        Err(e) => e,
+    };
+    let math_err = err
+        .source()
+        .and_then(|s| s.downcast_ref::<MathError>())
+        .expect("source should be a MathError");
+    match math_err {
+        MathError::UnknownCommand(cmd) => assert_eq!(cmd, "bogus"),
+        other => panic!("expected UnknownCommand, got {other:?}"),
     }
 }
 

@@ -20,15 +20,15 @@ pub struct PointMovingOnShapes;
 
 impl SceneBuilder for PointMovingOnShapes {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
-        let circle = Circle::new().with_stroke(BLUE, 4.0, 1.0);
-        let path = circle.data().path.clone();
-        let circle = scene.add(circle);
+        let circle = scene.add(Circle::new().with_stroke(BLUE, 4.0, 1.0));
         scene.play(Create::new(circle))?;
 
         // A dot starting at the circle's rightmost point, then riding the outline.
+        // `MoveAlongPath::along` clones the circle's path at begin() time — no
+        // manual path extraction / ownership dance.
         let dot = scene.add(Dot::new().with_fill(YELLOW, 1.0).with_move_to(RIGHT));
         scene.play(Create::new(dot))?;
-        scene.play(MoveAlongPath::new(dot, path).run_time(2.0))?;
+        scene.play(MoveAlongPath::along(dot, circle).run_time(2.0))?;
 
         // Spin the pair a quarter turn about the origin.
         scene.play((

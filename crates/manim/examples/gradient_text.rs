@@ -30,7 +30,7 @@ impl SceneBuilder for GradientText {
         let word = Text::new("GRADIENT")
             .font_size(72.0)
             .add_to(scene.state_mut());
-        scene.state_mut().shift(word.erase(), 1.0 * UP);
+        scene.shift(word, 1.0 * UP);
         let glyphs = scene.state().get_dyn(word.erase()).data().children.clone();
         let n = glyphs.len().max(1);
         for (i, glyph) in glyphs.iter().enumerate() {

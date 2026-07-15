@@ -9,7 +9,7 @@ use manim_math::{Point, ORIGIN, TAU};
 
 use super::{arc_path, point_on_circle, put_start_and_end_on};
 use crate::impl_mobject;
-use crate::mobject::{BoundingBox, MobjectData, MobjectExt};
+use crate::mobject::{BoundingBox, Mobject, MobjectData, MobjectExt};
 use crate::style::Style;
 
 /// A circular arc of a given `radius`, `start_angle`, and sweep `angle`,
@@ -282,6 +282,58 @@ impl Default for Dot {
     }
 }
 
+/// A larger dot with a thin white outline, for annotating points. Port of manim
+/// CE's `AnnotationDot`.
+///
+/// ```
+/// use manim_core::geometry::AnnotationDot;
+/// use manim_core::mobject::Mobject;
+/// let d = AnnotationDot::new();
+/// // Filled with a background (outline) stroke.
+/// assert!(d.data().style.background_stroke_width > 0.0);
+/// ```
+#[derive(Clone)]
+pub struct AnnotationDot {
+    data: MobjectData,
+    radius: f32,
+}
+impl_mobject!(AnnotationDot);
+
+/// manim CE's default `AnnotationDot` radius.
+pub const ANNOTATION_DOT_RADIUS: f32 = 0.10;
+
+impl AnnotationDot {
+    /// An annotation dot at the origin.
+    pub fn new() -> Self {
+        Self::at(ORIGIN)
+    }
+
+    /// An annotation dot centered at `point`.
+    pub fn at(point: Point) -> Self {
+        let mut style = Style::filled(WHITE);
+        // A thin outline (manim's stroke_width 5px ≈ background stroke here).
+        style.set_background_stroke(manim_color::BLACK, 2.0, 1.0);
+        Self {
+            data: MobjectData::new(
+                arc_path(point, ANNOTATION_DOT_RADIUS, 0.0, TAU, true),
+                style,
+            ),
+            radius: ANNOTATION_DOT_RADIUS,
+        }
+    }
+
+    /// The dot radius.
+    pub fn radius(&self) -> f32 {
+        self.radius
+    }
+}
+
+impl Default for AnnotationDot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// An axis-aligned ellipse. Port of manim CE's `Ellipse` (width `2`, height `1`).
 ///
 /// ```
@@ -519,6 +571,89 @@ fn annular_sector_path(
     let mut curves = inner.curves;
     curves.push(CubicBezier::line(inner_end, outer_start));
     curves.extend(outer.curves);
+    Path {
+        subpaths: vec![SubPath {
+            curves,
+            closed: true,
+        }],
+    }
+}
+
+/// A closed polygon whose edges are circular arcs. Port of manim CE's
+/// `ArcPolygon`.
+///
+/// ```
+/// use manim_core::geometry::ArcPolygon;
+/// use manim_core::mobject::Mobject;
+/// use manim_math::{Point, RIGHT, UP};
+/// // A "rounded triangle": three vertices, each edge bowed by 0.5 rad.
+/// let p = ArcPolygon::new(&[Point::ZERO, 2.0 * RIGHT, 2.0 * UP], &[0.5, 0.5, 0.5]);
+/// assert!(p.data().path.is_closed());
+/// ```
+#[derive(Clone)]
+pub struct ArcPolygon {
+    data: MobjectData,
+}
+impl_mobject!(ArcPolygon);
+
+impl ArcPolygon {
+    /// A closed shape with an arc between each consecutive vertex pair (wrapping
+    /// from the last vertex back to the first). `angles[i]` bows edge `i`; a zero
+    /// angle is a straight edge. Missing angles default to `0`.
+    pub fn new(vertices: &[Point], angles: &[f32]) -> Self {
+        let mut curves: Vec<CubicBezier> = Vec::new();
+        let n = vertices.len();
+        for i in 0..n {
+            let a = vertices[i];
+            let b = vertices[(i + 1) % n];
+            let angle = angles.get(i).copied().unwrap_or(0.0);
+            let edge = arc_between(a, b, angle);
+            for sp in &edge.subpaths {
+                curves.extend(sp.curves.iter().copied());
+            }
+        }
+        Self {
+            data: MobjectData::new(closed_curve_path(curves), Style::stroked(WHITE)),
+        }
+    }
+}
+
+/// A closed shape assembled from existing arcs, joined end-to-start. Port of
+/// manim CE's `ArcPolygonFromArcs`.
+///
+/// ```
+/// use manim_core::geometry::{ArcBetweenPoints, ArcPolygonFromArcs};
+/// use manim_core::mobject::Mobject;
+/// use manim_math::{Point, RIGHT, UP};
+/// let a = ArcBetweenPoints::new(Point::ZERO, 2.0 * RIGHT, 0.4);
+/// let b = ArcBetweenPoints::new(2.0 * RIGHT, 2.0 * UP, 0.4);
+/// let c = ArcBetweenPoints::new(2.0 * UP, Point::ZERO, 0.4);
+/// let poly = ArcPolygonFromArcs::new(&[&a, &b, &c]);
+/// assert!(poly.data().path.is_closed());
+/// ```
+#[derive(Clone)]
+pub struct ArcPolygonFromArcs {
+    data: MobjectData,
+}
+impl_mobject!(ArcPolygonFromArcs);
+
+impl ArcPolygonFromArcs {
+    /// A closed shape from the given arcs, concatenated in order.
+    pub fn new(arcs: &[&ArcBetweenPoints]) -> Self {
+        let mut curves: Vec<CubicBezier> = Vec::new();
+        for arc in arcs {
+            for sp in &arc.data().path.subpaths {
+                curves.extend(sp.curves.iter().copied());
+            }
+        }
+        Self {
+            data: MobjectData::new(closed_curve_path(curves), Style::stroked(WHITE)),
+        }
+    }
+}
+
+/// Wraps a curve chain into a single closed-subpath [`Path`].
+fn closed_curve_path(curves: Vec<CubicBezier>) -> Path {
     Path {
         subpaths: vec![SubPath {
             curves,

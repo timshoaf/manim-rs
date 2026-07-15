@@ -12,8 +12,9 @@ manim_rust/
 │   ├── manim-text      # text & math typesetting → VMobject outlines (cosmic-text, typst)
 │   ├── manim-dioxus    # Dioxus components/hooks wrapping a scene on a canvas
 │   └── manim           # facade crate: re-exports + `prelude`
-├── examples/           # runnable gallery mirroring manim CE examples
-└── docs/design/        # these documents
+│       └── examples/   # runnable gallery mirroring manim CE examples
+├── docs/               # migration guide + design/ documents
+└── CHANGELOG.md
 ```
 
 Dependency DAG (strictly acyclic):

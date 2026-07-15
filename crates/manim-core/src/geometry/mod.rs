@@ -25,11 +25,15 @@ mod line;
 mod polygram;
 mod vectorized;
 
-pub use arc::{AnnularSector, Annulus, Arc, ArcBetweenPoints, Circle, Dot, Ellipse, Sector};
+pub use arc::{
+    AnnotationDot, AnnularSector, Annulus, Arc, ArcBetweenPoints, ArcPolygon, ArcPolygonFromArcs,
+    Circle, Dot, Ellipse, Sector,
+};
 pub use brace::Brace;
 pub use group::VGroup;
 pub use line::{
-    Angle, Arrow, DashedLine, DoubleArrow, Elbow, Line, RightAngle, TangentLine, Vector,
+    Angle, Arrow, CurvedArrow, CurvedDoubleArrow, DashedLine, DoubleArrow, Elbow, Line, RightAngle,
+    TangentLine, TipShape, Vector,
 };
 pub use polygram::{
     Polygon, Polygram, Rectangle, RegularPolygon, RegularPolygram, RoundedRectangle, Square, Star,

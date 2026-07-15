@@ -35,6 +35,7 @@
 //! M4, Linear issue FE-98. `MarkupText`, `MathTex`/`Tex` (typst), and
 //! `SVGMobject` are later issues (FE-99–102).
 
+mod brace_label;
 mod decimal;
 mod digits;
 mod extras;
@@ -51,13 +52,17 @@ mod outline;
 mod paragraph;
 mod table;
 mod text;
+mod vector_labels;
 mod write;
 
+pub use brace_label::{BraceLabel, BRACE_LABEL_BUFF, BRACE_LABEL_FONT_SIZE};
 pub use decimal::{ChangeDecimalToValue, ChangingDecimal, DecimalNumber, Integer, Variable};
 pub use extras::{BulletedList, Title, LIST_BUFF};
 pub use font::DEFAULT_FONT;
 pub use graph_labels::{AxesLabels, BarChartLabels, CoordinateLabels, GraphLabel, LABEL_FONT_SIZE};
-pub use labeled_dot::{LabeledDot, LABELED_DOT_RADIUS};
+pub use labeled_dot::{
+    LabeledArrow, LabeledDot, LabeledLine, LABELED_DOT_RADIUS, LABELED_LINE_FONT_SIZE,
+};
 pub use latex::MathError;
 pub use markup::{MarkupError, MarkupText};
 pub use match_tex::{match_glyphs, MatchResult, TransformMatchingTex};
@@ -69,4 +74,5 @@ pub use matrix::{
 pub use paragraph::Paragraph;
 pub use table::{DecimalTable, MathTable, Table, CELL_PAD, TABLE_H_BUFF, TABLE_V_BUFF};
 pub use text::{Alignment, Slant, Text, Weighting, DEFAULT_FONT_SIZE, SCENE_UNITS_PER_PIXEL};
-pub use write::Write;
+pub use vector_labels::{label_vector, VECTOR_LABEL_BUFF, VECTOR_LABEL_FONT_SIZE};
+pub use write::{AddTextLetterByLetter, RemoveTextLetterByLetter, Unwrite, Write};

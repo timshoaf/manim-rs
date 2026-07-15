@@ -97,7 +97,7 @@ struct Camera { view_proj: mat4x4<f32> };
 @group(0) @binding(0) var<uniform> camera: Camera;
 
 struct VsIn {
-    @location(0) position: vec2<f32>,
+    @location(0) position: vec3<f32>,
     @location(1) color: vec4<f32>,
 };
 struct VsOut {
@@ -108,7 +108,7 @@ struct VsOut {
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
-    out.clip = camera.view_proj * vec4<f32>(in.position, 0.0, 1.0);
+    out.clip = camera.view_proj * vec4<f32>(in.position, 1.0);
     out.color = in.color;
     return out;
 }
@@ -290,7 +290,7 @@ impl Pipeline {
         });
 
         const ATTRS: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4];
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         let vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -460,13 +460,13 @@ struct Camera { view_proj: mat4x4<f32> };
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 
-struct VsIn { @location(0) pos: vec2<f32>, @location(1) uv: vec2<f32> };
+struct VsIn { @location(0) pos: vec3<f32>, @location(1) uv: vec2<f32> };
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
-    out.clip = camera.view_proj * vec4<f32>(in.pos, 0.0, 1.0);
+    out.clip = camera.view_proj * vec4<f32>(in.pos, 1.0);
     out.uv = in.uv;
     return out;
 }
@@ -483,7 +483,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct ImageVertex {
-    position: [f32; 2],
+    position: [f32; 3],
     uv: [f32; 2],
 }
 
@@ -532,7 +532,7 @@ impl ImagePipeline {
             push_constant_ranges: &[],
         });
         const ATTRS: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2];
+            wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2];
         let vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<ImageVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -595,6 +595,24 @@ struct CachedTexture {
     bind_group: wgpu::BindGroup,
 }
 
+/// A GPU-resident draw op: uploaded vertex/index buffers for one vector batch or
+/// one textured image quad. Built by [`TextureTarget::build_gpu_ops`] and
+/// recorded by [`TextureTarget::record_ops`]; the buffers must outlive the pass.
+enum GpuOp {
+    /// A vector triangle batch.
+    Vector {
+        vb: wgpu::Buffer,
+        ib: wgpu::Buffer,
+        count: u32,
+    },
+    /// A textured quad (two triangles), keyed to a cached texture by `source`.
+    Image {
+        vb: wgpu::Buffer,
+        ib: wgpu::Buffer,
+        source: manim_core::mobject::AnyId,
+    },
+}
+
 /// An offscreen render target: an MSAA texture resolved to an sRGB texture, plus
 /// a padded readback buffer, sized once and reused frame to frame.
 ///
@@ -610,6 +628,10 @@ pub struct TextureTarget {
     texture_cache: std::collections::HashMap<manim_core::mobject::AnyId, CachedTexture>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    /// A second camera uniform holding the orthographic matrix, used to draw
+    /// `fixed_in_frame` HUD content under a 3-D camera.
+    hud_uniform_buffer: wgpu::Buffer,
+    hud_bind_group: wgpu::BindGroup,
     width: u32,
     height: u32,
     color_texture: wgpu::Texture,
@@ -684,6 +706,21 @@ impl TextureTarget {
             }],
         });
 
+        let hud_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("manim-render hud camera uniform"),
+            size: std::mem::size_of::<CameraUniform>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let hud_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("manim-render hud camera bind group"),
+            layout: &pipeline.bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: hud_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         let unpadded_bytes_per_row = width * 4;
         let padded_bytes_per_row =
             align_up(unpadded_bytes_per_row, wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
@@ -704,6 +741,8 @@ impl TextureTarget {
             texture_cache: std::collections::HashMap::new(),
             uniform_buffer,
             bind_group,
+            hud_uniform_buffer,
+            hud_bind_group,
             width,
             height,
             color_texture,
@@ -828,19 +867,110 @@ impl TextureTarget {
         }
         self.texture_cache.retain(|id, _| present.contains(id));
 
-        // Pre-build GPU buffers per op (must outlive the render pass).
-        enum GpuOp {
-            Vector {
-                vb: wgpu::Buffer,
-                ib: wgpu::Buffer,
-                count: u32,
-            },
-            Image {
-                vb: wgpu::Buffer,
-                ib: wgpu::Buffer,
-                source: manim_core::mobject::AnyId,
-            },
+        let gpu_ops = self.build_gpu_ops(ops);
+        let mut encoder = self.begin_ops_encoder();
+        {
+            let mut pass = self.begin_ops_pass(&mut encoder, background);
+            self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
         }
+        self.copy_and_read(encoder)
+    }
+
+    /// Renders a 3-D frame: depth-sorted `world` content with the perspective
+    /// camera, then the `hud` (`fixed_in_frame`) overlay with the orthographic
+    /// camera, in a single pass over the same target.
+    ///
+    /// The two camera uniforms (`view_proj` and `ortho_view_proj`) let HUD items
+    /// stay flat and unmoving while the world orbits.
+    ///
+    /// # Errors
+    ///
+    /// As [`render`](Self::render).
+    pub fn render_ops_layered(
+        &mut self,
+        world: &[crate::tessellate::FrameOp],
+        hud: &[crate::tessellate::FrameOp],
+        camera: &Camera2D,
+        background: Color,
+    ) -> Result<RgbaImage, RenderError> {
+        use crate::tessellate::FrameOp;
+
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform {
+                view_proj: camera.view_proj().to_cols_array_2d(),
+            }),
+        );
+        self.queue.write_buffer(
+            &self.hud_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&CameraUniform {
+                view_proj: camera.ortho_view_proj().to_cols_array_2d(),
+            }),
+        );
+
+        // Textures across both layers, then evict vanished ones.
+        let mut present = Vec::new();
+        for op in world.iter().chain(hud.iter()) {
+            if let FrameOp::Image(q) = op {
+                self.ensure_texture(q);
+                present.push(q.source);
+            }
+        }
+        self.texture_cache.retain(|id, _| present.contains(id));
+
+        let world_gpu = self.build_gpu_ops(world);
+        let hud_gpu = self.build_gpu_ops(hud);
+        let mut encoder = self.begin_ops_encoder();
+        {
+            let mut pass = self.begin_ops_pass(&mut encoder, background);
+            self.record_ops(&mut pass, &world_gpu, &self.bind_group);
+            self.record_ops(&mut pass, &hud_gpu, &self.hud_bind_group);
+        }
+        self.copy_and_read(encoder)
+    }
+
+    /// Creates the command encoder for an ops render.
+    fn begin_ops_encoder(&self) -> wgpu::CommandEncoder {
+        self.device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("manim-render ops encoder"),
+            })
+    }
+
+    /// Begins the clear-and-draw pass into the MSAA target.
+    fn begin_ops_pass<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        background: Color,
+    ) -> wgpu::RenderPass<'e> {
+        let bg = background.premultiplied();
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("manim-render ops pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.msaa_view,
+                resolve_target: Some(&self.color_view),
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: bg[0] as f64,
+                        g: bg[1] as f64,
+                        b: bg[2] as f64,
+                        a: bg[3] as f64,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        })
+    }
+
+    /// Pre-builds GPU vertex/index buffers for each op (they must outlive the
+    /// render pass). Empty vector batches are skipped.
+    fn build_gpu_ops(&self, ops: &[crate::tessellate::FrameOp]) -> Vec<GpuOp> {
+        use crate::tessellate::FrameOp;
         let mut gpu_ops = Vec::new();
         for op in ops {
             match op {
@@ -894,57 +1024,39 @@ impl TextureTarget {
                 }
             }
         }
+        gpu_ops
+    }
 
-        let bg = background.premultiplied();
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("manim-render ops encoder"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("manim-render ops pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.msaa_view,
-                    resolve_target: Some(&self.color_view),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: bg[0] as f64,
-                            g: bg[1] as f64,
-                            b: bg[2] as f64,
-                            a: bg[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            for op in &gpu_ops {
-                match op {
-                    GpuOp::Vector { vb, ib, count } => {
-                        pass.set_pipeline(&self.pipeline);
-                        pass.set_bind_group(0, &self.bind_group, &[]);
+    /// Records `gpu_ops` into `pass`, binding `camera_bg` at `@group(0)` for
+    /// every draw (the perspective camera for world content, the orthographic
+    /// camera for HUD content).
+    fn record_ops<'p>(
+        &'p self,
+        pass: &mut wgpu::RenderPass<'p>,
+        gpu_ops: &'p [GpuOp],
+        camera_bg: &'p wgpu::BindGroup,
+    ) {
+        for op in gpu_ops {
+            match op {
+                GpuOp::Vector { vb, ib, count } => {
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, camera_bg, &[]);
+                    pass.set_vertex_buffer(0, vb.slice(..));
+                    pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..*count, 0, 0..1);
+                }
+                GpuOp::Image { vb, ib, source } => {
+                    if let Some(tex) = self.texture_cache.get(source) {
+                        pass.set_pipeline(&self.image_pipeline.pipeline);
+                        pass.set_bind_group(0, camera_bg, &[]);
+                        pass.set_bind_group(1, &tex.bind_group, &[]);
                         pass.set_vertex_buffer(0, vb.slice(..));
                         pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..*count, 0, 0..1);
-                    }
-                    GpuOp::Image { vb, ib, source } => {
-                        if let Some(tex) = self.texture_cache.get(source) {
-                            pass.set_pipeline(&self.image_pipeline.pipeline);
-                            pass.set_bind_group(0, &self.bind_group, &[]);
-                            pass.set_bind_group(1, &tex.bind_group, &[]);
-                            pass.set_vertex_buffer(0, vb.slice(..));
-                            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-                            pass.draw_indexed(0..6, 0, 0..1);
-                        }
+                        pass.draw_indexed(0..6, 0, 0..1);
                     }
                 }
             }
         }
-
-        self.copy_and_read(encoder)
     }
 
     /// Renders `mesh` under `camera` over `background`, returning the pixels.
@@ -1134,6 +1246,15 @@ impl OffscreenRenderer {
     ///
     /// Propagates [`TextureTarget::render`] failures.
     pub fn render_display_list(&mut self, list: &DisplayList) -> Result<RgbaImage, RenderError> {
+        if self.camera.is_3d() {
+            let frame = self.cache.tessellate_ops_layered(list, &self.camera);
+            return self.target.render_ops_layered(
+                &frame.world,
+                &frame.hud,
+                &self.camera,
+                self.background,
+            );
+        }
         let ops = self.cache.tessellate_ops(list);
         self.target.render_ops(&ops, &self.camera, self.background)
     }
@@ -1160,6 +1281,17 @@ impl OffscreenRenderer {
         self.camera = Camera2D::from(&frame.camera);
         self.background = frame.camera.background;
         self.cache.set_zoom(frame.camera.height);
+        if self.camera.is_3d() {
+            let layered = self
+                .cache
+                .tessellate_ops_layered(&frame.display_list, &self.camera);
+            return self.target.render_ops_layered(
+                &layered.world,
+                &layered.hud,
+                &self.camera,
+                self.background,
+            );
+        }
         let ops = self.cache.tessellate_ops(&frame.display_list);
         self.target.render_ops(&ops, &self.camera, self.background)
     }

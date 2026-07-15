@@ -38,6 +38,8 @@ use crate::error::{CoreError, Result};
 use crate::mobject::{AnyId, Mobject, MobjectId};
 use crate::scene_state::{SceneState, UpdaterCtx};
 use crate::timeline::{Section, Timeline};
+use manim_color::Color;
+use manim_math::Point;
 
 /// One sampled frame: the time, its display list, and the camera at that time.
 ///
@@ -116,6 +118,178 @@ impl Scene {
         self.state.add(mobject)
     }
 
+    // --- Post-add ergonomics ---
+    //
+    // Thin, family-aware delegates so positioning/styling a mobject *after*
+    // `add` reads `scene.shift(id, ..)` instead of `scene.state_mut().shift(..)`.
+    // Each accepts `impl Into<AnyId>` and returns `&mut Self` for chaining.
+
+    /// Shifts `id`'s family by `delta` (manim's `shift`).
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_math::RIGHT;
+    /// let mut scene = Scene::new(Config::default());
+    /// let sq = scene.add(Square::new());
+    /// scene.shift(sq, 2.0 * RIGHT);
+    /// assert!((scene[sq].get_center().x - 2.0).abs() < 1e-5);
+    /// ```
+    pub fn shift(&mut self, id: impl Into<AnyId>, delta: Point) -> &mut Self {
+        self.state.shift(id, delta);
+        self
+    }
+
+    /// Moves `id`'s family so its center lands on `target` (manim's `move_to`).
+    pub fn move_to(&mut self, id: impl Into<AnyId>, target: Point) -> &mut Self {
+        self.state.move_to(id, target);
+        self
+    }
+
+    /// Uniformly scales `id`'s family about its center by `factor` (manim's
+    /// `scale`).
+    pub fn scale(&mut self, id: impl Into<AnyId>, factor: f32) -> &mut Self {
+        self.state.scale(id, factor);
+        self
+    }
+
+    /// Rotates `id`'s family about its center by `angle` radians (manim's
+    /// `rotate`).
+    pub fn rotate(&mut self, id: impl Into<AnyId>, angle: f32) -> &mut Self {
+        self.state.rotate(id, angle);
+        self
+    }
+
+    /// Sets the fill color and opacity across `id`'s family (manim's `set_fill`).
+    pub fn set_fill(&mut self, id: impl Into<AnyId>, color: Color, opacity: f32) -> &mut Self {
+        self.state.set_style_family(id, |s| {
+            s.set_fill(color, opacity);
+        });
+        self
+    }
+
+    /// Sets the stroke color, width, and opacity across `id`'s family (manim's
+    /// `set_stroke`).
+    pub fn set_stroke(
+        &mut self,
+        id: impl Into<AnyId>,
+        color: Color,
+        width: f32,
+        opacity: f32,
+    ) -> &mut Self {
+        self.state.set_style_family(id, |s| {
+            s.set_stroke(color, width, opacity);
+        });
+        self
+    }
+
+    /// Sets both fill and stroke color across `id`'s family (manim's `set_color`).
+    pub fn set_color(&mut self, id: impl Into<AnyId>, color: Color) -> &mut Self {
+        self.state.set_style_family(id, |s| {
+            s.set_color(color);
+        });
+        self
+    }
+
+    /// Positions `id`'s family next to `target`'s family in direction `dir`,
+    /// separated by `buff` scene units (manim's `next_to`).
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_math::{RIGHT, MED_SMALL_BUFF};
+    /// let mut scene = Scene::new(Config::default());
+    /// let a = scene.add(Square::new()); // spans x ∈ [-1, 1]
+    /// let b = scene.add(Square::new());
+    /// scene.next_to(b, a, RIGHT, MED_SMALL_BUFF);
+    /// assert!((scene[b].get_left().x - (1.0 + MED_SMALL_BUFF)).abs() < 1e-4);
+    /// ```
+    pub fn next_to(
+        &mut self,
+        id: impl Into<AnyId>,
+        target: impl Into<AnyId>,
+        dir: Point,
+        buff: f32,
+    ) -> &mut Self {
+        let id = id.into();
+        let target_point = self
+            .state
+            .family_bounding_box(target)
+            .point_in_direction(dir);
+        let point_to_align = self.state.family_bounding_box(id).point_in_direction(-dir);
+        let delta = target_point - point_to_align + buff * dir;
+        self.state.shift(id, delta);
+        self
+    }
+
+    /// Moves `id`'s family to a frame edge in direction `dir`, `buff` from the
+    /// border, using this scene's configured frame size (manim's `to_edge`).
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_math::LEFT;
+    /// let mut scene = Scene::new(Config::default());
+    /// let d = scene.add(Dot::new());
+    /// scene.to_edge(d, LEFT, 0.5);
+    /// let half_w = Config::default().frame_width / 2.0;
+    /// assert!((scene[d].get_left().x - (-half_w + 0.5)).abs() < 1e-4);
+    /// ```
+    pub fn to_edge(&mut self, id: impl Into<AnyId>, dir: Point, buff: f32) -> &mut Self {
+        let id = id.into();
+        let bbox = self.state.family_bounding_box(id);
+        let radius = Point::new(
+            self.config.frame_width / 2.0,
+            self.config.frame_height / 2.0,
+            0.0,
+        );
+        let sign = |v: f32| {
+            if v > 0.0 {
+                1.0
+            } else if v < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        };
+        let target_point = Point::new(sign(dir.x), sign(dir.y), sign(dir.z)) * radius;
+        let point_to_align = bbox.point_in_direction(dir);
+        let mut delta = target_point - point_to_align - buff * dir;
+        for axis in 0..3 {
+            if dir[axis] == 0.0 {
+                delta[axis] = 0.0;
+            }
+        }
+        self.state.shift(id, delta);
+        self
+    }
+
+    /// Adds a mobject rebuilt from scratch every frame by `build` (manim's
+    /// `always_redraw`), a shorthand for
+    /// [`state_mut().always_redraw`](crate::scene_state::SceneState::always_redraw).
+    ///
+    /// The closure reads the scene each tick and returns a fresh mobject whose
+    /// path and style are copied into the live one — ideal for geometry that
+    /// tracks a [`ValueTracker`](crate::animations::ValueTracker) or another
+    /// mobject, without hand-writing an updater.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_core::animations::{SetValue, ValueTracker};
+    /// use manim_math::RIGHT;
+    /// let mut scene = Scene::new(Config::low());
+    /// let t = scene.add(ValueTracker::new(0.0));
+    /// // A dot that always sits at x = t.
+    /// let dot = scene.always_redraw(move |s| Dot::at(s.get(t).get_value() * RIGHT));
+    /// scene.play(SetValue::new(t, 3.0)).unwrap();
+    /// // The redraw runs while frames are produced; tick it here to observe it.
+    /// scene.state_mut().run_updaters(UpdaterCtx { dt: 0.0, time: 0.0 });
+    /// assert!((scene[dot].get_center().x - 3.0).abs() < 1e-4);
+    /// ```
+    pub fn always_redraw<M: Mobject>(
+        &mut self,
+        build: impl Fn(&SceneState) -> M + Send + Sync + 'static,
+    ) -> MobjectId<M> {
+        self.state.always_redraw(build)
+    }
+
     /// Removes a mobject (and its descendants) from the scene.
     pub fn remove(&mut self, id: impl Into<AnyId>) {
         self.state.remove(id.into());
@@ -188,6 +362,26 @@ impl Scene {
     /// Mutable access to the camera.
     pub fn camera_mut(&mut self) -> &mut Camera2D {
         self.state.camera_mut()
+    }
+
+    /// Switches the camera to 3-D and sets its orbit angles, mirroring manim's
+    /// `ThreeDScene.set_camera_orientation(phi, theta)`. A thin passthrough to
+    /// [`Camera2D::set_camera_orientation`](crate::camera::Camera2D::set_camera_orientation).
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// let mut scene = Scene::new(Config::default());
+    /// scene.set_camera_orientation(1.3, -0.6);
+    /// assert!(scene.camera().is_3d());
+    /// ```
+    pub fn set_camera_orientation(&mut self, phi: f32, theta: f32) {
+        self.state.camera_mut().set_camera_orientation(phi, theta);
+    }
+
+    /// Advances ambient camera rotation by `d_theta` radians (manim's
+    /// `begin_ambient_camera_rotation` applied per step). No-op in 2-D.
+    pub fn rotate_camera(&mut self, d_theta: f32) {
+        self.state.camera_mut().rotate_ambient(d_theta);
     }
 
     /// A handle to the camera frame for animation, mirroring manim's

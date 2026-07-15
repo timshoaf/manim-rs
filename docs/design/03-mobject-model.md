@@ -66,8 +66,8 @@ All positional methods are **builder-compatible** (`self -> Self` before adding
 to the scene, `&mut self` after), so both styles read naturally:
 
 ```rust
-// declarative construction
-let sq = Square::new().side_length(2.0).fill(BLUE, 0.5).shift(2.0 * RIGHT);
+// declarative construction (consuming `with_*` builders)
+let sq = Square::new().side_length(2.0).with_fill(BLUE, 0.5).with_shift(2.0 * RIGHT);
 // imperative mutation post-add
 scene[sq_id].rotate(PI / 4.0);
 ```

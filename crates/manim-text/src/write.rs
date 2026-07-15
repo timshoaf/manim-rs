@@ -135,3 +135,169 @@ impl Animation for Write {
         self.config.rate_fn.clone()
     }
 }
+
+/// The reverse of [`Write`]: un-draws a text's glyphs one after another. Port of
+/// manim CE's `Unwrite`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_text::{Text, Unwrite};
+/// let mut scene = Scene::new(Config::low());
+/// let t = Text::new("bye").add_to(scene.state_mut());
+/// scene.play(Unwrite::new(t)).unwrap();
+/// assert!(scene.total_duration() > 0.0);
+/// ```
+pub struct Unwrite {
+    inner: Write,
+}
+
+impl Unwrite {
+    /// Un-writes the family rooted at `id`.
+    pub fn new(id: impl Into<AnyId>) -> Self {
+        Self {
+            inner: Write::new(id),
+        }
+    }
+
+    /// Sets the run time in seconds.
+    pub fn run_time(mut self, run_time: f32) -> Self {
+        self.inner = self.inner.run_time(run_time);
+        self
+    }
+
+    /// Sets the easing curve.
+    pub fn rate_fn(mut self, rate_fn: RateFn) -> Self {
+        self.inner = self.inner.rate_fn(rate_fn);
+        self
+    }
+}
+
+impl Animation for Unwrite {
+    fn begin(&mut self, state: &mut SceneState) {
+        Animation::begin(&mut self.inner, state);
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        // Reverse Write: full at alpha 0, empty at alpha 1.
+        Animation::interpolate(&mut self.inner, state, 1.0 - alpha);
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        Animation::interpolate(&mut self.inner, state, 0.0);
+    }
+    fn duration(&self) -> f32 {
+        Animation::duration(&self.inner)
+    }
+    fn rate_fn(&self) -> RateFn {
+        Animation::rate_fn(&self.inner)
+    }
+}
+
+/// Reveals a text's glyph children one letter at a time (visibility toggling,
+/// not stroke-drawing). Port of manim CE's `AddTextLetterByLetter`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_text::{Text, AddTextLetterByLetter};
+/// let mut scene = Scene::new(Config::low());
+/// let t = Text::new("hi").add_to(scene.state_mut());
+/// scene.play(AddTextLetterByLetter::new(t)).unwrap();
+/// assert!(scene.total_duration() > 0.0);
+/// ```
+pub struct AddTextLetterByLetter {
+    id: AnyId,
+    config: AnimConfig,
+    glyphs: Vec<AnyId>,
+    removing: bool,
+}
+
+impl AddTextLetterByLetter {
+    /// Reveals the glyphs of `id` one at a time.
+    pub fn new(id: impl Into<AnyId>) -> Self {
+        Self {
+            id: id.into(),
+            config: AnimConfig::default(),
+            glyphs: Vec::new(),
+            removing: false,
+        }
+    }
+
+    /// Sets the run time in seconds.
+    pub fn run_time(mut self, run_time: f32) -> Self {
+        self.config.run_time = run_time;
+        self
+    }
+}
+
+/// Hides a text's glyph children one letter at a time. Port of manim CE's
+/// `RemoveTextLetterByLetter`.
+pub struct RemoveTextLetterByLetter {
+    inner: AddTextLetterByLetter,
+}
+
+impl RemoveTextLetterByLetter {
+    /// Hides the glyphs of `id` one at a time.
+    pub fn new(id: impl Into<AnyId>) -> Self {
+        let mut inner = AddTextLetterByLetter::new(id);
+        inner.removing = true;
+        Self { inner }
+    }
+
+    /// Sets the run time in seconds.
+    pub fn run_time(mut self, run_time: f32) -> Self {
+        self.inner = self.inner.run_time(run_time);
+        self
+    }
+}
+
+impl Animation for AddTextLetterByLetter {
+    fn begin(&mut self, state: &mut SceneState) {
+        self.glyphs = state
+            .get_dyn(self.id)
+            .data()
+            .children
+            .iter()
+            .copied()
+            .filter(|c| {
+                let p = &state.get_dyn(*c).data().path;
+                !p.subpaths.iter().all(|s| s.curves.is_empty())
+            })
+            .collect();
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        let n = self.glyphs.len();
+        let shown = ((alpha.clamp(0.0, 1.0) * n as f32).ceil() as usize).min(n);
+        for (i, g) in self.glyphs.iter().enumerate() {
+            // For removal, count down: hide the first `shown` instead of showing.
+            let visible = if self.removing { i >= shown } else { i < shown };
+            state.set_visible(*g, visible);
+        }
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        for g in &self.glyphs {
+            state.set_visible(*g, !self.removing);
+        }
+    }
+    fn duration(&self) -> f32 {
+        self.config.run_time
+    }
+    fn rate_fn(&self) -> RateFn {
+        self.config.rate_fn.clone()
+    }
+}
+
+impl Animation for RemoveTextLetterByLetter {
+    fn begin(&mut self, state: &mut SceneState) {
+        self.inner.begin(state);
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        self.inner.interpolate(state, alpha);
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        self.inner.finish(state);
+    }
+    fn duration(&self) -> f32 {
+        self.inner.duration()
+    }
+    fn rate_fn(&self) -> RateFn {
+        self.inner.rate_fn()
+    }
+}

@@ -11,8 +11,8 @@ use manim_math::Point;
 
 use crate::decimal::{DecimalNumber, Integer};
 use crate::grid::{arrange, Cell, GridLayout};
-use crate::latex::MathError;
 use crate::math::MathTex;
+use manim_core::error::CoreError;
 
 /// Default entry font size for matrices/tables.
 pub const ENTRY_FONT_SIZE: f32 = 40.0;
@@ -46,7 +46,7 @@ impl Matrix {
     /// assert_eq!(m.get_entries().len(), 2);
     /// assert_eq!(scene.get_dyn(m.group().erase()).data().children.len(), 6);
     /// ```
-    pub fn of(scene: &mut SceneState, rows: &[&[&str]]) -> Result<Matrix, MathError> {
+    pub fn of(scene: &mut SceneState, rows: &[&[&str]]) -> Result<Matrix, CoreError> {
         let mut cells: Vec<Vec<Cell>> = Vec::new();
         for row in rows {
             let mut crow = Vec::new();

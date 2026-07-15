@@ -28,6 +28,30 @@ pub enum CoreError {
     /// implementation failed with a custom message.
     #[error("scene construction failed: {0}")]
     Construct(String),
+
+    /// A text/typesetting operation failed (e.g. manim-text's `MathError`).
+    ///
+    /// The originating error is preserved as the [`source`](std::error::Error::source),
+    /// so callers can downcast to recover it. This lets `manim-text`'s fallible
+    /// constructors and label helpers return [`CoreError`] so they compose with
+    /// `?` inside a `construct` that returns [`Result`].
+    #[error("text/typesetting failed: {0}")]
+    Text(#[source] Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl CoreError {
+    /// Wraps a foreign text/typesetting error (e.g. `manim-text`'s `MathError`)
+    /// as a [`CoreError::Text`]. Orphan rules block a `From` impl in the text
+    /// crate, so its APIs call this at the boundary.
+    ///
+    /// ```
+    /// use manim_core::error::CoreError;
+    /// let e = CoreError::text("bad latex");
+    /// assert!(e.to_string().contains("bad latex"));
+    /// ```
+    pub fn text(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        CoreError::Text(err.into())
+    }
 }
 
 /// The crate result type.

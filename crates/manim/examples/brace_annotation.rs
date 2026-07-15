@@ -36,7 +36,7 @@ impl SceneBuilder for BraceAnnotation {
             .add_to(scene.state_mut());
         scene
             .state_mut()
-            .shift(under_label.erase(), under_label_at + 0.2 * DOWN);
+            .shift(under_label, under_label_at + 0.2 * DOWN);
         scene.play((Create::new(under), FadeIn::new(under_label)))?;
 
         // Brace above the right half, labelled.
@@ -46,7 +46,7 @@ impl SceneBuilder for BraceAnnotation {
         let over_label = Text::new("half").font_size(28.0).add_to(scene.state_mut());
         scene
             .state_mut()
-            .shift(over_label.erase(), over_label_at + 0.2 * UP);
+            .shift(over_label, over_label_at + 0.2 * UP);
         scene.play((Create::new(over), FadeIn::new(over_label)))?;
         scene.wait(0.5);
         Ok(())

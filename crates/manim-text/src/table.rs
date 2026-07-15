@@ -11,10 +11,10 @@ use manim_math::Point;
 
 use crate::decimal::DecimalNumber;
 use crate::grid::{arrange, Cell, GridLayout};
-use crate::latex::MathError;
 use crate::math::MathTex;
 use crate::matrix::ENTRY_FONT_SIZE;
 use crate::text::Text;
+use manim_core::error::CoreError;
 
 /// Horizontal buffer between table columns.
 pub const TABLE_H_BUFF: f32 = 0.6;
@@ -186,7 +186,7 @@ pub struct MathTable;
 impl MathTable {
     /// A tex-entry table.
     #[allow(clippy::new_ret_no_self)]
-    pub fn of(scene: &mut SceneState, rows: &[&[&str]]) -> Result<Table, MathError> {
+    pub fn of(scene: &mut SceneState, rows: &[&[&str]]) -> Result<Table, CoreError> {
         let mut cells: Vec<Vec<Cell>> = Vec::new();
         for row in rows {
             let mut crow = Vec::new();

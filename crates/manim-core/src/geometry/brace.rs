@@ -7,7 +7,7 @@ use manim_math::space_ops::normalize_or_zero;
 use manim_math::{Point, DOWN};
 
 use crate::impl_mobject;
-use crate::mobject::MobjectData;
+use crate::mobject::{BoundingBox, MobjectData};
 use crate::style::Style;
 
 /// Default brace protrusion (depth) in scene units.
@@ -52,6 +52,38 @@ impl Brace {
     /// pointing [`DOWN`](manim_math::DOWN) — the common "brace under a row" case.
     pub fn horizontal(x_min: f32, x_max: f32, y: f32) -> Self {
         Self::new(Point::new(x_min, y, 0.0), Point::new(x_max, y, 0.0), DOWN)
+    }
+
+    /// A brace hugging the side of a bounding box that faces `direction`
+    /// (manim CE's `Brace(mobject, direction)`). Measure a mobject with
+    /// [`SceneState::family_bounding_box`](crate::scene_state::SceneState::family_bounding_box)
+    /// and pass the result to brace it.
+    ///
+    /// The direction is snapped to the dominant axis, so `DOWN`/`UP` brace the
+    /// bottom/top edge and `LEFT`/`RIGHT` the left/right edge.
+    ///
+    /// ```
+    /// use manim_core::geometry::{Brace, Square};
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_math::DOWN;
+    /// let bbox = Square::new().bounding_box(); // [-1,1]^2
+    /// let brace = Brace::attached_to(bbox, DOWN);
+    /// // Centered under the box, pointing down.
+    /// assert!(brace.get_tip().y < -1.0);
+    /// assert!(brace.get_tip().x.abs() < 1e-5);
+    /// ```
+    pub fn attached_to(bbox: BoundingBox, direction: Point) -> Self {
+        let (min, max) = (bbox.min, bbox.max);
+        let (start, end) = if direction.y.abs() >= direction.x.abs() {
+            // Vertical direction → a horizontal edge (top or bottom).
+            let y = if direction.y < 0.0 { min.y } else { max.y };
+            (Point::new(min.x, y, 0.0), Point::new(max.x, y, 0.0))
+        } else {
+            // Horizontal direction → a vertical edge (left or right).
+            let x = if direction.x < 0.0 { min.x } else { max.x };
+            (Point::new(x, min.y, 0.0), Point::new(x, max.y, 0.0))
+        };
+        Self::new(start, end, direction)
     }
 
     /// A brace with an explicit protrusion `depth`.

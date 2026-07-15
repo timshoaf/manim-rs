@@ -1,13 +1,15 @@
 //! [`Axes`]: a 2-D coordinate system mobject with plotting helpers.
 
-use manim_color::WHITE;
+use manim_color::{WHITE, YELLOW};
 use manim_math::path::{Path, SubPath};
-use manim_math::{Point, DOWN, LEFT};
+use manim_math::space_ops::normalize_or_zero;
+use manim_math::{Point, DOWN, LEFT, RIGHT};
 
 use super::{CoordSystem, FunctionGraph, ParametricFunction};
-use crate::geometry::{Line, VMobject};
+use crate::geometry::{Brace, Line, VGroup, VMobject};
 use crate::impl_mobject;
-use crate::mobject::MobjectData;
+use crate::mobject::{MobjectData, MobjectId};
+use crate::scene_state::SceneState;
 use crate::style::Style;
 
 /// Tick length for axes (scene units).
@@ -163,6 +165,47 @@ impl Axes {
         self.coords.get_horizontal_line(x, y)
     }
 
+    /// A secant-slope group for `graph` over `[x, x + dx]`: the secant line
+    /// through the two graph points, plus a `dx` brace under the horizontal leg
+    /// and a `dy` brace beside the vertical leg. Port of manim CE's
+    /// `get_secant_slope_group` (FE-103 leftover). Added to `scene`; returns the
+    /// group.
+    ///
+    /// ```
+    /// use manim_core::graphing::Axes;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::MobjectExt;
+    /// let mut scene = SceneState::new();
+    /// let axes = Axes::new([0.0, 3.0, 1.0], [0.0, 9.0, 1.0]);
+    /// let graph = axes.plot(|x| x * x, None);
+    /// let group = axes.get_secant_slope_group(&mut scene, &graph, 1.0, 1.0);
+    /// // secant + dx brace + dy brace.
+    /// assert_eq!(scene.get_dyn(group.erase()).data().children.len(), 3);
+    /// ```
+    pub fn get_secant_slope_group(
+        &self,
+        scene: &mut SceneState,
+        graph: &FunctionGraph,
+        x: f32,
+        dx: f32,
+    ) -> MobjectId<VGroup> {
+        let p1 = self.input_to_graph_point(x, graph);
+        let p2 = self.input_to_graph_point(x + dx, graph);
+        let corner = Point::new(p2.x, p1.y, 0.0);
+
+        // Secant line, extended a little past both graph points.
+        let ext = normalize_or_zero(p2 - p1) * 0.5;
+        let secant = scene.add(VMobject::new(
+            Path::from_corners(&[p1 - ext, p2 + ext], false),
+            Style::stroked(YELLOW),
+        ));
+        // dx leg (horizontal) braced below, dy leg (vertical) braced to the right.
+        let dx_brace = scene.add(Brace::new(p1, corner, DOWN));
+        let dy_brace = scene.add(Brace::new(corner, p2, RIGHT));
+
+        VGroup::of(scene, [secant.erase(), dx_brace.erase(), dy_brace.erase()])
+    }
+
     /// The anchor point for a numeric label on the x-axis at value `x` (below
     /// the axis). Text is deferred (M4).
     pub fn x_label_point(&self, x: f32) -> Point {
@@ -228,6 +271,28 @@ mod tests {
             assert!((rx - x).abs() < 1e-4, "x {rx} vs {x}");
             assert!((ry - y).abs() < 1e-4, "y {ry} vs {y}");
         }
+    }
+
+    #[test]
+    fn secant_slope_matches_finite_difference() {
+        // Unit scale on both axes: scene slope equals data slope.
+        let mut scene = SceneState::new();
+        let axes = Axes::new([0.0, 3.0, 1.0], [0.0, 9.0, 1.0]);
+        let f = |x: f32| x * x;
+        let graph = axes.plot(f, None);
+        let (x, dx) = (1.0, 1.0);
+        let group = axes.get_secant_slope_group(&mut scene, &graph, x, dx);
+
+        let secant = scene.get_dyn(group.erase()).data().children[0];
+        let path = &scene.get_dyn(secant).data().path;
+        let a = path.subpaths[0].curves.first().unwrap().p0;
+        let b = path.subpaths[0].curves.last().unwrap().p3;
+        let slope = (b.y - a.y) / (b.x - a.x);
+        let expected = (f(x + dx) - f(x)) / dx; // (4-1)/1 = 3
+        assert!(
+            (slope - expected).abs() < 1e-3,
+            "slope {slope} vs {expected}"
+        );
     }
 
     #[test]

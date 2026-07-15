@@ -148,7 +148,8 @@ impl SceneState {
     /// scene.add_child(g.erase(), c.erase());
     /// assert_eq!(scene.family(g.erase()).len(), 2); // group + circle
     /// ```
-    pub fn add_child(&mut self, parent: AnyId, child: AnyId) {
+    pub fn add_child(&mut self, parent: impl Into<AnyId>, child: impl Into<AnyId>) {
+        let (parent, child) = (parent.into(), child.into());
         if !self.arena.contains_key(parent.0) || !self.arena.contains_key(child.0) {
             return;
         }
@@ -175,8 +176,8 @@ impl SceneState {
     /// scene.add_to_group(g.erase(), c.erase());
     /// assert_eq!(scene.family(g.erase()).len(), 2);
     /// ```
-    pub fn add_to_group(&mut self, group: AnyId, child: AnyId) {
-        self.add_child(group, child);
+    pub fn add_to_group(&mut self, group: impl Into<AnyId>, child: impl Into<AnyId>) {
+        self.add_child(group.into(), child.into());
     }
 
     /// Removes `id` and all its descendants from the scene.
@@ -192,7 +193,8 @@ impl SceneState {
     /// scene.remove(c.erase());
     /// assert!(scene.try_get(c).is_none());
     /// ```
-    pub fn remove(&mut self, id: AnyId) {
+    pub fn remove(&mut self, id: impl Into<AnyId>) {
+        let id = id.into();
         if !self.arena.contains_key(id.0) {
             return;
         }
@@ -224,8 +226,8 @@ impl SceneState {
     }
 
     /// Whether a handle still refers to a live mobject.
-    pub fn contains(&self, id: AnyId) -> bool {
-        self.arena.contains_key(id.0)
+    pub fn contains(&self, id: impl Into<AnyId>) -> bool {
+        self.arena.contains_key(id.into().0)
     }
 
     /// Typed shared access; panics on a stale handle or type mismatch.
@@ -263,24 +265,27 @@ impl SceneState {
     }
 
     /// Type-erased shared access; panics on a stale handle.
-    pub fn get_dyn(&self, id: AnyId) -> &dyn Mobject {
+    pub fn get_dyn(&self, id: impl Into<AnyId>) -> &dyn Mobject {
         self.arena
-            .get(id.0)
+            .get(id.into().0)
             .map(|e| e.mobject.as_ref())
             .expect("stale AnyId passed to SceneState::get_dyn")
     }
 
     /// Type-erased mutable access; panics on a stale handle.
-    pub fn get_dyn_mut(&mut self, id: AnyId) -> &mut dyn Mobject {
+    pub fn get_dyn_mut(&mut self, id: impl Into<AnyId>) -> &mut dyn Mobject {
         self.arena
-            .get_mut(id.0)
+            .get_mut(id.into().0)
             .map(|e| e.mobject.as_mut())
             .expect("stale AnyId passed to SceneState::get_dyn_mut")
     }
 
     /// Whether `id` is currently visible (defaults to `true`).
-    pub fn is_visible(&self, id: AnyId) -> bool {
-        self.arena.get(id.0).map(|e| e.visible).unwrap_or(false)
+    pub fn is_visible(&self, id: impl Into<AnyId>) -> bool {
+        self.arena
+            .get(id.into().0)
+            .map(|e| e.visible)
+            .unwrap_or(false)
     }
 
     /// Sets the visibility of `id` (invisible mobjects are skipped when drawing).
@@ -293,8 +298,8 @@ impl SceneState {
     /// scene.set_visible(c.erase(), false);
     /// assert!(scene.display_list().is_empty());
     /// ```
-    pub fn set_visible(&mut self, id: AnyId, visible: bool) {
-        if let Some(e) = self.arena.get_mut(id.0) {
+    pub fn set_visible(&mut self, id: impl Into<AnyId>, visible: bool) {
+        if let Some(e) = self.arena.get_mut(id.into().0) {
             e.visible = visible;
         }
     }
@@ -314,9 +319,9 @@ impl SceneState {
     /// // group, then its children in insertion order.
     /// assert_eq!(scene.family(g.erase()), vec![g.erase(), a.erase(), b.erase()]);
     /// ```
-    pub fn family(&self, id: AnyId) -> Vec<AnyId> {
+    pub fn family(&self, id: impl Into<AnyId>) -> Vec<AnyId> {
         let mut out = Vec::new();
-        self.collect_family(id, &mut out);
+        self.collect_family(id.into(), &mut out);
         out
     }
 
@@ -356,9 +361,9 @@ impl SceneState {
     /// // Spans x ∈ [-1, 5], so width 6.
     /// assert!((scene.family_bounding_box(g.erase()).width() - 6.0).abs() < 1e-4);
     /// ```
-    pub fn family_bounding_box(&self, id: AnyId) -> BoundingBox {
+    pub fn family_bounding_box(&self, id: impl Into<AnyId>) -> BoundingBox {
         let mut result: Option<BoundingBox> = None;
-        for member in self.family(id) {
+        for member in self.family(id.into()) {
             let path = &self.arena[member.0].mobject.data().path;
             if path.subpaths.iter().all(|s| s.curves.is_empty()) {
                 continue;
@@ -387,8 +392,8 @@ impl SceneState {
     /// scene.apply_to_family(g.erase(), |m| m.data_mut().z_index = 7);
     /// assert_eq!(scene.get(c).data().z_index, 7);
     /// ```
-    pub fn apply_to_family(&mut self, id: AnyId, mut f: impl FnMut(&mut dyn Mobject)) {
-        for member in self.family(id) {
+    pub fn apply_to_family(&mut self, id: impl Into<AnyId>, mut f: impl FnMut(&mut dyn Mobject)) {
+        for member in self.family(id.into()) {
             if let Some(e) = self.arena.get_mut(member.0) {
                 f(e.mobject.as_mut());
             }
@@ -397,43 +402,59 @@ impl SceneState {
 
     /// Shifts `id` and its whole family by `delta` (family-aware `shift`).
     ///
+    /// The `id` parameter is `impl Into<AnyId>`, so a typed [`MobjectId`] can be
+    /// passed directly — no `.erase()` needed (the same holds for the other
+    /// family-aware methods).
+    ///
     /// ```
-    /// use manim_core::geometry::{Circle, VGroup};
+    /// use manim_core::geometry::Circle;
     /// use manim_core::scene_state::SceneState;
-    /// use manim_core::mobject::{Buildable, Mobject, MobjectExt};
+    /// use manim_core::mobject::MobjectExt;
     /// use manim_math::RIGHT;
     /// let mut scene = SceneState::new();
-    /// let g = scene.add(VGroup::new());
     /// let c = scene.add(Circle::new());
-    /// scene.add_child(g.erase(), c.erase());
-    /// scene.shift(g.erase(), 3.0 * RIGHT);
+    /// scene.shift(c, 3.0 * RIGHT); // typed id, no .erase()
     /// assert!((scene.get(c).get_center() - 3.0 * RIGHT).length() < 1e-6);
     /// ```
-    pub fn shift(&mut self, id: AnyId, delta: Point) {
+    pub fn shift(&mut self, id: impl Into<AnyId>, delta: Point) -> &mut Self {
+        let id = id.into();
         self.apply_to_family(id, |m| apply_shift(m.data_mut(), delta));
+        self
     }
 
     /// Scales `id`'s family by `factor` about `point` (family-aware `scale`).
-    pub fn scale_about(&mut self, id: AnyId, factor: f32, point: Point) {
+    pub fn scale_about(&mut self, id: impl Into<AnyId>, factor: f32, point: Point) -> &mut Self {
+        let id = id.into();
         self.apply_to_family(id, |m| apply_scale_about(m.data_mut(), factor, point));
+        self
     }
 
     /// Scales `id`'s family by `factor` about the family's center.
-    pub fn scale(&mut self, id: AnyId, factor: f32) {
+    pub fn scale(&mut self, id: impl Into<AnyId>, factor: f32) -> &mut Self {
+        let id = id.into();
         let center = self.family_bounding_box(id).center();
-        self.scale_about(id, factor, center);
+        self.scale_about(id, factor, center)
     }
 
     /// Rotates `id`'s family by `angle` about `point` around `axis`
     /// (family-aware `rotate`).
-    pub fn rotate_about(&mut self, id: AnyId, angle: f32, point: Point, axis: Point) {
+    pub fn rotate_about(
+        &mut self,
+        id: impl Into<AnyId>,
+        angle: f32,
+        point: Point,
+        axis: Point,
+    ) -> &mut Self {
+        let id = id.into();
         self.apply_to_family(id, |m| apply_rotate_about(m.data_mut(), angle, point, axis));
+        self
     }
 
     /// Rotates `id`'s family by `angle` about the family's center around `OUT`.
-    pub fn rotate(&mut self, id: AnyId, angle: f32) {
+    pub fn rotate(&mut self, id: impl Into<AnyId>, angle: f32) -> &mut Self {
+        let id = id.into();
         let center = self.family_bounding_box(id).center();
-        self.rotate_about(id, angle, center, OUT);
+        self.rotate_about(id, angle, center, OUT)
     }
 
     /// Moves `id`'s family so the family center lands on `target` (family-aware
@@ -453,9 +474,10 @@ impl SceneState {
     /// scene.move_to(g.erase(), 5.0 * UP);
     /// assert!((scene.family_bounding_box(g.erase()).center() - 5.0 * UP).length() < 1e-5);
     /// ```
-    pub fn move_to(&mut self, id: AnyId, target: Point) {
+    pub fn move_to(&mut self, id: impl Into<AnyId>, target: Point) -> &mut Self {
+        let id = id.into();
         let center = self.family_bounding_box(id).center();
-        self.shift(id, target - center);
+        self.shift(id, target - center)
     }
 
     /// Applies a style edit to every member of `id`'s family (family-aware
@@ -473,8 +495,77 @@ impl SceneState {
     /// scene.set_style_family(g.erase(), |s| { s.set_color(RED); });
     /// assert_eq!(scene.get(c).data().style.stroke_color, Some(RED));
     /// ```
-    pub fn set_style_family(&mut self, id: AnyId, mut f: impl FnMut(&mut crate::style::Style)) {
-        self.apply_to_family(id, |m| f(&mut m.data_mut().style));
+    pub fn set_style_family(
+        &mut self,
+        id: impl Into<AnyId>,
+        mut f: impl FnMut(&mut crate::style::Style),
+    ) -> &mut Self {
+        self.apply_to_family(id.into(), |m| f(&mut m.data_mut().style));
+        self
+    }
+
+    /// Colors `id`'s family with a gradient by giving each drawable member a
+    /// solid color interpolated along `colors` (manim CE's group
+    /// `set_color_by_gradient`, which distributes across submobjects).
+    ///
+    /// This differs from the single-mobject
+    /// [`MobjectExt::set_color_by_gradient`](crate::mobject::MobjectExt::set_color_by_gradient),
+    /// which ramps one mobject's fill across its own vertices. When the family has
+    /// a single drawable member this falls back to that per-vertex gradient, so a
+    /// lone shape still gradients smoothly. Useful for tinting a `Text`'s glyph
+    /// children in one call. No-op on an empty palette.
+    ///
+    /// ```
+    /// use manim_core::geometry::{Circle, Square, VGroup};
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::Mobject;
+    /// use manim_color::{BLUE, RED};
+    /// let mut scene = SceneState::new();
+    /// let g = scene.add(VGroup::new());
+    /// let a = scene.add(Circle::new());
+    /// let b = scene.add(Square::new());
+    /// scene.add_child(g.erase(), a.erase());
+    /// scene.add_child(g.erase(), b.erase());
+    /// scene.set_color_by_gradient(g.erase(), &[BLUE, RED]);
+    /// // First child gets the first stop, last child the last stop.
+    /// assert_eq!(scene.get(a).data().style.stroke_color, Some(BLUE));
+    /// assert_eq!(scene.get(b).data().style.stroke_color, Some(RED));
+    /// ```
+    pub fn set_color_by_gradient(
+        &mut self,
+        id: impl Into<AnyId>,
+        colors: &[manim_color::Color],
+    ) -> &mut Self {
+        if colors.is_empty() {
+            return self;
+        }
+        let id = id.into();
+        let leaves: Vec<AnyId> = self
+            .family(id)
+            .into_iter()
+            .filter(|m| {
+                let p = &self.get_dyn(*m).data().path;
+                !p.subpaths.iter().all(|s| s.curves.is_empty())
+            })
+            .collect();
+        match leaves.len() {
+            0 => {}
+            1 => {
+                // A single drawable member: ramp its own vertices instead.
+                self.get_dyn_mut(leaves[0])
+                    .data_mut()
+                    .style
+                    .set_color_by_gradient(colors);
+            }
+            n => {
+                for (i, m) in leaves.iter().enumerate() {
+                    let t = i as f32 / (n - 1) as f32;
+                    let color = sample_gradient(colors, t);
+                    self.get_dyn_mut(*m).data_mut().style.set_color(color);
+                }
+            }
+        }
+        self
     }
 
     // --- Saved states (manim's `save_state` / `restore`) ---
@@ -495,25 +586,27 @@ impl SceneState {
     /// scene.restore(c.erase());
     /// assert!(scene.get(c).get_center().length() < 1e-6);
     /// ```
-    pub fn save_state(&mut self, id: AnyId) {
+    pub fn save_state(&mut self, id: impl Into<AnyId>) {
+        let id = id.into();
         if let Some(e) = self.arena.get(id.0) {
             self.saved_states.insert(id.0, e.mobject.data().clone());
         }
     }
 
     /// Whether a saved snapshot exists for `id`.
-    pub fn has_saved_state(&self, id: AnyId) -> bool {
-        self.saved_states.contains_key(&id.0)
+    pub fn has_saved_state(&self, id: impl Into<AnyId>) -> bool {
+        self.saved_states.contains_key(&id.into().0)
     }
 
     /// The saved snapshot for `id`, if any.
-    pub fn saved_state(&self, id: AnyId) -> Option<&MobjectData> {
-        self.saved_states.get(&id.0)
+    pub fn saved_state(&self, id: impl Into<AnyId>) -> Option<&MobjectData> {
+        self.saved_states.get(&id.into().0)
     }
 
     /// Restores `id` to its last [`save_state`](Self::save_state) snapshot.
     /// No-op if there is no snapshot or the handle is stale.
-    pub fn restore(&mut self, id: AnyId) {
+    pub fn restore(&mut self, id: impl Into<AnyId>) {
+        let id = id.into();
         if let (Some(data), true) = (
             self.saved_states.get(&id.0).cloned(),
             self.arena.contains_key(id.0),
@@ -545,28 +638,31 @@ impl SceneState {
     /// ```
     pub fn add_updater(
         &mut self,
-        id: AnyId,
+        id: impl Into<AnyId>,
         func: impl FnMut(&mut SceneState, AnyId, UpdaterCtx) + Send + Sync + 'static,
     ) {
         self.updaters.push(UpdaterEntry {
-            id,
+            id: id.into(),
             active: true,
             func: Arc::new(Mutex::new(func)),
         });
     }
 
     /// Removes all updaters registered on `id`.
-    pub fn remove_updaters(&mut self, id: AnyId) {
+    pub fn remove_updaters(&mut self, id: impl Into<AnyId>) {
+        let id = id.into();
         self.updaters.retain(|u| u.id != id);
     }
 
     /// Whether any updater is registered on `id`.
-    pub fn has_updaters(&self, id: AnyId) -> bool {
+    pub fn has_updaters(&self, id: impl Into<AnyId>) -> bool {
+        let id = id.into();
         self.updaters.iter().any(|u| u.id == id)
     }
 
     /// Suspends (pauses) updaters registered on `id`.
-    pub fn suspend_updating(&mut self, id: AnyId) {
+    pub fn suspend_updating(&mut self, id: impl Into<AnyId>) {
+        let id = id.into();
         for u in &mut self.updaters {
             if u.id == id {
                 u.active = false;
@@ -575,7 +671,8 @@ impl SceneState {
     }
 
     /// Resumes previously-suspended updaters on `id`.
-    pub fn resume_updating(&mut self, id: AnyId) {
+    pub fn resume_updating(&mut self, id: impl Into<AnyId>) {
+        let id = id.into();
         for u in &mut self.updaters {
             if u.id == id {
                 u.active = true;
@@ -677,6 +774,7 @@ impl SceneState {
                     stroke,
                     background_stroke,
                     image,
+                    fixed_in_frame: data.fixed_in_frame,
                     z_index: data.z_index,
                     source: member,
                     generation: data.generation,
@@ -823,6 +921,17 @@ impl SceneState {
         });
         id
     }
+}
+
+/// Samples a multi-stop color ramp at `t` in `[0, 1]`, interpolating linearly
+/// between adjacent stops.
+fn sample_gradient(colors: &[manim_color::Color], t: f32) -> manim_color::Color {
+    if colors.len() == 1 {
+        return colors[0];
+    }
+    let scaled = t.clamp(0.0, 1.0) * (colors.len() - 1) as f32;
+    let i = (scaled.floor() as usize).min(colors.len() - 2);
+    colors[i].interpolate(&colors[i + 1], scaled - i as f32)
 }
 
 /// Resolves a style [`Gradient`]'s bbox-relative axis to concrete world-space

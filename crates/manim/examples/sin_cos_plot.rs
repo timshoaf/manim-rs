@@ -12,11 +12,10 @@
 //! API notes vs CE:
 //! - `axes.plot(f, None)` returns a `FunctionGraph` mobject to `add`; `None`
 //!   plots over the axes' own x-range.
-//! - Axis labels come from the `AxesLabels` extension trait in `manim_text`,
-//!   which is **not** in the facade prelude — imported by full path here.
+//! - Axis labels come from the `AxesLabels` extension trait (`manim_text`),
+//!   now available through the facade prelude.
 
 use manim::prelude::*;
-use manim::text::AxesLabels;
 
 /// Scene builder for this gallery example.
 pub struct SinCosPlot;
@@ -33,9 +32,8 @@ impl SceneBuilder for SinCosPlot {
             .with_stroke(YELLOW, 3.0, 1.0);
 
         // Axis labels (extension trait) — added before the axes value is consumed.
-        let labels = axes
-            .get_axis_labels(scene.state_mut(), "x", "y")
-            .expect("axis labels typeset");
+        // get_axis_labels now returns CoreError, so it composes with `?`.
+        let labels = axes.get_axis_labels(scene.state_mut(), "x", "y")?;
 
         let axes = scene.add(axes);
         let sin_id = scene.add(sin_graph);

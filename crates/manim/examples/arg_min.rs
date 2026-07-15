@@ -9,9 +9,9 @@
 //!
 //! Frames land in `out/arg_min/frame_NNNN.png`.
 //!
-//! API note vs CE: CE uses `always_redraw` + `t.animate.set_value(...)`. We have
-//! no `always_redraw`; instead we register an updater that reads the tracker and
-//! `move_to`s the dot each frame, then animate the tracker with [`SetValue`].
+//! API note vs CE: mirrors CE's `always_redraw` + `t.animate.set_value(...)` —
+//! [`Scene::always_redraw`] rebuilds the dot at the tracker's `(x, f(x))` each
+//! frame, and [`SetValue`] animates the tracker to the minimum.
 
 use manim::prelude::*;
 
@@ -32,22 +32,17 @@ impl SceneBuilder for ArgMin {
         let graph = scene.add(graph);
         scene.play((Create::new(axes), Create::new(graph)))?;
 
-        // Dot starts over x = 4 and will slide to the minimum at x = 2.
+        // Dot starts over x = 4 and slides to the minimum at x = 2. always_redraw
+        // rebuilds it at the tracker's (x, f(x)) each frame — no manual updater.
         let start_x = 4.0;
-        let dot = scene.add(
+        let tracker = scene.add(ValueTracker::new(start_x));
+        let _dot = scene.always_redraw(move |s| {
+            let x = s.get(tracker).get_value();
             Dot::new()
                 .with_fill(YELLOW, 1.0)
-                .with_move_to(coords.coords_to_point(start_x, parabola(start_x))),
-        );
-        let tracker = scene.add(ValueTracker::new(start_x));
-        scene
-            .state_mut()
-            .add_updater(dot.erase(), move |s, id, _ctx| {
-                let x = s.get(tracker).get_value();
-                s.move_to(id, coords.coords_to_point(x, parabola(x)));
-            });
+                .with_move_to(coords.coords_to_point(x, parabola(x)))
+        });
 
-        scene.play(Create::new(dot))?;
         scene.play(SetValue::new(tracker, 2.0).run_time(2.0))?;
         scene.wait(0.5);
         Ok(())

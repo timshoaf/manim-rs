@@ -1,21 +1,19 @@
-//! The 2-D camera: a scene-space rectangle mapped to normalized device coords.
+//! The render camera: a scene rectangle (2-D) or spherical orbit (3-D) mapped to
+//! normalized device coords.
 //!
-//! [`Camera2D`] describes the visible frame — its center, width, height, and
-//! roll — exactly like manim CE's `camera.frame`. [`Camera2D::view_proj`] turns
-//! that into the `mat4` uniform the vertex shader multiplies each world-space
-//! position by, mapping the frame rectangle onto the `[-1, 1]²` clip cube with
-//! **y pointing up** (matching both scene convention and wgpu's NDC).
+//! [`Camera2D`] describes the visible frame — center, size, roll, and an optional
+//! [`ThreeDParams`] orientation. [`Camera2D::view_proj`] returns the `mat4`
+//! uniform the vertex shader multiplies each world position by. With no 3-D part
+//! it is an **orthographic** map onto `[-1, 1]²` NDC (y-up) — identical to the
+//! 2-D renderer, so 2-D scenes are byte-for-byte unchanged. With a 3-D part it is
+//! `perspective · look_at`, orbiting `frame_center` by `(phi, theta, gamma)`.
 
 use glam::{Mat4, Vec3};
+use manim_core::camera::ThreeDParams;
 use manim_core::config::Config;
 use manim_math::{Point, ORIGIN};
 
-/// A 2-D camera over a rectangular slice of scene space.
-///
-/// The camera sees a `frame_width × frame_height` rectangle centered on
-/// `frame_center`, optionally rolled by `rotation` radians. Animating these
-/// fields with the ordinary animation machinery gives manim's
-/// `MovingCameraScene` behavior (`self.camera.frame.animate.scale(0.5)`).
+/// A render camera over a slice of scene space (2-D ortho or 3-D perspective).
 ///
 /// ```
 /// use manim_render::camera::Camera2D;
@@ -26,6 +24,7 @@ use manim_math::{Point, ORIGIN};
 ///     frame_width: 14.222,
 ///     frame_height: 8.0,
 ///     rotation: 0.0,
+///     three_d: None,
 /// };
 /// // The frame center maps to the middle of clip space.
 /// let clip = cam.view_proj().project_point3(ORIGIN);
@@ -41,15 +40,18 @@ pub struct Camera2D {
     pub frame_height: f32,
     /// Camera roll in radians (counter-clockwise), about `frame_center`.
     pub rotation: f32,
+    /// 3-D orientation, or `None` for an orthographic 2-D camera.
+    pub three_d: Option<ThreeDParams>,
 }
 
 impl Camera2D {
-    /// The view-projection matrix mapping world space to `[-1, 1]²` NDC (y-up).
-    ///
-    /// A world point `p` is translated so `frame_center` is the origin, rolled
-    /// by `-rotation` (rolling the camera one way scrolls the world the other),
-    /// then scaled so the frame half-extents land on `±1`. Points outside the
-    /// frame fall outside the clip cube and are clipped by the GPU.
+    /// Whether the camera is in 3-D (perspective) mode.
+    pub fn is_3d(&self) -> bool {
+        self.three_d.is_some()
+    }
+
+    /// The view-projection matrix. Orthographic when 2-D (see
+    /// [`ortho_view_proj`](Self::ortho_view_proj)); perspective orbit when 3-D.
     ///
     /// ```
     /// use manim_render::camera::Camera2D;
@@ -60,6 +62,7 @@ impl Camera2D {
     ///     frame_width: 4.0,
     ///     frame_height: 2.0,
     ///     rotation: 0.0,
+    ///     three_d: None,
     /// };
     /// let m = cam.view_proj();
     /// // Top-right frame corner (2, 1) → NDC (1, 1).
@@ -67,6 +70,16 @@ impl Camera2D {
     /// assert!((c.x - 1.0).abs() < 1e-6 && (c.y - 1.0).abs() < 1e-6);
     /// ```
     pub fn view_proj(&self) -> Mat4 {
+        match self.three_d {
+            Some(p) => self.perspective_proj(&p) * self.view_matrix(),
+            None => self.ortho_view_proj(),
+        }
+    }
+
+    /// The orthographic view-projection, mapping the frame rectangle onto
+    /// `[-1, 1]²` NDC (y-up). Used for 2-D content and for `fixed_in_frame` HUD
+    /// overlays under a 3-D camera.
+    pub fn ortho_view_proj(&self) -> Mat4 {
         let scale = Mat4::from_scale(Vec3::new(
             2.0 / self.frame_width,
             2.0 / self.frame_height,
@@ -76,11 +89,55 @@ impl Camera2D {
         let translate = Mat4::from_translation(-self.frame_center);
         scale * rotate * translate
     }
+
+    /// The 3-D view (look-at) matrix — world → camera space. Identity-like
+    /// (translate to center) when 2-D; used to depth-sort items by camera-space
+    /// z. Panics-free: falls back to the 2-D translation when not 3-D.
+    pub fn view_matrix(&self) -> Mat4 {
+        match self.three_d {
+            Some(p) => {
+                let eye = self.eye(&p);
+                Mat4::look_at_rh(eye, self.frame_center, self.up(&p))
+            }
+            None => Mat4::from_translation(-self.frame_center),
+        }
+    }
+
+    /// The camera eye position for 3-D params `p`.
+    fn eye(&self, p: &ThreeDParams) -> Vec3 {
+        let dir = Vec3::new(
+            p.phi.sin() * p.theta.cos(),
+            p.phi.sin() * p.theta.sin(),
+            p.phi.cos(),
+        );
+        self.frame_center + dir * p.focal_distance
+    }
+
+    /// The rolled up-vector for 3-D params `p`.
+    fn up(&self, p: &ThreeDParams) -> Vec3 {
+        let eye = self.eye(p);
+        let forward = (self.frame_center - eye).normalize_or_zero();
+        // Reference up: +y when looking near the pole (phi≈0), else +z.
+        let reference = if p.phi.abs() < 1e-3 { Vec3::Y } else { Vec3::Z };
+        let right = forward.cross(reference).normalize_or_zero();
+        let up0 = right.cross(forward).normalize_or_zero();
+        // Roll about the view axis by gamma.
+        (up0 * p.gamma.cos() + right * p.gamma.sin()).normalize_or_zero()
+    }
+
+    /// The perspective projection for 3-D params `p`, matching the frame's
+    /// visible height at the focus plane.
+    fn perspective_proj(&self, p: &ThreeDParams) -> Mat4 {
+        let aspect = self.frame_width / self.frame_height;
+        let half_h = (self.frame_height * 0.5) / p.zoom.max(1e-3);
+        let fovy = 2.0 * (half_h / p.focal_distance.max(1e-3)).atan();
+        let far = p.focal_distance * 4.0 + 100.0;
+        Mat4::perspective_rh(fovy, aspect, 0.05, far)
+    }
 }
 
 impl From<&Config> for Camera2D {
-    /// Builds the default camera for a [`Config`]: centered at the origin,
-    /// unrolled, with the config's frame dimensions.
+    /// Builds the default 2-D camera for a [`Config`].
     ///
     /// ```
     /// use manim_core::config::Config;
@@ -88,7 +145,7 @@ impl From<&Config> for Camera2D {
     ///
     /// let cam = Camera2D::from(&Config::default());
     /// assert_eq!(cam.frame_height, 8.0);
-    /// assert_eq!(cam.rotation, 0.0);
+    /// assert!(!cam.is_3d());
     /// ```
     fn from(config: &Config) -> Self {
         Self {
@@ -96,15 +153,15 @@ impl From<&Config> for Camera2D {
             frame_width: config.frame_width,
             frame_height: config.frame_height,
             rotation: 0.0,
+            three_d: None,
         }
     }
 }
 
 impl From<&manim_core::camera::CameraFrame> for Camera2D {
     /// Builds the render camera from a per-frame
-    /// [`CameraFrame`](manim_core::camera::CameraFrame), so renderers can follow
-    /// animated camera motion. The frame's background is handled separately (it
-    /// is the clear color, not part of the projection).
+    /// [`CameraFrame`](manim_core::camera::CameraFrame), carrying the 3-D
+    /// orientation so renderers follow animated 2-D *and* 3-D camera motion.
     ///
     /// ```
     /// use manim_core::camera::{Camera2D as CoreCamera, CameraFrame};
@@ -121,6 +178,7 @@ impl From<&manim_core::camera::CameraFrame> for Camera2D {
             frame_width: c.width,
             frame_height: c.height,
             rotation: c.rotation,
+            three_d: c.three_d,
         }
     }
 }
@@ -130,14 +188,19 @@ mod tests {
     use super::*;
     use manim_math::Point;
 
+    fn cam_2d(center: Point, w: f32, h: f32, rotation: f32) -> Camera2D {
+        Camera2D {
+            frame_center: center,
+            frame_width: w,
+            frame_height: h,
+            rotation,
+            three_d: None,
+        }
+    }
+
     #[test]
     fn frame_corners_map_to_ndc_unit_square() {
-        let cam = Camera2D {
-            frame_center: Point::new(1.0, 2.0, 0.0),
-            frame_width: 8.0,
-            frame_height: 4.0,
-            rotation: 0.0,
-        };
+        let cam = cam_2d(Point::new(1.0, 2.0, 0.0), 8.0, 4.0, 0.0);
         let m = cam.view_proj();
         let corners = [
             (Point::new(1.0 + 4.0, 2.0 + 2.0, 0.0), (1.0, 1.0)),
@@ -155,21 +218,49 @@ mod tests {
     fn y_axis_points_up() {
         let cam = Camera2D::from(&Config::default());
         let up = cam.view_proj().project_point3(Point::new(0.0, 1.0, 0.0));
-        // A point above center has positive NDC y (wgpu NDC is y-up).
         assert!(up.y > 0.0);
     }
 
     #[test]
     fn rotation_rolls_the_world() {
-        // A 90° camera roll sends the +x frame axis onto the -y (or +y) NDC axis.
-        let cam = Camera2D {
-            frame_center: Point::ZERO,
-            frame_width: 2.0,
-            frame_height: 2.0,
-            rotation: std::f32::consts::FRAC_PI_2,
-        };
+        let cam = cam_2d(Point::ZERO, 2.0, 2.0, std::f32::consts::FRAC_PI_2);
         let c = cam.view_proj().project_point3(Point::new(1.0, 0.0, 0.0));
         assert!(c.x.abs() < 1e-6);
         assert!((c.y.abs() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn default_3d_orientation_matches_2d_axes() {
+        // phi=0 (default) looks down +z with +y up and +x right — like the 2-D
+        // view. A point on +x maps to positive NDC x, on +y to positive NDC y.
+        let mut cam = cam_2d(Point::ZERO, 8.0, 8.0, 0.0);
+        cam.three_d = Some(ThreeDParams::default());
+        let px = cam.view_proj().project_point3(Point::new(1.0, 0.0, 0.0));
+        let py = cam.view_proj().project_point3(Point::new(0.0, 1.0, 0.0));
+        assert!(px.x > 0.0, "px.x = {}", px.x);
+        assert!(py.y > 0.0, "py.y = {}", py.y);
+    }
+
+    #[test]
+    fn perspective_selected_only_when_3d() {
+        let cam2 = cam_2d(Point::ZERO, 8.0, 8.0, 0.0);
+        assert!(!cam2.is_3d());
+        // 2-D: orthographic — depth (z) does not affect x/y.
+        let near = cam2.view_proj().project_point3(Point::new(1.0, 0.0, 0.0));
+        let far = cam2.view_proj().project_point3(Point::new(1.0, 0.0, -3.0));
+        assert!((near.x - far.x).abs() < 1e-6);
+
+        let mut cam3 = cam2;
+        cam3.three_d = Some(ThreeDParams::default());
+        assert!(cam3.is_3d());
+        // 3-D: perspective — a point farther from the camera projects smaller.
+        let a = cam3.view_proj().project_point3(Point::new(1.0, 0.0, 0.0));
+        let b = cam3.view_proj().project_point3(Point::new(1.0, 0.0, -3.0));
+        assert!(
+            b.x.abs() < a.x.abs(),
+            "far {} should be smaller than near {}",
+            b.x,
+            a.x
+        );
     }
 }

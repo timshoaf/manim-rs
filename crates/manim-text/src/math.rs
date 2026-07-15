@@ -8,6 +8,7 @@
 //! `typst-assets`, so results are deterministic.
 
 use manim_color::{Color, WHITE};
+use manim_core::error::CoreError;
 use manim_core::geometry::VMobject;
 use manim_core::impl_mobject;
 use manim_core::mobject::{AnyId, MobjectData, MobjectId};
@@ -78,11 +79,14 @@ impl MathTex {
     ///
     /// # Errors
     ///
-    /// Returns [`MathError::UnknownCommand`] for an untranslatable command, or
-    /// [`MathError::Typeset`] if typst rejects the result.
-    pub fn new(latex: &str) -> Result<Self, MathError> {
-        let typst_src = translate(latex)?;
-        Self::build(typst_src, Mode::Math, DEFAULT_MATH_FONT_SIZE, WHITE)
+    /// A [`CoreError::Text`] wrapping the underlying [`MathError`] — an
+    /// untranslatable command (`MathError::UnknownCommand`) or a typst rejection
+    /// (`MathError::Typeset`), recoverable via the error's
+    /// [`source`](std::error::Error::source). Returning [`CoreError`] lets this
+    /// compose with `?` inside a scene `construct`.
+    pub fn new(latex: &str) -> Result<Self, CoreError> {
+        let typst_src = translate(latex).map_err(CoreError::text)?;
+        Self::build(typst_src, Mode::Math, DEFAULT_MATH_FONT_SIZE, WHITE).map_err(CoreError::text)
     }
 
     /// The typst source string this was built from.
@@ -140,6 +144,75 @@ impl MathTex {
         id
     }
 
+    /// The per-glyph paths of this (unadded) formula, in child order.
+    fn glyph_paths(&self) -> Vec<Path> {
+        let mut out = Vec::with_capacity(self.glyphs.len());
+        let mut idx = 0;
+        for g in &self.glyphs {
+            let sub = self.data.path.subpaths[idx..idx + g.n_subpaths].to_vec();
+            idx += g.n_subpaths;
+            out.push(Path { subpaths: sub });
+        }
+        out
+    }
+
+    /// Recolors the glyphs of an added formula `id` that **match the shape** of
+    /// `tex`'s glyphs, returning how many were recolored. Port (approximation) of
+    /// manim CE's `set_color_by_tex`.
+    ///
+    /// # Approach & limits
+    ///
+    /// CE isolates a TeX *substring* and colors exactly its glyphs. typst does
+    /// not give us a robust LaTeX-substring → glyph map (glyph spans point into
+    /// the *translated* typst source and math layout reflows glyphs), so this
+    /// instead renders `tex` on its own and colors every glyph in `id` whose
+    /// **shape signature** matches — the same quantized-outline hash used by
+    /// [`TransformMatchingTex`](crate::TransformMatchingTex). Consequence: it
+    /// colors *all* occurrences of those glyph shapes, and cannot distinguish
+    /// identical-looking symbols in different subexpressions. Good for "color the
+    /// π / the x"; not a true substring isolation (tracked as FE-99).
+    ///
+    /// # Errors
+    ///
+    /// A [`CoreError::Text`] if `tex` fails to typeset.
+    ///
+    /// ```
+    /// use manim_text::MathTex;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::Mobject;
+    /// use manim_color::RED;
+    /// let mut scene = SceneState::new();
+    /// let m = MathTex::new(r"x + y = x").unwrap().add_to(&mut scene);
+    /// // Both x glyphs get colored.
+    /// let n = MathTex::set_color_by_tex(&mut scene, m, "x", RED).unwrap();
+    /// assert!(n >= 2);
+    /// ```
+    pub fn set_color_by_tex(
+        scene: &mut SceneState,
+        id: MobjectId<MathTex>,
+        tex: &str,
+        color: Color,
+    ) -> Result<usize, CoreError> {
+        let sub = MathTex::new(tex)?;
+        let wanted: std::collections::HashSet<u64> = sub
+            .glyph_paths()
+            .iter()
+            .filter(|p| !p.subpaths.iter().all(|s| s.curves.is_empty()))
+            .map(crate::match_tex::signature)
+            .collect();
+
+        let children = scene.get_dyn(id.erase()).data().children.clone();
+        let mut count = 0;
+        for c in children {
+            let sig = crate::match_tex::signature(&scene.get_dyn(c).data().path);
+            if wanted.contains(&sig) {
+                scene.get_dyn_mut(c).set_fill(color, 1.0);
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     /// Builds a math mobject from a typst source string in the given mode.
     fn build(
         typst_src: String,
@@ -189,13 +262,14 @@ pub struct Typst;
 impl Typst {
     /// Typesets a raw typst **math** string, returning a [`MathTex`] mobject.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(typst_math: &str) -> Result<MathTex, MathError> {
+    pub fn new(typst_math: &str) -> Result<MathTex, CoreError> {
         MathTex::build(
             typst_math.to_string(),
             Mode::Math,
             DEFAULT_MATH_FONT_SIZE,
             WHITE,
         )
+        .map_err(CoreError::text)
     }
 }
 
@@ -212,13 +286,14 @@ pub struct Tex;
 impl Tex {
     /// Typesets a typst **content-mode** string, returning a [`MathTex`] mobject.
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(content: &str) -> Result<MathTex, MathError> {
+    pub fn new(content: &str) -> Result<MathTex, CoreError> {
         MathTex::build(
             content.to_string(),
             Mode::Content,
             DEFAULT_MATH_FONT_SIZE,
             WHITE,
         )
+        .map_err(CoreError::text)
     }
 }
 
@@ -547,10 +622,13 @@ mod tests {
 
     #[test]
     fn unknown_command_surfaces_error() {
-        assert!(matches!(
-            MathTex::new(r"\nonsense x"),
-            Err(MathError::UnknownCommand(_))
-        ));
+        use std::error::Error;
+        let err = match MathTex::new(r"\nonsense x") {
+            Ok(_) => panic!("expected an error for \\nonsense"),
+            Err(e) => e,
+        };
+        let math_err = err.source().and_then(|s| s.downcast_ref::<MathError>());
+        assert!(matches!(math_err, Some(MathError::UnknownCommand(_))));
     }
 
     #[test]

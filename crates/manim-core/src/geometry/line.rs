@@ -4,7 +4,7 @@
 use manim_color::WHITE;
 use manim_math::path::{Path, SubPath};
 use manim_math::space_ops::{angle_of_vector, line_intersection, normalize_or_zero, rotate_vector};
-use manim_math::{Point, ORIGIN, PI};
+use manim_math::{Point, ORIGIN, PI, TAU};
 
 use super::polygon_subpath;
 use crate::impl_mobject;
@@ -13,6 +13,80 @@ use crate::style::Style;
 
 /// manim CE's default arrow tip length.
 pub const DEFAULT_ARROW_TIP_LENGTH: f32 = 0.35;
+
+/// The head shape of an arrow tip. Port of manim CE's `ArrowTip` family.
+///
+/// `filled` (on the arrow builder) fills pointed tips ([`Triangle`](Self::Triangle)
+/// / [`Stealth`](Self::Stealth)) as solid heads or draws them as an open outline;
+/// [`Circle`](Self::Circle) / [`Square`](Self::Square) heads are always solid
+/// (an unfilled round/square head would need per-subpath styling we don't model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TipShape {
+    /// A solid/open triangular head (manim's default `ArrowTriangleFilledTip`).
+    #[default]
+    Triangle,
+    /// A concave dart head (manim's `StealthTip`).
+    Stealth,
+    /// A round head (`ArrowCircleFilledTip`).
+    Circle,
+    /// A square head (`ArrowSquareFilledTip`).
+    Square,
+}
+
+/// Builds the tip head [`SubPath`] with apex at `apex`, pointing along unit
+/// `dir`, of length `tl`.
+pub(crate) fn tip_subpath(
+    apex: Point,
+    dir: Point,
+    tl: f32,
+    shape: TipShape,
+    filled: bool,
+) -> SubPath {
+    let perp = rotate_vector(dir, PI / 2.0);
+    let hw = tl * 0.5;
+    let base = apex - dir * tl;
+    let w1 = base + perp * hw;
+    let w2 = base - perp * hw;
+    match shape {
+        TipShape::Triangle => {
+            if filled {
+                polygon_subpath(&[apex, w1, w2])
+            } else {
+                SubPath::from_corners(&[w1, apex, w2])
+            }
+        }
+        TipShape::Stealth => {
+            let notch = apex - dir * (tl * 0.55);
+            if filled {
+                polygon_subpath(&[apex, w1, notch, w2])
+            } else {
+                SubPath::from_corners(&[w1, apex, notch, w2])
+            }
+        }
+        TipShape::Circle => circle_subpath(apex - dir * hw, hw),
+        TipShape::Square => {
+            let c = apex - dir * hw;
+            polygon_subpath(&[
+                c + dir * hw + perp * hw,
+                c + dir * hw - perp * hw,
+                c - dir * hw - perp * hw,
+                c - dir * hw + perp * hw,
+            ])
+        }
+    }
+}
+
+/// A closed regular polygon approximating a circle of `radius` at `center`.
+fn circle_subpath(center: Point, radius: f32) -> SubPath {
+    let n = 16;
+    let pts: Vec<Point> = (0..n)
+        .map(|k| {
+            let a = TAU * k as f32 / n as f32;
+            center + Point::new(a.cos(), a.sin(), 0.0) * radius
+        })
+        .collect();
+    polygon_subpath(&pts)
+}
 
 /// A straight line segment. Port of manim CE's `Line`.
 ///
@@ -188,6 +262,8 @@ pub struct Arrow {
     end: Point,
     buff: f32,
     tip_length: f32,
+    tip_shape: TipShape,
+    tip_filled: bool,
 }
 impl_mobject!(Arrow);
 
@@ -199,14 +275,55 @@ impl Arrow {
 
     /// An arrow with an explicit end `buff` and `tip_length`.
     pub fn with_params(start: Point, end: Point, buff: f32, tip_length: f32) -> Self {
-        let path = arrow_path(start, end, buff, tip_length, false);
-        Self {
-            data: MobjectData::new(path, arrow_style()),
+        let mut me = Self {
+            data: MobjectData::new(Path::default(), arrow_style()),
             start,
             end,
             buff,
             tip_length,
-        }
+            tip_shape: TipShape::Triangle,
+            tip_filled: true,
+        };
+        me.rebuild();
+        me
+    }
+
+    /// Sets the tip head shape (manim's `tip_shape`).
+    ///
+    /// ```
+    /// use manim_core::geometry::{Arrow, TipShape};
+    /// use manim_core::mobject::Mobject;
+    /// use manim_math::{Point, RIGHT};
+    /// let a = Arrow::new(Point::ZERO, 3.0 * RIGHT).tip_shape(TipShape::Stealth);
+    /// // Shaft + stealth head (a 4-vertex dart).
+    /// assert!(a.data().path.subpaths.len() == 2);
+    /// ```
+    pub fn tip_shape(mut self, shape: TipShape) -> Self {
+        self.tip_shape = shape;
+        self.rebuild();
+        self
+    }
+
+    /// Draws the tip as an open outline rather than a solid head (pointed shapes
+    /// only; round/square heads stay solid).
+    pub fn open_tip(mut self) -> Self {
+        self.tip_filled = false;
+        self.rebuild();
+        self
+    }
+
+    /// Rebuilds the arrow path from its parameters.
+    fn rebuild(&mut self) {
+        self.data.path = arrow_path(
+            self.start,
+            self.end,
+            self.buff,
+            self.tip_length,
+            false,
+            self.tip_shape,
+            self.tip_filled,
+        );
+        self.data.bump_generation();
     }
 
     /// The tail point.
@@ -261,7 +378,15 @@ impl_mobject!(Vector);
 impl Vector {
     /// A vector arrow from the origin to `end`.
     pub fn new(end: Point) -> Self {
-        let path = arrow_path(ORIGIN, end, 0.0, DEFAULT_ARROW_TIP_LENGTH, false);
+        let path = arrow_path(
+            ORIGIN,
+            end,
+            0.0,
+            DEFAULT_ARROW_TIP_LENGTH,
+            false,
+            TipShape::Triangle,
+            true,
+        );
         Self {
             data: MobjectData::new(path, arrow_style()),
             end,
@@ -300,7 +425,15 @@ impl_mobject!(DoubleArrow);
 impl DoubleArrow {
     /// A double arrow from `start` to `end` with default tip lengths.
     pub fn new(start: Point, end: Point) -> Self {
-        let path = arrow_path(start, end, 0.0, DEFAULT_ARROW_TIP_LENGTH, true);
+        let path = arrow_path(
+            start,
+            end,
+            0.0,
+            DEFAULT_ARROW_TIP_LENGTH,
+            true,
+            TipShape::Triangle,
+            true,
+        );
         Self {
             data: MobjectData::new(path, arrow_style()),
             start,
@@ -316,6 +449,139 @@ impl DoubleArrow {
     /// The end point.
     pub fn get_end(&self) -> Point {
         self.end
+    }
+}
+
+/// A curved arrow: an [`ArcBetweenPoints`](crate::geometry::ArcBetweenPoints)
+/// from `start` to `end` with a tip at the end, tangent to the arc. Port of
+/// manim CE's `CurvedArrow`.
+///
+/// ```
+/// use manim_core::geometry::CurvedArrow;
+/// use manim_core::mobject::Mobject;
+/// use manim_math::{Point, RIGHT};
+/// let a = CurvedArrow::new(Point::ZERO, 2.0 * RIGHT, 1.0);
+/// // Arc shaft + one tip subpath.
+/// assert!(a.data().path.subpaths.len() >= 2);
+/// ```
+#[derive(Clone)]
+pub struct CurvedArrow {
+    data: MobjectData,
+    start: Point,
+    end: Point,
+}
+impl_mobject!(CurvedArrow);
+
+impl CurvedArrow {
+    /// A curved arrow from `start` to `end` bowing by `angle` radians, tipped at
+    /// the end.
+    pub fn new(start: Point, end: Point, angle: f32) -> Self {
+        Self {
+            data: MobjectData::new(curved_arrow_path(start, end, angle, false), arrow_style()),
+            start,
+            end,
+        }
+    }
+
+    /// The start point.
+    pub fn get_start(&self) -> Point {
+        self.start
+    }
+
+    /// The end point (the tipped end).
+    pub fn get_end(&self) -> Point {
+        self.end
+    }
+}
+
+/// A curved arrow tipped at **both** ends. Port of manim CE's
+/// `CurvedDoubleArrow`.
+///
+/// ```
+/// use manim_core::geometry::CurvedDoubleArrow;
+/// use manim_core::mobject::Mobject;
+/// use manim_math::{Point, RIGHT};
+/// let a = CurvedDoubleArrow::new(Point::ZERO, 2.0 * RIGHT, 1.0);
+/// // Arc shaft + two tips.
+/// assert!(a.data().path.subpaths.len() >= 3);
+/// ```
+#[derive(Clone)]
+pub struct CurvedDoubleArrow {
+    data: MobjectData,
+    start: Point,
+    end: Point,
+}
+impl_mobject!(CurvedDoubleArrow);
+
+impl CurvedDoubleArrow {
+    /// A double-headed curved arrow from `start` to `end` bowing by `angle`.
+    pub fn new(start: Point, end: Point, angle: f32) -> Self {
+        Self {
+            data: MobjectData::new(curved_arrow_path(start, end, angle, true), arrow_style()),
+            start,
+            end,
+        }
+    }
+
+    /// The start point.
+    pub fn get_start(&self) -> Point {
+        self.start
+    }
+
+    /// The end point.
+    pub fn get_end(&self) -> Point {
+        self.end
+    }
+}
+
+/// Builds a curved arrow path: an arc plus a tip at the end (and, if `double`,
+/// the start), each tangent to the arc.
+fn curved_arrow_path(start: Point, end: Point, angle: f32, double: bool) -> Path {
+    let mut path = crate::geometry::ArcBetweenPoints::new(start, end, angle)
+        .data()
+        .path
+        .clone();
+    let tl = DEFAULT_ARROW_TIP_LENGTH;
+    if let Some((p_end, dir_end)) = arc_endpoint_tangent(&path, true) {
+        path.subpaths
+            .push(tip_subpath(p_end, dir_end, tl, TipShape::Triangle, true));
+    }
+    if double {
+        if let Some((p_start, dir_start)) = arc_endpoint_tangent(&path, false) {
+            path.subpaths.push(tip_subpath(
+                p_start,
+                dir_start,
+                tl,
+                TipShape::Triangle,
+                true,
+            ));
+        }
+    }
+    path
+}
+
+/// The `(point, outward_unit_tangent)` at the arc's end (`at_end`) or start.
+/// Outward means pointing away from the arc body (the arrow direction there).
+fn arc_endpoint_tangent(path: &Path, at_end: bool) -> Option<(Point, Point)> {
+    let sp = path.subpaths.first()?;
+    if at_end {
+        let c = sp.curves.last()?;
+        let dir = normalize_or_zero(c.p3 - c.p2);
+        let dir = if dir == Point::ZERO {
+            normalize_or_zero(c.p3 - c.p0)
+        } else {
+            dir
+        };
+        Some((c.p3, dir))
+    } else {
+        let c = sp.curves.first()?;
+        let dir = normalize_or_zero(c.p0 - c.p1);
+        let dir = if dir == Point::ZERO {
+            normalize_or_zero(c.p0 - c.p3)
+        } else {
+            dir
+        };
+        Some((c.p0, dir))
     }
 }
 
@@ -507,7 +773,16 @@ fn arrow_style() -> Style {
 
 /// Builds an arrow path: an open shaft subpath plus one (or, if `double`, two)
 /// filled triangular tip subpaths.
-fn arrow_path(start: Point, end: Point, buff: f32, tip_length: f32, double: bool) -> Path {
+#[allow(clippy::too_many_arguments)]
+fn arrow_path(
+    start: Point,
+    end: Point,
+    buff: f32,
+    tip_length: f32,
+    double: bool,
+    shape: TipShape,
+    filled: bool,
+) -> Path {
     let dir = normalize_or_zero(end - start);
     if dir == Point::ZERO {
         return Path::from_corners(&[start, end], false);
@@ -516,30 +791,17 @@ fn arrow_path(start: Point, end: Point, buff: f32, tip_length: f32, double: bool
     let a_end = end - dir * buff;
     let span = (a_end - a_start).length();
     let tl = tip_length.min(span * 0.5).max(0.0);
-    let perp = rotate_vector(dir, PI / 2.0);
-    let half_w = tl / 2.0;
 
     let mut subpaths = Vec::new();
-
-    // End tip (apex at a_end).
     let end_base = a_end - dir * tl;
-    let end_tip = polygon_subpath(&[a_end, end_base + perp * half_w, end_base - perp * half_w]);
-
     // Shaft runs between the (possibly two) tip bases.
-    let shaft_end = end_base;
     let shaft_start = if double { a_start + dir * tl } else { a_start };
-    subpaths.push(SubPath::from_corners(&[shaft_start, shaft_end]));
+    subpaths.push(SubPath::from_corners(&[shaft_start, end_base]));
 
     if double {
-        let start_base = a_start + dir * tl;
-        let start_tip = polygon_subpath(&[
-            a_start,
-            start_base + perp * half_w,
-            start_base - perp * half_w,
-        ]);
-        subpaths.push(start_tip);
+        subpaths.push(tip_subpath(a_start, -dir, tl, shape, filled));
     }
-    subpaths.push(end_tip);
+    subpaths.push(tip_subpath(a_end, dir, tl, shape, filled));
     Path { subpaths }
 }
 

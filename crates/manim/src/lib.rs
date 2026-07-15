@@ -118,8 +118,9 @@ pub fn preview(builder: &dyn SceneBuilder, config: Config) -> std::result::Resul
 
 /// Everything you need to build scenes, in one import.
 ///
-/// Re-exports the scene machinery, the geometry catalog, the animation
-/// catalog, colors, and the scene-space constants.
+/// Re-exports the scene machinery, the geometry catalog, the animation and
+/// coordinate catalogs, the text/TeX/matrix/table mobjects, colors, and the
+/// scene-space constants — so a scene author rarely path-qualifies anything.
 ///
 /// ```
 /// use manim::prelude::*;
@@ -127,6 +128,41 @@ pub fn preview(builder: &dyn SceneBuilder, config: Config) -> std::result::Resul
 /// let circle = scene.add(Circle::new());
 /// scene.play(Create::new(circle)).unwrap();
 /// assert!(scene.total_duration() > 0.0);
+/// ```
+///
+/// The text, matrix, table, and label mobjects from `manim-text` are here too;
+/// this compiles purely by naming them through the prelude (no rendering):
+///
+/// ```
+/// use manim::prelude::*;
+/// fn _prelude_types_resolve() {
+///     // Core additions (geometry/boolean/svg/image).
+///     let _ = std::any::type_name::<Brace>();
+///     let _ = std::any::type_name::<SVGMobject>();
+///     let _ = std::any::type_name::<ImageMobject>();
+///     let _ = std::any::type_name::<Union>();
+///     let _ = std::any::type_name::<AnimatedBoundary>();
+///     // manim-text surface the gallery used to path-qualify.
+///     let _ = std::any::type_name::<DecimalNumber>();
+///     let _ = std::any::type_name::<Integer>();
+///     let _ = std::any::type_name::<Variable>();
+///     let _ = std::any::type_name::<Matrix>();
+///     let _ = std::any::type_name::<IntegerMatrix>();
+///     let _ = std::any::type_name::<Table>();
+///     let _ = std::any::type_name::<MathTable>();
+///     let _ = std::any::type_name::<LabeledDot>();
+///     let _ = std::any::type_name::<BulletedList>();
+///     let _ = std::any::type_name::<Title>();
+///     let _ = std::any::type_name::<MarkupText>();
+///     let _ = std::any::type_name::<TransformMatchingTex>();
+/// }
+/// // The label helpers are extension traits (they add `.plot_label(..)` etc.);
+/// // they resolve as bounds through the prelude too.
+/// fn _prelude_traits_resolve<T>()
+/// where
+///     T: AxesLabels + CoordinateLabels + GraphLabel + BarChartLabels,
+/// {
+/// }
 /// ```
 pub mod prelude {
     pub use manim_core::animations::{
@@ -136,5 +172,17 @@ pub mod prelude {
         Uncreate, UpdateFromFunc, ValueTracker,
     };
     pub use manim_core::prelude::*;
-    pub use manim_text::{MathTex, Paragraph, Text, Typst, Write};
+
+    // Text, TeX, numbers, matrices, tables, labels, and label-aware animations.
+    // Tuning constants (font sizes, buffs) and low-level helpers (match_glyphs,
+    // MatchResult) are intentionally left out of the prelude to keep the
+    // namespace scene-author-facing; reach them via `manim::text::...`.
+    pub use manim_text::{
+        AddTextLetterByLetter, Alignment, AxesLabels, BarChartLabels, BraceLabel, BulletedList,
+        ChangeDecimalToValue, ChangingDecimal, CoordinateLabels, DecimalMatrix, DecimalNumber,
+        DecimalTable, GraphLabel, Integer, IntegerMatrix, LabeledArrow, LabeledDot, LabeledLine,
+        MarkupText, MathTable, MathTex, Matrix, MobjectMatrix, Paragraph, RemoveTextLetterByLetter,
+        Slant, Table, Tex, Text, Title, TransformMatchingTex, Typst, Unwrite, Variable, Weighting,
+        Write,
+    };
 }

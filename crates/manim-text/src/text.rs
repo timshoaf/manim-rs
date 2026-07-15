@@ -114,6 +114,7 @@ pub struct Text {
     t2w: Vec<(String, Weighting)>,
     t2s: Vec<(String, Slant)>,
     use_system_fonts: bool,
+    gradient: Option<Vec<Color>>,
     glyphs: Vec<GlyphInfo>,
 }
 impl_mobject!(Text);
@@ -142,10 +143,34 @@ impl Text {
             t2w: Vec::new(),
             t2s: Vec::new(),
             use_system_fonts: false,
+            gradient: None,
             glyphs: Vec::new(),
         };
         me.rebuild();
         me
+    }
+
+    /// Colors the text with a gradient distributed across its glyphs (manim CE's
+    /// `Text(..., gradient=...)` / whole-word `set_color_by_gradient`): glyph `i`
+    /// gets the color interpolated at `i/(n-1)` along `colors`. Applied when the
+    /// text is added to the scene.
+    ///
+    /// ```
+    /// use manim_text::Text;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::Mobject;
+    /// use manim_color::{BLUE, RED};
+    /// let mut scene = SceneState::new();
+    /// let t = Text::new("AB").with_gradient(&[BLUE, RED]).add_to(&mut scene);
+    /// let kids = scene.get_dyn(t.erase()).data().children.clone();
+    /// assert_eq!(scene.get_dyn(kids[0]).data().style.fill_color, Some(BLUE));
+    /// assert_eq!(scene.get_dyn(*kids.last().unwrap()).data().style.fill_color, Some(RED));
+    /// ```
+    pub fn with_gradient(mut self, colors: &[Color]) -> Self {
+        if !colors.is_empty() {
+            self.gradient = Some(colors.to_vec());
+        }
+        self
     }
 
     /// Sets the font size (manim's `font_size`).
@@ -297,11 +322,16 @@ impl Text {
         parent.data.path = Path::default();
         let id = scene.add(parent);
 
+        let n = self.glyphs.len().max(1);
         let mut idx = 0;
-        for g in &self.glyphs {
+        for (i, g) in self.glyphs.iter().enumerate() {
             let sub: Vec<SubPath> = self.data.path.subpaths[idx..idx + g.n_subpaths].to_vec();
             idx += g.n_subpaths;
-            let child = VMobject::new(Path { subpaths: sub }, Style::filled(g.color));
+            let color = match &self.gradient {
+                Some(stops) => sample_gradient(stops, i as f32 / (n - 1).max(1) as f32),
+                None => g.color,
+            };
+            let child = VMobject::new(Path { subpaths: sub }, Style::filled(color));
             let cid = scene.add(child);
             scene.add_child(id.erase(), cid.erase());
         }
@@ -519,6 +549,16 @@ fn recenter(path: &mut Path) {
         let center = (min + max) * 0.5;
         path.apply(|pt| pt - center);
     }
+}
+
+/// Samples a multi-stop color ramp at `t` in `[0, 1]`.
+fn sample_gradient(stops: &[Color], t: f32) -> Color {
+    if stops.len() == 1 {
+        return stops[0];
+    }
+    let scaled = t.clamp(0.0, 1.0) * (stops.len() - 1) as f32;
+    let i = (scaled.floor() as usize).min(stops.len() - 2);
+    stops[i].interpolate(&stops[i + 1], scaled - i as f32)
 }
 
 #[cfg(test)]

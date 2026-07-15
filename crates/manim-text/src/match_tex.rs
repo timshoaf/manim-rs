@@ -25,7 +25,7 @@ use manim_core::mobject::MobjectId;
 /// Points are sampled along the outline, recentered, normalized by the bounding
 /// box, quantized to a grid, sorted, and hashed — so the same character (same
 /// font, any position/scale) hashes identically.
-fn signature(path: &Path) -> u64 {
+pub(crate) fn signature(path: &Path) -> u64 {
     let pts = path.points(6);
     if pts.is_empty() {
         return 0;

@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 
+use glam::{Mat4, Vec3};
 use lyon::math::point;
 use lyon::path::Path as LyonPath;
 use lyon::tessellation::{
@@ -38,6 +39,8 @@ use manim_core::display::{DisplayList, DrawItem, ImagePaint, LinearGradient};
 use manim_core::mobject::AnyId;
 use manim_math::path::Path;
 use manim_math::Point;
+
+use crate::camera::Camera2D;
 
 /// Scene units of stroke width per manim CE "stroke point".
 ///
@@ -92,14 +95,18 @@ pub fn zoom_bucket_for(frame_height: f32) -> i32 {
 ///
 /// ```
 /// use manim_render::tessellate::Vertex;
-/// let v = Vertex { position: [1.0, 2.0], color: [0.5, 0.0, 0.0, 0.5] };
-/// assert_eq!(v.position, [1.0, 2.0]);
+/// let v = Vertex { position: [1.0, 2.0, 0.0], color: [0.5, 0.0, 0.0, 0.5] };
+/// assert_eq!(v.position, [1.0, 2.0, 0.0]);
 /// ```
+///
+/// The position is 3-D so 3D scenes project correctly; the per-vertex `z` is
+/// carried through lyon as an interpolated path attribute. For a 2D scene every
+/// `z` is `0.0`, so the orthographic camera produces byte-identical output.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    /// World-space position `[x, y]` in scene units.
-    pub position: [f32; 2],
+    /// World-space position `[x, y, z]` in scene units.
+    pub position: [f32; 3],
     /// Premultiplied linear RGBA color.
     pub color: [f32; 4],
 }
@@ -435,10 +442,75 @@ impl TessellationCache {
 
         let mut order: Vec<(usize, &DrawItem)> = list.iter().enumerate().collect();
         order.sort_by_key(|(i, it)| (it.z_index, *i));
+        self.build_ops(order.into_iter().map(|(_, it)| it))
+    }
 
+    /// Builds ops for a 3-D camera: world content depth-sorted by per-item mean
+    /// *camera-space* z (painter's algorithm — farthest first, for correct
+    /// translucent blending without a depth buffer), plus a `fixed_in_frame` HUD
+    /// overlay to draw last with the orthographic matrix.
+    ///
+    /// Image quads join the same world depth sort as vector items. HUD items keep
+    /// `z_index` order. For a 2-D camera prefer [`tessellate_ops`](Self::tessellate_ops),
+    /// which is byte-identical to the pre-3-D renderer.
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_render::camera::Camera2D;
+    /// use manim_render::tessellate::TessellationCache;
+    /// use manim_core::camera::ThreeDParams;
+    ///
+    /// let mut scene = SceneState::new();
+    /// scene.add(Circle::new());
+    /// let mut cam = Camera2D::from(&manim_core::config::Config::default());
+    /// cam.three_d = Some(ThreeDParams::default());
+    /// let mut cache = TessellationCache::new();
+    /// let frame = cache.tessellate_ops_layered(&scene.display_list(), &cam);
+    /// assert_eq!(frame.world.len(), 1);
+    /// assert!(frame.hud.is_empty());
+    /// ```
+    pub fn tessellate_ops_layered(
+        &mut self,
+        list: &DisplayList,
+        camera: &Camera2D,
+    ) -> LayeredFrame {
+        self.refresh(list);
+        let view = camera.view_matrix();
+
+        // World content sorts back-to-front by camera-space z; HUD keeps z_index.
+        let mut world: Vec<(f32, usize, &DrawItem)> = Vec::new();
+        let mut hud: Vec<(i32, usize, &DrawItem)> = Vec::new();
+        for (i, item) in list.iter().enumerate() {
+            if item.fixed_in_frame {
+                hud.push((item.z_index, i, item));
+            } else {
+                world.push((mean_camera_z(&item.path, &view), i, item));
+            }
+        }
+        // Ascending camera-space z: in right-handed view space the camera looks
+        // down -z, so more-negative z is farther and must paint first.
+        world.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        });
+        hud.sort_by_key(|(z, i, _)| (*z, *i));
+
+        LayeredFrame {
+            world: self.build_ops(world.iter().map(|(_, _, it)| *it)),
+            hud: self.build_ops(hud.iter().map(|(_, _, it)| *it)),
+        }
+    }
+
+    /// Batches an ordered item stream into [`FrameOp`]s: consecutive vector items
+    /// coalesce into one mesh; each image item breaks the batch and emits its own
+    /// [`ImageQuad`]. Shared by [`tessellate_ops`](Self::tessellate_ops) and
+    /// [`tessellate_ops_layered`](Self::tessellate_ops_layered).
+    fn build_ops<'a>(&self, items: impl Iterator<Item = &'a DrawItem>) -> Vec<FrameOp> {
         let mut ops: Vec<FrameOp> = Vec::new();
         let mut batch = MeshData::default();
-        for (_, item) in order {
+        for item in items {
             if let Some(paint) = &item.image {
                 if !batch.is_empty() {
                     ops.push(FrameOp::Vector(std::mem::take(&mut batch)));
@@ -457,6 +529,36 @@ impl TessellationCache {
     }
 }
 
+/// The mean camera-space z of a path's anchor points, used as the painter's
+/// depth key. `view` is the camera's world→view matrix
+/// ([`Camera2D::view_matrix`](crate::camera::Camera2D::view_matrix)); it is
+/// affine, so anchors transform without a perspective divide.
+fn mean_camera_z(path: &Path, view: &Mat4) -> f32 {
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for sub in &path.subpaths {
+        for c in &sub.curves {
+            sum += view.transform_point3(c.p0).z;
+            n += 1.0;
+        }
+    }
+    if n == 0.0 {
+        0.0
+    } else {
+        sum / n
+    }
+}
+
+/// A frame split for 3-D rendering: depth-sorted [`world`](Self::world) content
+/// drawn with the perspective camera, then a [`hud`](Self::hud) overlay
+/// (`fixed_in_frame` items) drawn with the orthographic camera.
+pub struct LayeredFrame {
+    /// World content, batched in painter's (farthest-first) camera-z order.
+    pub world: Vec<FrameOp>,
+    /// Fixed-in-frame HUD content, in `z_index` order.
+    pub hud: Vec<FrameOp>,
+}
+
 /// One ordered draw in a frame: a batch of vector triangles or a textured quad.
 pub enum FrameOp {
     /// A concatenated mesh of consecutive vector items.
@@ -468,8 +570,9 @@ pub enum FrameOp {
 /// A world-space textured quad extracted from an image [`DrawItem`].
 pub struct ImageQuad {
     /// The four corners `[TL, TR, BR, BL]` in world space (from the item's
-    /// quad path), matching the UVs `(0,0),(1,0),(1,1),(0,1)`.
-    pub corners: [[f32; 2]; 4],
+    /// quad path), matching the UVs `(0,0),(1,0),(1,1),(0,1)`. 3-D so image
+    /// planes project under a 3D camera.
+    pub corners: [[f32; 3]; 4],
     /// The image pixels and sampler.
     pub paint: ImagePaint,
     /// The source mobject (texture cache key).
@@ -496,10 +599,10 @@ fn image_quad(item: &DrawItem, paint: ImagePaint) -> Option<ImageQuad> {
     ];
     Some(ImageQuad {
         corners: [
-            [corners[0].x, corners[0].y],
-            [corners[1].x, corners[1].y],
-            [corners[2].x, corners[2].y],
-            [corners[3].x, corners[3].y],
+            [corners[0].x, corners[0].y, corners[0].z],
+            [corners[1].x, corners[1].y, corners[1].z],
+            [corners[2].x, corners[2].y, corners[2].z],
+            [corners[3].x, corners[3].y, corners[3].z],
         ],
         paint,
         source: item.source,
@@ -534,13 +637,23 @@ fn image_quad(item: &DrawItem, paint: ImagePaint) -> Option<ImageQuad> {
 /// ```
 pub fn tessellate_item(item: &DrawItem, tolerance: f32) -> MeshData {
     let mut mesh = MeshData::default();
-    let lyon_path = to_lyon_path(&item.path);
+
+    // Both fills and strokes tessellate in a path-fitted plane, so a face or edge
+    // that runs parallel to world z keeps its extent instead of collapsing. A
+    // z-flat (2-D) path fits the (X, Y) plane, in which case the mapping is the
+    // identity — 2-D output is byte-identical to the pre-3-D renderer.
+    let (e, f) = fit_plane(&item.path);
+    let flat = e == Vec3::X && f == Vec3::Y;
+    let lyon_path = to_lyon_path_in_plane(&item.path, e, f);
 
     if let Some(bg) = &item.background_stroke {
         let width = bg.width * STROKE_WIDTH_CONVERSION;
         append_stroke(
             &mut mesh,
             &lyon_path,
+            e,
+            f,
+            flat,
             bg.color,
             bg.gradient.as_ref(),
             width,
@@ -551,6 +664,9 @@ pub fn tessellate_item(item: &DrawItem, tolerance: f32) -> MeshData {
         append_fill(
             &mut mesh,
             &lyon_path,
+            e,
+            f,
+            flat,
             fill.color,
             fill.gradient.as_ref(),
             tolerance,
@@ -561,6 +677,9 @@ pub fn tessellate_item(item: &DrawItem, tolerance: f32) -> MeshData {
         append_stroke(
             &mut mesh,
             &lyon_path,
+            e,
+            f,
+            flat,
             stroke.color,
             stroke.gradient.as_ref(),
             width,
@@ -580,32 +699,102 @@ fn vertex_color(color: Color, gradient: Option<&LinearGradient>, x: f32, y: f32)
     }
 }
 
-/// Converts a manim [`Path`] into a lyon path, emitting cubic-bezier segments
-/// and honoring each subpath's `closed` flag.
-fn to_lyon_path(path: &Path) -> LyonPath {
-    let mut builder = LyonPath::builder();
+/// Picks two orthonormal world-axis basis vectors `(e, f)` spanning the plane a
+/// path tessellates in: the two axes of largest coordinate range, dropping the
+/// axis with the smallest range (highest index wins ties).
+///
+/// A 2-D path (all z equal) always drops z and returns `(X, Y)`, so it
+/// tessellates exactly as the pre-3-D renderer did — byte-identical goldens. A
+/// path extended along z (a vertical cube edge, a `ThreeDAxes` z-axis, a
+/// vertical solid face) keeps a z-containing plane, so it retains extent instead
+/// of collapsing.
+fn fit_plane(path: &Path) -> (Vec3, Vec3) {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    let mut any = false;
+    for sub in &path.subpaths {
+        for c in &sub.curves {
+            for p in [c.p0, c.p1, c.p2, c.p3] {
+                min = min.min(p);
+                max = max.max(p);
+                any = true;
+            }
+        }
+    }
+    if !any {
+        return (Vec3::X, Vec3::Y);
+    }
+    let r = (max - min).to_array();
+    // Drop the axis of least extent; `<=` makes the highest index win ties, so a
+    // z-flat (2-D) path drops z and keeps (X, Y).
+    let mut drop = 0usize;
+    for a in 1..3 {
+        if r[a] <= r[drop] {
+            drop = a;
+        }
+    }
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    let kept: Vec<usize> = (0..3).filter(|&a| a != drop).collect();
+    (axes[kept[0]], axes[kept[1]])
+}
+
+/// Converts a manim [`Path`] into a lyon path embedded in the plane spanned by
+/// `(e, f)`: each point's 2-D lyon coordinate is `(P·e, P·f)`, and its full 3-D
+/// position `[x, y, z]` rides along as three interpolated attributes.
+///
+/// [`world_pos`] reconstructs each tessellated vertex's world position from the
+/// interpolated attributes plus its in-plane offset, so fills and strokes keep
+/// their true 3-D shape (stroke width / fill area applied within `(e, f)`).
+fn to_lyon_path_in_plane(path: &Path, e: Vec3, f: Vec3) -> LyonPath {
+    let mut builder = LyonPath::builder_with_attributes(3);
+    let uv = |p: Point| point(p.dot(e), p.dot(f));
     for sub in &path.subpaths {
         let Some(first) = sub.curves.first() else {
             continue;
         };
-        builder.begin(point(first.p0.x, first.p0.y));
+        let p0 = first.p0;
+        builder.begin(uv(p0), &[p0.x, p0.y, p0.z]);
         for c in &sub.curves {
-            builder.cubic_bezier_to(
-                point(c.p1.x, c.p1.y),
-                point(c.p2.x, c.p2.y),
-                point(c.p3.x, c.p3.y),
-            );
+            builder.cubic_bezier_to(uv(c.p1), uv(c.p2), uv(c.p3), &[c.p3.x, c.p3.y, c.p3.z]);
         }
         builder.end(sub.closed);
     }
     builder.build()
 }
 
+/// Reconstructs a tessellated vertex's world-space position from its in-plane
+/// lyon coordinate `uv` and interpolated 3-D attributes `attrs = [x, y, z]`.
+///
+/// When `flat` (the `(X, Y)` plane, i.e. a 2-D path), this is the identity map
+/// `[uv.x, uv.y, z]` — bit-for-bit the pre-3-D output. Otherwise it adds the
+/// in-plane offset of `uv` from the interpolated point onto that point, keeping
+/// the vertex on the fitted plane.
+#[inline]
+fn world_pos(uv: lyon::math::Point, attrs: &[f32], e: Vec3, f: Vec3, flat: bool) -> Vec3 {
+    let center = Vec3::new(
+        attrs.first().copied().unwrap_or(0.0),
+        attrs.get(1).copied().unwrap_or(0.0),
+        attrs.get(2).copied().unwrap_or(0.0),
+    );
+    if flat {
+        return Vec3::new(uv.x, uv.y, center.z);
+    }
+    let offset_u = uv.x - center.dot(e);
+    let offset_v = uv.y - center.dot(f);
+    center + e * offset_u + f * offset_v
+}
+
 /// Appends a non-zero-winding fill of `lyon_path` onto `mesh`, colored by
-/// `gradient` per vertex or the solid `color`.
+/// `gradient` per vertex or the solid `color`. `lyon_path` is embedded in the
+/// `(e, f)` plane; each vertex is mapped back to world space via [`world_pos`]
+/// (`flat` selecting the byte-identical 2-D path).
+#[allow(clippy::too_many_arguments)]
 fn append_fill(
     mesh: &mut MeshData,
     lyon_path: &LyonPath,
+    e: Vec3,
+    f: Vec3,
+    flat: bool,
     color: Color,
     gradient: Option<&LinearGradient>,
     tolerance: f32,
@@ -616,11 +805,11 @@ fn append_fill(
     let ok = tess.tessellate_path(
         lyon_path,
         &options,
-        &mut BuffersBuilder::new(&mut buffers, |v: FillVertex| {
-            let p = v.position();
+        &mut BuffersBuilder::new(&mut buffers, |mut v: FillVertex| {
+            let w = world_pos(v.position(), v.interpolated_attributes(), e, f, flat);
             Vertex {
-                position: p.to_array(),
-                color: vertex_color(color, gradient, p.x, p.y),
+                position: [w.x, w.y, w.z],
+                color: vertex_color(color, gradient, w.x, w.y),
             }
         }),
     );
@@ -634,12 +823,18 @@ fn append_fill(
 
 /// Appends a round-capped, round-joined stroke of `lyon_path` onto `mesh`.
 ///
-/// Round joins and caps are chosen (over CE's historical butt caps) so that
-/// corners and endpoints stay artifact-free under the affine camera zoom; the
-/// difference is sub-pixel for the thin default stroke.
+/// `lyon_path` is embedded in the `(e, f)` plane (see [`to_lyon_path_in_plane`]);
+/// each tessellated vertex is mapped back to its true world-space position via
+/// [`world_pos`]. Round joins and caps are chosen (over CE's historical butt
+/// caps) so that corners and endpoints stay artifact-free under the affine camera
+/// zoom; the difference is sub-pixel for the thin default stroke.
+#[allow(clippy::too_many_arguments)]
 fn append_stroke(
     mesh: &mut MeshData,
     lyon_path: &LyonPath,
+    e: Vec3,
+    f: Vec3,
+    flat: bool,
     color: Color,
     gradient: Option<&LinearGradient>,
     width: f32,
@@ -654,11 +849,11 @@ fn append_stroke(
     let ok = tess.tessellate_path(
         lyon_path,
         &options,
-        &mut BuffersBuilder::new(&mut buffers, |v: StrokeVertex| {
-            let p = v.position();
+        &mut BuffersBuilder::new(&mut buffers, |mut v: StrokeVertex| {
+            let w = world_pos(v.position(), v.interpolated_attributes(), e, f, flat);
             Vertex {
-                position: p.to_array(),
-                color: vertex_color(color, gradient, p.x, p.y),
+                position: [w.x, w.y, w.z],
+                color: vertex_color(color, gradient, w.x, w.y),
             }
         }),
     );
@@ -675,7 +870,7 @@ mod tests {
     use super::*;
     use manim_color::{BLUE, RED, WHITE};
     use manim_core::display::{Fill, Stroke};
-    use manim_core::geometry::{Circle, Square};
+    use manim_core::geometry::{Circle, Line, Square};
     use manim_core::mobject::Buildable;
     use manim_core::scene_state::SceneState;
     use manim_math::RIGHT;
@@ -819,6 +1014,110 @@ mod tests {
         let mesh = cache.tessellate(&scene.display_list());
         assert_eq!(cache.misses(), 2, "paint change should be a miss");
         assert_eq!(mesh.vertices[0].color, RED.premultiplied());
+    }
+
+    #[test]
+    fn stroke_plane_keeps_xy_for_flat_paths() {
+        // A z-flat (2-D) path drops z → basis (X, Y), so 2-D strokes tessellate
+        // exactly as the pre-3-D renderer did (byte-identical goldens).
+        let dl = filled_circle();
+        let (e, f) = fit_plane(&dl.0[0].path);
+        assert_eq!((e, f), (Vec3::X, Vec3::Y));
+    }
+
+    #[test]
+    fn vertical_stroke_survives_tessellation() {
+        // A line purely along world z (zero x/y extent) vanished under x/y
+        // tessellation; the plane-fitted stroke path keeps it.
+        let mut scene = SceneState::new();
+        let l = scene.add(Line::new(
+            Point::new(0.0, 0.0, -2.0),
+            Point::new(0.0, 0.0, 2.0),
+        ));
+        scene.set_style_family(l.erase(), |s| {
+            s.set_stroke(WHITE, 4.0, 1.0);
+        });
+        let (e, f) = fit_plane(&scene.display_list().0[0].path);
+        assert!(e == Vec3::Z || f == Vec3::Z, "plane must contain z");
+
+        let item = scene.display_list().0.remove(0);
+        let mesh = tessellate_item(&item, DEFAULT_TOLERANCE);
+        assert!(!mesh.is_empty(), "z-parallel stroke should tessellate");
+        let (zmin, zmax) = mesh
+            .vertices
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(v.position[2]), hi.max(v.position[2]))
+            });
+        assert!(
+            zmax - zmin > 3.0,
+            "stroke should span its z extent: {zmin}..{zmax}"
+        );
+    }
+
+    /// A default 3-D camera (eye on +z, looking at the origin).
+    fn cam_3d() -> Camera2D {
+        let mut cam = Camera2D::from(&manim_core::config::Config::default());
+        cam.three_d = Some(manim_core::camera::ThreeDParams::default());
+        cam
+    }
+
+    #[test]
+    fn depth_sort_draws_far_items_first() {
+        // Add the near (blue, world z=+2) square first, the far (red, z=-2)
+        // second. The camera-space depth sort must still paint the far one first,
+        // regardless of list order — proving it sorts by camera z, not index.
+        let mut scene = SceneState::new();
+        let near = scene.add(Square::new().with_shift(Point::new(0.0, 0.0, 2.0)));
+        scene.set_style_family(near.erase(), |s| {
+            s.set_fill(BLUE, 1.0);
+        });
+        let far = scene.add(Square::new().with_shift(Point::new(0.0, 0.0, -2.0)));
+        scene.set_style_family(far.erase(), |s| {
+            s.set_fill(RED, 1.0);
+        });
+
+        let mut cache = TessellationCache::new();
+        let frame = cache.tessellate_ops_layered(&scene.display_list(), &cam_3d());
+        assert!(frame.hud.is_empty());
+        // Consecutive vectors merge into one batch; the far item is appended first.
+        let FrameOp::Vector(mesh) = &frame.world[0] else {
+            panic!("expected a vector op");
+        };
+        assert_eq!(
+            mesh.vertices[0].color,
+            RED.premultiplied(),
+            "farthest (red) item must paint first"
+        );
+    }
+
+    #[test]
+    fn fixed_in_frame_splits_into_hud() {
+        let mut scene = SceneState::new();
+        let world = scene.add(Square::new());
+        scene.set_style_family(world.erase(), |s| {
+            s.set_fill(BLUE, 1.0);
+        });
+        let hud = scene.add(Circle::new());
+        scene.set_style_family(hud.erase(), |s| {
+            s.set_fill(RED, 1.0);
+        });
+        // Mark the circle as a HUD overlay.
+        scene.get_dyn_mut(hud.erase()).data_mut().fixed_in_frame = true;
+
+        let mut cache = TessellationCache::new();
+        let frame = cache.tessellate_ops_layered(&scene.display_list(), &cam_3d());
+        // The square stays in the world layer; the circle moves to the HUD.
+        assert_eq!(frame.world.len(), 1);
+        assert_eq!(frame.hud.len(), 1);
+        let FrameOp::Vector(w) = &frame.world[0] else {
+            panic!("expected a world vector op");
+        };
+        assert_eq!(w.vertices[0].color, BLUE.premultiplied());
+        let FrameOp::Vector(h) = &frame.hud[0] else {
+            panic!("expected a hud vector op");
+        };
+        assert_eq!(h.vertices[0].color, RED.premultiplied());
     }
 
     #[test]

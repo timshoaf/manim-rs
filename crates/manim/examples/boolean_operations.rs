@@ -41,14 +41,14 @@ impl SceneBuilder for BooleanOperations {
                 _ => Exclusion::new(&a, &b),
             };
             let id = scene.add(result);
-            scene.state_mut().scale(id.erase(), 0.7);
-            scene.state_mut().shift(id.erase(), *slot + 0.6 * UP);
+            scene.scale(id, 0.7);
+            scene.shift(id, *slot + 0.6 * UP);
             scene.play(Create::new(id).run_time(0.4))?;
 
             let caption = Text::new(labels[i])
                 .font_size(22.0)
                 .add_to(scene.state_mut());
-            scene.state_mut().shift(caption.erase(), *slot + 1.6 * DOWN);
+            scene.shift(caption, *slot + 1.6 * DOWN);
             scene.play(FadeIn::new(caption).run_time(0.2))?;
         }
         scene.wait(0.5);

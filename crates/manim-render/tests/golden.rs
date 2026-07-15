@@ -13,6 +13,7 @@
 
 use manim_color::{BLUE, GREEN, RED, WHITE, YELLOW};
 use manim_core::animations::{Flash, Indicate};
+use manim_core::camera::ThreeDParams;
 use manim_core::config::Config;
 use manim_core::geometry::{Arrow, Circle, Line, Square, Triangle};
 use manim_core::graphing::{Axes, NumberPlane};
@@ -22,8 +23,9 @@ use manim_core::network::{Graph, GraphLayout};
 use manim_core::scene::Scene;
 use manim_core::scene_state::SceneState;
 use manim_core::style::Gradient;
+use manim_core::threed::{Cube, Sphere, Surface, ThreeDAxes, Torus};
 use manim_core::vector_field::{ArrowVectorField, StreamLines};
-use manim_math::{Point, DOWN, LEFT, ORIGIN, RIGHT};
+use manim_math::{Point, DOWN, LEFT, ORIGIN, RIGHT, UP};
 use manim_render::golden::assert_golden;
 use manim_render::renderer::OffscreenRenderer;
 
@@ -381,6 +383,137 @@ fn graph_circular() {
     scene.add(graph);
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("graph_circular", &img);
+}
+
+/// FE-107: an axis-aligned cube wireframe (12 `Line`s with 3-D endpoints) under a
+/// perspective camera orbited to phi=75°, theta=30°. Exercises the 3-D
+/// view-projection and the camera-space depth sort. The 4 world-z-parallel
+/// vertical edges render because strokes tessellate in a path-fitted plane (see
+/// [`manim_render::tessellate`]) — no tilt hack needed.
+#[test]
+fn cube_wireframe_3d() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let s = 1.5_f32;
+    let v = |x: f32, y: f32, z: f32| Point::new(x * s, y * s, z * s);
+    let corners = [
+        v(-1.0, -1.0, -1.0),
+        v(1.0, -1.0, -1.0),
+        v(1.0, 1.0, -1.0),
+        v(-1.0, 1.0, -1.0),
+        v(-1.0, -1.0, 1.0),
+        v(1.0, -1.0, 1.0),
+        v(1.0, 1.0, 1.0),
+        v(-1.0, 1.0, 1.0),
+    ];
+    // 4 bottom edges, 4 top edges, 4 verticals.
+    let edges = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    ];
+    for (a, b) in edges {
+        let l = scene.add(Line::new(corners[a], corners[b]));
+        scene.set_style_family(l.erase(), |st| {
+            st.set_stroke(WHITE, 3.0, 1.0);
+        });
+    }
+    orbit_camera(&mut renderer);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    // Something rendered (not a blank frame): at least one bright edge pixel.
+    assert!(
+        img.pixels().any(|p| p.0[0] > 100 && p.0[1] > 100),
+        "cube wireframe rendered no visible edges"
+    );
+    assert_golden("cube_wireframe_3d", &img);
+}
+
+/// Orbits `renderer`'s camera to manim's classic 3-D angles (phi=75°, theta=30°).
+fn orbit_camera(renderer: &mut OffscreenRenderer) {
+    let deg = std::f32::consts::PI / 180.0;
+    renderer.camera_mut().three_d = Some(ThreeDParams {
+        phi: 75.0 * deg,
+        theta: 30.0 * deg,
+        ..ThreeDParams::default()
+    });
+}
+
+/// FE-108: a checkerboard `Sphere` (BLUE_D/BLUE_E faces) under the 3-D camera.
+/// Near faces occlude far ones via the camera-space depth sort.
+#[test]
+fn sphere_3d() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    Sphere::new(2.0).add_to(&mut scene);
+    orbit_camera(&mut renderer);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("sphere_3d", &img);
+}
+
+/// FE-108: a solid `Cube` rotated in 3-D — depth-sort sanity: the three faces
+/// nearest the camera occlude the far three.
+#[test]
+fn cube_solid_3d() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let cube = Cube::new(2.5).add_to(&mut scene);
+    // A genuine 3-D rotation (about X then Y) so it reads as a rotated solid.
+    scene.rotate_about(cube.erase(), 0.5, ORIGIN, RIGHT);
+    scene.rotate_about(cube.erase(), 0.4, ORIGIN, UP);
+    orbit_camera(&mut renderer);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("cube_solid_3d", &img);
+}
+
+/// FE-108: `ThreeDAxes` (including the world-z-parallel z-axis, which renders via
+/// the plane-fitted stroke path) with a parametric saddle `Surface`.
+#[test]
+fn axes_surface_3d() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    ThreeDAxes::with_ranges([-3.0, 3.0, 1.0], [-3.0, 3.0, 1.0], [-3.0, 3.0, 1.0])
+        .add_to(&mut scene);
+    // A hyperbolic-paraboloid (saddle) surface z = 0.35·(u² − v²).
+    Surface::new(
+        |u, v| Point::new(u, v, 0.35 * (u * u - v * v)),
+        [-2.0, 2.0],
+        [-2.0, 2.0],
+    )
+    .with_resolution(12, 12)
+    .add_to(&mut scene);
+    orbit_camera(&mut renderer);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("axes_surface_3d", &img);
+}
+
+/// FE-108: a checkerboard `Torus` under the 3-D camera (front ring occludes back).
+#[test]
+fn torus_3d() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    Torus::new(2.0, 0.7).add_to(&mut scene);
+    orbit_camera(&mut renderer);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("torus_3d", &img);
 }
 
 /// FE-101: an embedded raster image drawn between two vector shapes (z-order).

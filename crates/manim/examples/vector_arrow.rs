@@ -33,13 +33,13 @@ impl SceneBuilder for VectorArrow {
             .add_to(scene.state_mut());
         scene
             .state_mut()
-            .shift(origin_label.erase(), origin + 0.4 * DOWN + 0.5 * LEFT);
+            .shift(origin_label, origin + 0.4 * DOWN + 0.5 * LEFT);
         let tip_label = Text::new("(2, 2)")
             .font_size(20.0)
             .add_to(scene.state_mut());
         scene
             .state_mut()
-            .shift(tip_label.erase(), tip + 0.3 * UP + 0.4 * RIGHT);
+            .shift(tip_label, tip + 0.3 * UP + 0.4 * RIGHT);
 
         scene.play(Create::new(dot))?;
         scene.play(Create::new(arrow))?;

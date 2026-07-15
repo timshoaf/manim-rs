@@ -48,7 +48,7 @@ for the `manim render scene.rs`-style workflow; v1 users call these from `main`.
 
 ## Interactivity (real-time first)
 
-Because the timeline is data (see 04), the runtime supports: pause/resume,
-seek/scrub, playback rate, and live mode (`play_live`) where updaters receive
-input events (mouse position in scene coords, key events) via `UpdaterCtx`.
-This is the substrate the Dioxus wrapper builds on.
+Because the timeline is data (see 04), the runtime supports pause/resume,
+seek/scrub, and playback rate — the substrate the Dioxus `ManimPlayer` builds on.
+A live mode where updaters also receive input events (mouse position in scene
+coords, key events) is planned; today `UpdaterCtx` carries `dt`/`time` only.

@@ -387,7 +387,9 @@ impl Animation for ScaleInPlace {
     fn begin(&mut self, state: &mut SceneState) {
         let id = self.id;
         let factor = self.factor;
-        self.morph = Some(morph_between(state, id, |s| s.scale(id, factor)));
+        self.morph = Some(morph_between(state, id, |s| {
+            s.scale(id, factor);
+        }));
     }
     fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
         if let Some(m) = &self.morph {

@@ -192,6 +192,10 @@ pub struct DrawItem {
     /// `None`. When set, the renderer draws the textured quad (respecting
     /// `z_index`) instead of vector fill.
     pub image: Option<ImagePaint>,
+    /// Whether this item is fixed in the camera frame (a HUD overlay). Under a
+    /// 3-D camera the renderer draws it with the orthographic matrix instead of
+    /// the perspective one, so it stays flat and unmoving; ignored in 2-D.
+    pub fixed_in_frame: bool,
     /// Draw order key; higher draws on top.
     pub z_index: i32,
     /// The mobject this item came from.

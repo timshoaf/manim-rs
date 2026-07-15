@@ -3,85 +3,101 @@
 Target: manim CE v0.19 public API. Status: ⬜ planned · 🟨 partial · ✅ done.
 This file is the source of truth for the Linear backlog; update as work lands.
 
+Milestones **M0–M5 are complete**; **M6 (3D)** geometry is done and its renderer
+(camera/projection/depth-sort, FE-107) is in flight. Statuses below reflect
+`0.1.0-dev`.
+
 ## mobject
 
-### geometry (M1)
+### geometry (M1) ✅
 | CE | Rust | Status |
 |---|---|---|
-| Arc, ArcBetweenPoints, CurvedArrow, CurvedDoubleArrow | `geometry::arc` | ✅ |
-| Circle, Dot, AnnotationDot, LabeledDot, Ellipse, Annulus, AnnularSector, Sector | `geometry::arc` | 🟨 (LabeledDot/AnnotationDot need text) |
-| Line, DashedLine, TangentLine, Elbow, Arrow, Vector, DoubleArrow | `geometry::line` | 🟨 (TangentLine pending) |
+| Arc, ArcBetweenPoints, CurvedArrow, CurvedDoubleArrow | `geometry::arc`, `geometry::line` | ✅ |
+| Circle, Dot, AnnotationDot, LabeledDot, Ellipse, Annulus, AnnularSector, Sector | `geometry::arc` (+ `manim-text::LabeledDot`) | ✅ |
+| Line, DashedLine, TangentLine, Elbow, Arrow, Vector, DoubleArrow | `geometry::line` | ✅ |
 | Angle, RightAngle | `geometry::line` | ✅ |
-| Polygram, Polygon, RegularPolygram, RegularPolygon, Star, Triangle | `geometry::polygram` | 🟨 (RegularPolygram pending) |
-| Rectangle, Square, RoundedRectangle, Cutout | `geometry::polygram` | 🟨 (Cutout needs boolean ops) |
-| ArrowTip variants (triangle/square/circle/stealth, filled/open) | `geometry::tips` | 🟨 (filled triangle tip only) |
-| ArcPolygon, ArcPolygonFromArcs | `geometry::arc` | ⬜ |
-| Union, Difference, Intersection, Exclusion (boolean_ops) | `geometry::boolean_ops` | ⬜ (post-v1, via lyon/kurbo boolean) |
+| Polygram, Polygon, RegularPolygram, RegularPolygon, Star, Triangle | `geometry::polygram` | ✅ |
+| Rectangle, Square, RoundedRectangle | `geometry::polygram` | ✅ |
+| Union, Difference, Intersection, Exclusion, Cutout | `boolean` | ✅ (polyline result — smoothness gap, see below) |
+| ArrowTip variants (triangle/square/circle/stealth, filled/open) | `geometry::line::TipShape` | 🟨 (4 shapes; open outline for pointed tips, round/square solid-only) |
+| ArcPolygon, ArcPolygonFromArcs | `geometry::arc` | ✅ |
 
-### types (M1)
+### types (M1) ✅
 VMobject ✅, VGroup ✅, VDict ✅, VectorizedPoint ✅, CurvesAsSubmobjects ✅,
-DashedVMobject ✅, Mobject ✅; Group, PMobject/Point (point clouds),
-ImageMobject — ⬜
+DashedVMobject ✅, TracedPath ✅, Mobject ✅, ImageMobject ✅, SVGMobject ✅.
+Group, PMobject/Point (point clouds) — ⬜.
 
-### animation (M2) — core catalog ✅
-creation/fading/transform/movement/rotation/growing/apply/composition families,
-`.animate()`, updaters, ValueTracker, transform path functions all landed;
-remaining: indication (in progress), speedmodifier, TransformMatchingShapes,
-number animations (M4 dependency).
+### animation (M2) ✅ — full core catalog
+creation / fading / transform / movement / rotation / growing / apply /
+composition / indication families, `.animate()`, updaters, ValueTracker,
+`TransformMatchingShapes` / `TransformMatchingTex`, `AnimatedBoundary`, transform
+path functions — all landed. Remaining tail: `AddTextLetterByLetter`, `Unwrite`,
+`PhaseFlow`/`ComplexHomotopy` variants — ⬜.
 
-### text (M4)
-Text, Paragraph, MarkupText, Tex, MathTex, SingleStringMathTex, BulletedList,
-Title, DecimalNumber, Integer, Variable, Code (syntect highlighting) — ⬜
+### text (M4) ✅ (with gaps)
+Text ✅, Paragraph ✅, MarkupText ✅, Tex ✅, MathTex ✅, Typst ✅,
+BulletedList ✅, Title ✅, DecimalNumber ✅, Integer ✅, Variable ✅, Write ✅.
+Gaps: substring/sub-superscript **isolation** (FE-99) 🟨; `Code` (syntax
+highlighting), monospace/`tt` runs (FE-100) ⬜; `SingleStringMathTex` folded into
+`MathTex`.
 
-### svg (M4)
-SVGMobject, Brace, BraceLabel, BraceText, BraceBetweenPoints — ⬜
+### svg / braces (M4) ✅
+SVGMobject ✅, Brace ✅ (+ `Brace::attached_to`), BraceLabel ✅ (`manim-text`).
+BraceText / BraceBetweenPoints — 🟨 (compose `Brace` + `Text` manually).
 
-### graphing (M5)
-NumberLine, UnitInterval, Axes, ThreeDAxes, NumberPlane, ComplexPlane,
-PolarPlane, CoordinateSystem methods (plot, plot_parametric_curve,
-plot_implicit_curve, get_graph_label, get_riemann_rectangles, get_area,
-get_secant_slope_group, coords_to_point, point_to_coords, add_coordinates),
-ParametricFunction, FunctionGraph, ImplicitFunction, BarChart — ⬜
+### graphing (M5) ✅ (with gaps)
+NumberLine ✅, UnitInterval ✅, Axes ✅, ThreeDAxes ✅, NumberPlane ✅,
+ComplexPlane ✅, PolarPlane ✅; CoordinateSystem methods — plot ✅,
+plot_parametric_curve ✅, get_graph_label ✅, get_riemann_rectangles ✅,
+get_area ✅, get_secant_slope_group ✅, c2p/p2c ✅, add_coordinates ✅;
+ParametricFunction ✅, FunctionGraph ✅, BarChart ✅.
+Gaps: plot_implicit_curve / ImplicitFunction ⬜; some auto-layouts (FE-105) 🟨.
 
-### three_d (M6)
-ThreeDVMobject, Surface, Sphere, Dot3D, Cube, Prism, Cone, Cylinder, Line3D,
-Arrow3D, Torus — ⬜
+### three_d (M6) — geometry ✅, renderer in flight
+ThreeDVMobject 🟨 (faces-as-children model), Surface ✅, Sphere ✅, Dot3D ✅,
+Cube ✅, Prism ✅, Cone ✅, Cylinder ✅, Line3D ✅, Arrow3D ✅, Torus ✅,
+`ThreeDAxes` ✅, `rotate_about_axis` ✅. Geometry is camera-independent and
+unit-tested headlessly; **rendering (3D camera/projection/depth-sort, FE-107) is
+in flight**. `set_fill_by_value` (per-face value color) ⬜.
 
-### others (M5/M6)
-Matrix, DecimalMatrix, IntegerMatrix, MobjectMatrix, Table (+variants),
-Graph/DiGraph (+layouts), VectorField, ArrowVectorField, StreamLines,
-ValueTracker, ComplexValueTracker, TracedPath — ⬜ (ValueTracker in M2)
+### others (M5) ✅
+Matrix ✅, DecimalMatrix ✅, IntegerMatrix ✅, MobjectMatrix ✅,
+Table (+ MathTable / DecimalTable) ✅, Graph / DiGraph (+ layouts) ✅,
+VectorField ✅, ArrowVectorField ✅, StreamLines ✅ (animated flow FE-106 🟨),
+ValueTracker ✅, ComplexValueTracker ✅, TracedPath ✅.
 
-## animation
-See [04-animation-system.md](04-animation-system.md) for the full catalog —
-creation/transform/fading/indication/growing/movement/rotation/composition/
-numbers/updaters/changing/speedmodifier/specialized/transform_matching_parts.
-M2 covers the core (Create, Write-less creation set, Transform family, Fade,
-Rotate, composition, .animate()); the long tail lands in M3.
+## scene (M3 / M6)
+Scene ✅, MovingCameraScene (moving camera) ✅, sections ✅,
+VectorScene helpers ✅ (`vector_space`), LinearTransformationScene ✅.
+ZoomedScene ⬜, ThreeDScene ✅ (FE-107 landed: 3D camera + orientation).
 
-## scene (M3/M6)
-Scene, MovingCameraScene (M3), ZoomedScene (M6), ThreeDScene (M6),
-VectorScene, LinearTransformationScene (M6), sections (M3).
-
-## camera (M3, 3D in M6)
-Camera frame center/width/zoom/rotation animatable; background color/opacity;
-multi-camera (zoomed display); ThreeDCamera phi/theta/gamma/focal_distance.
+## camera (M3 done, 3D in flight)
+2D camera frame center / width / zoom / rotation animatable ✅; background
+color / opacity ✅. ThreeDCamera phi / theta / gamma / focal_distance — 🟨 in
+flight (FE-107). Multi-camera zoomed display — ⬜ (ZoomedScene).
 
 ## utils
-| CE module | Rust home | Milestone |
+| CE module | Rust home | Status |
 |---|---|---|
-| bezier | manim-math::bezier | M0 ✅ |
-| rate_functions | manim-math::rate_functions | M0 ✅ |
-| space_ops | manim-math::space_ops | M0 ✅ |
-| color | manim-color | M0 ✅ (XKCD/X11 feature catalogs pending) |
-| paths (straight/arc/spiral path funcs for transforms) | manim-math::paths | M2 |
-| config | manim-core::config | M1 |
+| bezier | manim-math::bezier | ✅ |
+| rate_functions | manim-math::rate_functions | ✅ |
+| space_ops | manim-math::space_ops | ✅ |
+| color | manim-color | ✅ (full CE catalog; XKCD/X11 extras ⬜) |
+| paths (straight/arc/spiral path funcs) | manim-math::paths / core `animations::paths` | ✅ |
+| config | manim-core::config | ✅ |
 | images/ipython/hashing/caching | n/a (Python-specific) | — |
-| sounds (`Scene.add_sound`) | manim-core (native feature) | M6 |
-| tex/tex_templates | manim-text::typst mapping | M4 |
+| sounds (`Scene.add_sound`) | manim-core (native feature) | ⬜ |
+| tex / tex_templates | manim-text::typst mapping | ✅ (LaTeX-subset → typst) |
 
 ## Explicit deferrals (documented, issue-tracked)
+- **Boolean smoothness**: `boolean` ops flatten to polylines (no skia-pathops
+  equivalent); Bézier-preserving boolean is post-v1.
+- **3D rendering** waits on FE-107 (camera/projection/depth-sort); the geometry is
+  already headless-testable.
+- **ZoomedScene** and **sound** (`add_sound`) — pending.
+- **Text isolation / Code** (FE-99 / FE-100) — substring sub-super isolation and
+  syntax-highlighted code blocks pending.
 - OpenGL-renderer-specific API (CE's experimental opengl namespace): n/a — our
-  renderer IS the gpu renderer.
-- `manim cfg` / plugin system: replaced by Cargo features & Rust plugins (traits).
+  renderer IS the GPU renderer.
+- `manim cfg` / plugin system: replaced by Cargo features & Rust traits.
 - IPython/Jupyter integration: out of scope; wasm/Dioxus embedding replaces it.

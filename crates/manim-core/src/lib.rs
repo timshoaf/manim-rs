@@ -53,8 +53,10 @@ pub mod scene;
 pub mod scene_state;
 pub mod style;
 pub mod svg;
+pub mod threed;
 pub mod timeline;
 pub mod vector_field;
+pub mod vector_space;
 
 pub use animation::{AnimConfig, Animation, IntoAnimations};
 pub use camera::{Camera2D, CameraFrame};
@@ -100,8 +102,12 @@ pub mod prelude {
     pub use crate::scene_state::{SceneState, UpdaterCtx};
     pub use crate::style::Style;
     pub use crate::svg::SVGMobject;
+    pub use crate::threed::{
+        Arrow3D, Cone, Cube, Cylinder, Dot3D, Line3D, Prism, Sphere, Surface, ThreeDAxes, Torus,
+    };
     pub use crate::timeline::Section;
     pub use crate::vector_field::{ArrowVectorField, StreamLines, VectorField};
+    pub use crate::vector_space::{add_axes, add_plane, add_vector, LinearTransformationScene};
 
     pub use manim_color::{Color, BLACK, BLUE, GREEN, ORANGE, PINK, PURPLE, RED, WHITE, YELLOW};
     pub use manim_math::rate_functions::RateFn;

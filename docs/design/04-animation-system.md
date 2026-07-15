@@ -104,8 +104,8 @@ segment boundaries (fast: no rendering).
 struct SquareToCircle;
 impl SceneBuilder for SquareToCircle {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
-        let sq = scene.add(Square::new().fill(BLUE, 0.7));
-        let c  = Circle::new().fill(RED, 0.7);
+        let sq = scene.add(Square::new().with_fill(BLUE, 0.7));
+        let c  = Circle::new().with_fill(RED, 0.7);
         scene.play(TransformInto::new(sq, c))?;
         scene.wait(1.0);
         Ok(())
@@ -114,8 +114,10 @@ impl SceneBuilder for SquareToCircle {
 ```
 
 `construct` runs **once**, eagerly building the timeline (cheap: no rendering).
-Playback then consumes the timeline at leisure — this is what makes scrubbing,
-re-rendering, and embedding in UI (Dioxus) natural, and it's a deliberate
-improvement over manim CE's render-as-you-construct coupling. Interactive
-scenes (updaters reacting to live input) bypass the prebuilt timeline with
-`scene.play_live()` in the Dioxus layer.
+Each `play(..)` does two things: it snapshots the pre-segment `SceneState` into
+the timeline, then eagerly runs `begin → interpolate(1) → finish` on the *live*
+state — so the rest of `construct` sees end-of-animation positions (manim's
+semantics) while the snapshot preserves what's needed to replay the segment
+later. Playback then consumes the timeline at leisure — this is what makes
+scrubbing, re-rendering, and embedding in UI (Dioxus) natural, and it's a
+deliberate improvement over manim CE's render-as-you-construct coupling.

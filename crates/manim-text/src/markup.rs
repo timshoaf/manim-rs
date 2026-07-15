@@ -1,10 +1,18 @@
 //! [`MarkupText`]: a pragmatic subset of Pango markup rendered as styled glyphs.
 //!
 //! Supported tags: `<b>` (bold), `<i>` (italic), `<u>` (underline), `<s>`
-//! (strikethrough), and `<span foreground="#hex">` (color). Weight/slant reuse
-//! the same rich-text span shaping as [`Text`](crate::Text)'s `t2w`/`t2s`;
-//! underline and strike become thin filled rules. Unknown tags are a clear
-//! error.
+//! (strikethrough), `<sub>`/`<sup>` (subscript/superscript), and
+//! `<span foreground="#hex" size="…">` (color and size). Weight/slant reuse the
+//! same rich-text span shaping as [`Text`](crate::Text)'s `t2w`/`t2s`; underline
+//! and strike become thin filled rules. Unknown tags are a clear error.
+//!
+//! `<sub>`/`<sup>` shrink the run to 65% and offset the baseline ±0.35 em;
+//! cosmic-text shapes each run at its own size (so horizontal advances stay
+//! correct) and only the baseline offset is applied to the glyph outlines.
+//! Nesting a script inside another (`<sub><sup>…`) is rejected. `size=` accepts
+//! an absolute point size (`size="12"`) or a Pango named scale
+//! (`x-small`…`x-large`), applied the same way. `<tt>` (monospace) is not
+//! supported — it needs a bundled fixed-width face.
 
 use std::fmt;
 
@@ -33,6 +41,9 @@ pub enum MarkupError {
     UnbalancedTag(String),
     /// A malformed `<span …>` attribute.
     BadSpan(String),
+    /// A `<sub>`/`<sup>` nested inside another `<sub>`/`<sup>` (unsupported —
+    /// offsets would compound ambiguously).
+    NestedScript,
 }
 
 impl fmt::Display for MarkupError {
@@ -41,6 +52,7 @@ impl fmt::Display for MarkupError {
             MarkupError::UnknownTag(t) => write!(f, "unknown markup tag: <{t}>"),
             MarkupError::UnbalancedTag(t) => write!(f, "unbalanced markup tag: </{t}>"),
             MarkupError::BadSpan(s) => write!(f, "bad <span> attribute: {s}"),
+            MarkupError::NestedScript => write!(f, "nested <sub>/<sup> is not supported"),
         }
     }
 }
@@ -48,13 +60,38 @@ impl fmt::Display for MarkupError {
 impl std::error::Error for MarkupError {}
 
 /// The active style while parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Attr {
     bold: bool,
     italic: bool,
     underline: bool,
     strike: bool,
     color: Option<Color>,
+    /// Font-size multiplier relative to the base size (`<sub>`/`<sup>`, named
+    /// `size=`).
+    scale: f32,
+    /// Absolute size in points, overriding `scale` when set (`size="12"`).
+    abs_pt: Option<f32>,
+    /// Baseline offset in ems (`+` up for `<sup>`, `-` down for `<sub>`).
+    baseline_em: f32,
+    /// Whether a `<sub>`/`<sup>` is already open (nesting is rejected).
+    script: bool,
+}
+
+impl Default for Attr {
+    fn default() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+            underline: false,
+            strike: false,
+            color: None,
+            scale: 1.0,
+            abs_pt: None,
+            baseline_em: 0.0,
+            script: false,
+        }
+    }
 }
 
 /// A run of text with a single style.
@@ -134,6 +171,18 @@ fn apply_open_tag(tag: &str, attr: &mut Attr) -> Result<(), MarkupError> {
         "i" => attr.italic = true,
         "u" => attr.underline = true,
         "s" => attr.strike = true,
+        "sub" | "sup" => {
+            if attr.script {
+                return Err(MarkupError::NestedScript);
+            }
+            attr.script = true;
+            attr.scale *= SCRIPT_SCALE;
+            attr.baseline_em = if name == "sup" {
+                SCRIPT_OFFSET_EM
+            } else {
+                -SCRIPT_OFFSET_EM
+            };
+        }
         "span" => {
             if let Some(hex) = attr_value(tag, "foreground").or_else(|| attr_value(tag, "color")) {
                 attr.color = Some(
@@ -141,9 +190,40 @@ fn apply_open_tag(tag: &str, attr: &mut Attr) -> Result<(), MarkupError> {
                         .map_err(|_| MarkupError::BadSpan(format!("foreground={hex}")))?,
                 );
             }
+            if let Some(size) = attr_value(tag, "size") {
+                apply_size(&size, attr)?;
+            }
         }
         other => return Err(MarkupError::UnknownTag(other.to_string())),
     }
+    Ok(())
+}
+
+/// `<sub>`/`<sup>` font-size multiplier.
+const SCRIPT_SCALE: f32 = 0.65;
+/// `<sub>`/`<sup>` baseline offset, in ems of the base font size.
+const SCRIPT_OFFSET_EM: f32 = 0.35;
+
+/// Applies a `size="…"` value: an absolute point size (a number) or one of
+/// Pango's named scales.
+fn apply_size(value: &str, attr: &mut Attr) -> Result<(), MarkupError> {
+    if let Ok(pt) = value.trim().parse::<f32>() {
+        if pt > 0.0 {
+            attr.abs_pt = Some(pt);
+            return Ok(());
+        }
+    }
+    let factor = match value.trim() {
+        "xx-small" => 0.5787,
+        "x-small" => 0.6944,
+        "small" => 0.8333,
+        "medium" => 1.0,
+        "large" => 1.2,
+        "x-large" => 1.44,
+        "xx-large" => 1.728,
+        other => return Err(MarkupError::BadSpan(format!("size={other}"))),
+    };
+    attr.scale *= factor;
     Ok(())
 }
 
@@ -262,10 +342,19 @@ fn shape(spans: &[Span], font_size: f32) -> (Path, Vec<GlyphInfo>) {
     let rich: Vec<(&str, Attrs)> = spans
         .iter()
         .map(|span| {
+            // Per-span size: `<sub>`/`<sup>`/named `size=` scale the base; an
+            // absolute `size="pt"` overrides. cosmic-text shapes at this size so
+            // advances stay correct; the baseline offset is applied to outlines.
+            let eff_fs = span
+                .attr
+                .abs_pt
+                .unwrap_or(font_size * span.attr.scale)
+                .max(1.0);
             (
                 span.text.as_str(),
                 Attrs::new()
                     .family(Family::Name(font::DEFAULT_FONT))
+                    .metrics(Metrics::new(eff_fs, eff_fs * 1.2))
                     .weight(if span.attr.bold {
                         Weight::BOLD
                     } else {
@@ -295,6 +384,9 @@ fn shape(spans: &[Span], font_size: f32) -> (Path, Vec<GlyphInfo>) {
                 .unwrap_or(0);
             let color = spans[span_idx].attr.color.unwrap_or(WHITE);
             let size = g.font_size;
+            // Superscript/subscript raise/lower the glyph by a fraction of the
+            // base size (the shrink itself is already baked into `size`).
+            let baseline_off = spans[span_idx].attr.baseline_em * font_size;
             let subs = fs
                 .db()
                 .with_face_data(g.font_id, |data, index| {
@@ -305,7 +397,7 @@ fn shape(spans: &[Span], font_size: f32) -> (Path, Vec<GlyphInfo>) {
                     let place = move |ox: f32, oy: f32| {
                         Point::new(
                             (pen + ox * fscale) * s,
-                            (oy * fscale - baseline_px) * s,
+                            (oy * fscale - baseline_px + baseline_off) * s,
                             0.0,
                         )
                     };
@@ -434,5 +526,74 @@ mod tests {
     #[test]
     fn unbalanced_tag_errors() {
         assert!(matches!(parse("</b>"), Err(MarkupError::UnbalancedTag(_))));
+    }
+
+    #[test]
+    fn sub_sup_parse_scale_and_offset() {
+        let sub = parse("<sub>x</sub>").unwrap();
+        assert!((sub[0].attr.scale - SCRIPT_SCALE).abs() < 1e-6);
+        assert!((sub[0].attr.baseline_em + SCRIPT_OFFSET_EM).abs() < 1e-6); // lowered
+        let sup = parse("<sup>x</sup>").unwrap();
+        assert!((sup[0].attr.baseline_em - SCRIPT_OFFSET_EM).abs() < 1e-6); // raised
+    }
+
+    #[test]
+    fn size_named_and_absolute() {
+        let named = parse(r#"<span size="x-large">x</span>"#).unwrap();
+        assert!((named[0].attr.scale - 1.44).abs() < 1e-4);
+        let abs = parse(r#"<span size="12">x</span>"#).unwrap();
+        assert_eq!(abs[0].attr.abs_pt, Some(12.0));
+    }
+
+    #[test]
+    fn nested_script_errors() {
+        assert_eq!(
+            parse("<sub><sup>x</sup></sub>"),
+            Err(MarkupError::NestedScript)
+        );
+    }
+
+    #[test]
+    fn sub_lowers_sup_raises_and_shrinks() {
+        let mut scene = SceneState::new();
+        // Same letter throughout so extents are comparable: base, sub, base, sup.
+        let m = MarkupText::new("o<sub>o</sub>o<sup>o</sup>")
+            .unwrap()
+            .add_to(&mut scene);
+        let kids = scene.get_dyn(m.erase()).data().children.clone();
+        assert_eq!(kids.len(), 4);
+        let cy = |i: usize| scene.family_bounding_box(kids[i]).center().y;
+        let ch = |i: usize| scene.family_bounding_box(kids[i]).height();
+        assert!(
+            cy(1) < cy(0),
+            "sub should sit lower: {} vs {}",
+            cy(1),
+            cy(0)
+        );
+        assert!(
+            cy(3) > cy(2),
+            "sup should sit higher: {} vs {}",
+            cy(3),
+            cy(2)
+        );
+        assert!(
+            ch(1) < ch(0),
+            "sub should be smaller: {} vs {}",
+            ch(1),
+            ch(0)
+        );
+    }
+
+    #[test]
+    fn size_scales_glyph() {
+        let mut scene = SceneState::new();
+        let m = MarkupText::new(r#"o<span size="x-large">o</span>"#)
+            .unwrap()
+            .add_to(&mut scene);
+        let kids = scene.get_dyn(m.erase()).data().children.clone();
+        assert_eq!(kids.len(), 2);
+        let big = scene.family_bounding_box(kids[1]).height();
+        let base = scene.family_bounding_box(kids[0]).height();
+        assert!(big > base, "x-large should be taller: {big} vs {base}");
     }
 }

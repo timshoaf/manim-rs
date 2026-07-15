@@ -9,12 +9,10 @@
 //!
 //! Frames land in `out/moving_angle/frame_NNNN.png`.
 //!
-//! API note vs CE: CE uses `always_redraw(lambda: Angle(line1, line2))`. We have
-//! no `always_redraw`, so an updater rebuilds the moving ray and the angle arc
-//! from the tracker each frame (rebuilding an `Angle` value and copying its path).
+//! API note vs CE: mirrors CE's `always_redraw(lambda: Angle(line1, line2))` via
+//! [`Scene::always_redraw`] — the moving ray and angle arc are rebuilt from the
+//! tracker each frame by a closure, exactly like CE.
 
-use manim::core::geometry::Angle;
-use manim::math::path::Path;
 use manim::prelude::*;
 
 /// The moving ray's endpoint at angle `theta` (length 3).
@@ -28,38 +26,22 @@ pub struct MovingAngle;
 impl SceneBuilder for MovingAngle {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
         let start_theta = std::f32::consts::FRAC_PI_6;
-
         let fixed = scene.add(Line::new(ORIGIN, 3.0 * RIGHT).with_stroke(WHITE, 4.0, 1.0));
-        let moving = scene.add(Line::new(ORIGIN, ray_end(start_theta)).with_stroke(BLUE, 4.0, 1.0));
-        let arc = scene.add(
-            Angle::new(
-                &Line::new(ORIGIN, 3.0 * RIGHT),
-                &Line::new(ORIGIN, ray_end(start_theta)),
-            )
-            .with_color(YELLOW),
-        );
-        scene.play((Create::new(fixed), Create::new(moving), Create::new(arc)))?;
-
         let theta = scene.add(ValueTracker::new(start_theta));
-        // Rebuild the moving ray from the tracker.
-        scene
-            .state_mut()
-            .add_updater(moving.erase(), move |s, id, _| {
-                let th = s.get(theta).get_value();
-                s.get_dyn_mut(id).data_mut().path =
-                    Path::from_corners(&[ORIGIN, ray_end(th)], false);
-                s.get_dyn_mut(id).data_mut().bump_generation();
-            });
-        // Rebuild the angle arc from the tracker.
-        scene.state_mut().add_updater(arc.erase(), move |s, id, _| {
+
+        // always_redraw: the moving ray and angle arc are rebuilt from the
+        // tracker each frame — the terse CE idiom, no manual updaters.
+        let _moving = scene.always_redraw(move |s| {
             let th = s.get(theta).get_value();
-            let l1 = Line::new(ORIGIN, 3.0 * RIGHT);
-            let l2 = Line::new(ORIGIN, ray_end(th));
-            let path = Angle::new(&l1, &l2).data().path.clone();
-            s.get_dyn_mut(id).data_mut().path = path;
-            s.get_dyn_mut(id).data_mut().bump_generation();
+            Line::new(ORIGIN, ray_end(th)).with_stroke(BLUE, 4.0, 1.0)
+        });
+        let _arc = scene.always_redraw(move |s| {
+            let th = s.get(theta).get_value();
+            Angle::new(&Line::new(ORIGIN, 3.0 * RIGHT), &Line::new(ORIGIN, ray_end(th)))
+                .with_color(YELLOW)
         });
 
+        scene.play(Create::new(fixed))?;
         scene.play(SetValue::new(theta, std::f32::consts::FRAC_PI_2 + 0.6).run_time(2.0))?;
         scene.wait(0.5);
         Ok(())

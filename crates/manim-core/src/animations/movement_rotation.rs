@@ -48,7 +48,9 @@ impl Shift {
 impl Animation for Shift {
     fn begin(&mut self, state: &mut SceneState) {
         let (id, delta) = (self.id, self.delta);
-        self.morph = Some(morph_between(state, id, |s| s.shift(id, delta)));
+        self.morph = Some(morph_between(state, id, |s| {
+            s.shift(id, delta);
+        }));
     }
     fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
         if let Some(m) = &self.morph {
@@ -96,7 +98,9 @@ impl MoveTo {
 impl Animation for MoveTo {
     fn begin(&mut self, state: &mut SceneState) {
         let (id, point) = (self.id, self.point);
-        self.morph = Some(morph_between(state, id, |s| s.move_to(id, point)));
+        self.morph = Some(morph_between(state, id, |s| {
+            s.move_to(id, point);
+        }));
     }
     fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
         if let Some(m) = &self.morph {
@@ -263,9 +267,23 @@ impl Animation for Rotating {
 /// scene.play(MoveAlongPath::new(d, track)).unwrap();
 /// assert!((scene[d].get_center() - 4.0 * RIGHT).length() < 1e-3);
 /// ```
+///
+/// Use [`along`](Self::along) to trace another mobject's outline without cloning
+/// its path yourself — the source's path is resolved from the scene at
+/// [`begin`](Animation::begin) time:
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::MoveAlongPath;
+/// let mut scene = Scene::new(Config::default());
+/// let circle = scene.add(Circle::new());
+/// let dot = scene.add(Dot::new());
+/// scene.play(MoveAlongPath::along(dot, circle)).unwrap();
+/// ```
 pub struct MoveAlongPath {
     id: AnyId,
     path: Path,
+    source: Option<AnyId>,
     config: AnimConfig,
     start: Vec<(AnyId, MobjectData)>,
     base: Point,
@@ -273,11 +291,26 @@ pub struct MoveAlongPath {
 anim_builders!(MoveAlongPath);
 
 impl MoveAlongPath {
-    /// Moves `id` along `path`.
+    /// Moves `id` along an owned `path`.
     pub fn new(id: impl Into<AnyId>, path: Path) -> Self {
         Self {
             id: id.into(),
             path,
+            source: None,
+            config: AnimConfig::default(),
+            start: Vec::new(),
+            base: Point::ZERO,
+        }
+    }
+
+    /// Moves `id` along `source`'s outline. The source mobject's path is cloned
+    /// from the scene when the animation begins, so callers need not extract it
+    /// first (a no-op if `source` is stale — the target then stays put).
+    pub fn along(id: impl Into<AnyId>, source: impl Into<AnyId>) -> Self {
+        Self {
+            id: id.into(),
+            path: Path::default(),
+            source: Some(source.into()),
             config: AnimConfig::default(),
             start: Vec::new(),
             base: Point::ZERO,
@@ -287,6 +320,11 @@ impl MoveAlongPath {
 
 impl Animation for MoveAlongPath {
     fn begin(&mut self, state: &mut SceneState) {
+        if let Some(src) = self.source {
+            if state.contains(src) {
+                self.path = state.get_dyn(src).data().path.clone();
+            }
+        }
         self.start = family_data(state, self.id);
         self.base = self.path.point_from_proportion(0.0);
     }

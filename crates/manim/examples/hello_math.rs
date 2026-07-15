@@ -19,14 +19,14 @@ impl SceneBuilder for HelloMath {
             .font_size(56.0)
             .color(YELLOW)
             .add_to(scene.state_mut());
-        scene.state_mut().shift(title.erase(), 2.0 * UP);
+        scene.shift(title, 2.0 * UP);
         scene.play(Write::new(title).run_time(1.5))?;
 
         let euler = MathTex::new(r"e^{i\pi} + 1 = 0")
             .expect("valid formula")
             .font_size(72.0)
             .add_to(scene.state_mut());
-        scene.state_mut().shift(euler.erase(), 0.5 * DOWN);
+        scene.shift(euler, 0.5 * DOWN);
         scene.play(Write::new(euler).run_time(2.0))?;
         scene.wait(0.5);
 

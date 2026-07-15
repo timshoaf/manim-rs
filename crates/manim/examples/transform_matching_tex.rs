@@ -9,28 +9,25 @@
 //!
 //! Frames land in `out/transform_matching_tex/frame_NNNN.png`.
 //!
-//! API note vs CE: `TransformMatchingTex` lives in `manim_text` and is **not** in
-//! the facade prelude — imported by full path here. It matches glyphs by shape
-//! signature (no substring isolation needed), unlike CE which matches on TeX
-//! substrings.
+//! API note vs CE: `TransformMatchingTex` (from `manim_text`) is in the facade
+//! prelude. It matches glyphs by shape signature (no substring isolation
+//! needed), unlike CE which matches on TeX substrings.
 
 use manim::prelude::*;
-use manim::text::TransformMatchingTex;
 
 /// Scene builder for this gallery example.
 pub struct TransformMatchingTexDemo;
 
 impl SceneBuilder for TransformMatchingTexDemo {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
-        let a = MathTex::new(r"e^{i\pi} + 1 = 0")
-            .expect("valid formula")
+        // MathTex::new now returns CoreError, so formulas compose with `?`.
+        let a = MathTex::new(r"e^{i\pi} + 1 = 0")?
             .font_size(72.0)
             .add_to(scene.state_mut());
         scene.play(Write::new(a).run_time(1.0))?;
         scene.wait(0.3);
 
-        let b = MathTex::new(r"e^{i\pi} = -1")
-            .expect("valid formula")
+        let b = MathTex::new(r"e^{i\pi} = -1")?
             .font_size(72.0)
             .add_to(scene.state_mut());
         scene.play(TransformMatchingTex::new(a, b).run_time(1.5))?;

@@ -54,11 +54,11 @@ impl VGroup {
     /// ```
     pub fn of(
         scene: &mut SceneState,
-        children: impl IntoIterator<Item = AnyId>,
+        children: impl IntoIterator<Item = impl Into<AnyId>>,
     ) -> MobjectId<VGroup> {
         let group = scene.add(VGroup::new());
         for child in children {
-            scene.add_child(group.erase(), child);
+            scene.add_child(group, child);
         }
         group
     }

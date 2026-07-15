@@ -87,6 +87,9 @@ pub struct MobjectData {
     /// A raster image paint for image mobjects (the `path` is its quad); `None`
     /// for ordinary vector mobjects.
     pub image: Option<crate::display::ImagePaint>,
+    /// Whether this mobject is fixed in the camera frame (a HUD overlay drawn
+    /// orthographically under a 3-D camera). manim's `add_fixed_in_frame_mobjects`.
+    pub fixed_in_frame: bool,
 }
 
 impl MobjectData {
@@ -149,6 +152,49 @@ pub trait Mobject: 'static {
 impl Clone for Box<dyn Mobject> {
     fn clone(&self) -> Self {
         self.clone_box()
+    }
+}
+
+/// Style setters callable directly on a `&mut dyn Mobject`.
+///
+/// The fluent [`MobjectExt`] setters are `Self: Sized`, so they cannot be called
+/// on a trait object (e.g. a child fetched via
+/// [`SceneState::get_dyn_mut`](crate::scene_state::SceneState::get_dyn_mut)).
+/// These inherent methods on `dyn Mobject` fill that gap with the same behavior,
+/// so updater and child-manipulation code can style without downcasting.
+///
+/// ```
+/// use manim_core::geometry::Circle;
+/// use manim_core::mobject::Mobject;
+/// use manim_color::RED;
+/// let mut circle = Circle::new();
+/// let m: &mut dyn Mobject = &mut circle;
+/// m.set_fill(RED, 1.0).set_stroke(RED, 2.0, 1.0);
+/// assert_eq!(m.data().style.fill_color, Some(RED));
+/// ```
+impl dyn Mobject {
+    /// Sets the fill color and opacity (manim's `set_fill`).
+    pub fn set_fill(&mut self, color: manim_color::Color, opacity: f32) -> &mut Self {
+        self.data_mut().style.set_fill(color, opacity);
+        self
+    }
+
+    /// Sets the stroke color, width, and opacity (manim's `set_stroke`).
+    pub fn set_stroke(&mut self, color: manim_color::Color, width: f32, opacity: f32) -> &mut Self {
+        self.data_mut().style.set_stroke(color, width, opacity);
+        self
+    }
+
+    /// Sets both fill and stroke color (manim's `set_color`).
+    pub fn set_color(&mut self, color: manim_color::Color) -> &mut Self {
+        self.data_mut().style.set_color(color);
+        self
+    }
+
+    /// Sets both fill and stroke opacity (manim's `set_opacity`).
+    pub fn set_opacity(&mut self, opacity: f32) -> &mut Self {
+        self.data_mut().style.set_opacity(opacity);
+        self
     }
 }
 
@@ -1035,6 +1081,24 @@ pub trait MobjectExt: Mobject {
         Self: Sized,
     {
         self.data_mut().z_index = z;
+        self
+    }
+
+    /// Fixes (or unfixes) this mobject in the camera frame — a HUD overlay drawn
+    /// orthographically under a 3-D camera (manim's `add_fixed_in_frame_mobjects`).
+    ///
+    /// ```
+    /// use manim_core::geometry::Square;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// let mut s = Square::new();
+    /// s.set_fixed_in_frame(true);
+    /// assert!(s.data().fixed_in_frame);
+    /// ```
+    fn set_fixed_in_frame(&mut self, fixed: bool) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().fixed_in_frame = fixed;
         self
     }
 

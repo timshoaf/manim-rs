@@ -13,8 +13,8 @@ use manim_core::scene_state::SceneState;
 use manim_math::{Point, DOWN, LEFT};
 
 use crate::decimal::{DecimalNumber, Integer};
-use crate::latex::MathError;
 use crate::math::MathTex;
+use manim_core::error::CoreError;
 
 /// The default font size for coordinate labels (manim CE's ~36).
 pub const LABEL_FONT_SIZE: f32 = 36.0;
@@ -131,13 +131,13 @@ pub trait AxesLabels {
     ///
     /// # Errors
     ///
-    /// Propagates [`MathError`] if either label fails to typeset.
+    /// A [`CoreError::Text`] wrapping the typeset error if either label fails.
     fn get_axis_labels(
         &self,
         scene: &mut SceneState,
         x: &str,
         y: &str,
-    ) -> Result<MobjectId<VGroup>, MathError>;
+    ) -> Result<MobjectId<VGroup>, CoreError>;
 }
 
 impl AxesLabels for Axes {
@@ -167,7 +167,7 @@ impl AxesLabels for Axes {
         scene: &mut SceneState,
         x: &str,
         y: &str,
-    ) -> Result<MobjectId<VGroup>, MathError> {
+    ) -> Result<MobjectId<VGroup>, CoreError> {
         let cs = self.coords();
         let x_at = self.x_label_point(cs.x_range[1]);
         let y_at = self.y_label_point(cs.y_range[1]);
@@ -200,7 +200,7 @@ impl AxesLabels for NumberPlane {
         scene: &mut SceneState,
         x: &str,
         y: &str,
-    ) -> Result<MobjectId<VGroup>, MathError> {
+    ) -> Result<MobjectId<VGroup>, CoreError> {
         let cs = self.coords();
         let x_axis_y = axis_position(cs.y_range);
         let y_axis_x = axis_position(cs.x_range);
@@ -233,14 +233,14 @@ pub trait GraphLabel {
     ///
     /// # Errors
     ///
-    /// Propagates [`MathError`] if the label fails to typeset.
+    /// A [`CoreError::Text`] wrapping the typeset error if the label fails.
     fn get_graph_label(
         &self,
         scene: &mut SceneState,
         graph: &FunctionGraph,
         tex: &str,
         x: f32,
-    ) -> Result<MobjectId<MathTex>, MathError>;
+    ) -> Result<MobjectId<MathTex>, CoreError>;
 }
 
 impl GraphLabel for Axes {
@@ -250,7 +250,7 @@ impl GraphLabel for Axes {
         graph: &FunctionGraph,
         tex: &str,
         x: f32,
-    ) -> Result<MobjectId<MathTex>, MathError> {
+    ) -> Result<MobjectId<MathTex>, CoreError> {
         let anchor = self.input_to_graph_point(x, graph) + Point::new(0.3, 0.4, 0.0);
         let mut label = MathTex::new(tex)?.font_size(LABEL_FONT_SIZE);
         label.move_to(anchor);

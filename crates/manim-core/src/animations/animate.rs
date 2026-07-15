@@ -66,21 +66,27 @@ impl<M: Mobject> AnimBuilder<M> {
     /// Records a family shift.
     pub fn shift(mut self, delta: Point) -> Self {
         let id = self.id.erase();
-        self.ops.push(Box::new(move |s| s.shift(id, delta)));
+        self.ops.push(Box::new(move |s| {
+            s.shift(id, delta);
+        }));
         self
     }
 
     /// Records a family move-to.
     pub fn move_to(mut self, point: Point) -> Self {
         let id = self.id.erase();
-        self.ops.push(Box::new(move |s| s.move_to(id, point)));
+        self.ops.push(Box::new(move |s| {
+            s.move_to(id, point);
+        }));
         self
     }
 
     /// Records a family scale about its center.
     pub fn scale(mut self, factor: f32) -> Self {
         let id = self.id.erase();
-        self.ops.push(Box::new(move |s| s.scale(id, factor)));
+        self.ops.push(Box::new(move |s| {
+            s.scale(id, factor);
+        }));
         self
     }
 
@@ -88,7 +94,9 @@ impl<M: Mobject> AnimBuilder<M> {
     /// morph, per manim's `.animate` semantics).
     pub fn rotate(mut self, angle: f32) -> Self {
         let id = self.id.erase();
-        self.ops.push(Box::new(move |s| s.rotate(id, angle)));
+        self.ops.push(Box::new(move |s| {
+            s.rotate(id, angle);
+        }));
         self
     }
 
@@ -98,7 +106,7 @@ impl<M: Mobject> AnimBuilder<M> {
         self.ops.push(Box::new(move |s| {
             s.set_style_family(id, |st| {
                 st.set_fill(color, opacity);
-            })
+            });
         }));
         self
     }
@@ -109,7 +117,7 @@ impl<M: Mobject> AnimBuilder<M> {
         self.ops.push(Box::new(move |s| {
             s.set_style_family(id, |st| {
                 st.set_stroke(color, width, opacity);
-            })
+            });
         }));
         self
     }
@@ -120,7 +128,7 @@ impl<M: Mobject> AnimBuilder<M> {
         self.ops.push(Box::new(move |s| {
             s.set_style_family(id, |st| {
                 st.set_color(color);
-            })
+            });
         }));
         self
     }
@@ -131,7 +139,7 @@ impl<M: Mobject> AnimBuilder<M> {
         self.ops.push(Box::new(move |s| {
             s.set_style_family(id, |st| {
                 st.set_opacity(opacity);
-            })
+            });
         }));
         self
     }
