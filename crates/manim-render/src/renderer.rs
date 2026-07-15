@@ -1000,7 +1000,7 @@ impl TextureTarget {
         (self.width, self.height)
     }
 
-    /// Renders a z-ordered list of [`FrameOp`]s (vector batches interleaved with
+    /// Renders a z-ordered list of `FrameOp`s (vector batches interleaved with
     /// textured image quads) under `camera` over `background`, returning the
     /// pixels.
     ///
@@ -1422,7 +1422,7 @@ impl TextureTarget {
 ///
 /// Native-only: it constructs its context with the blocking
 /// [`GpuContext::new_headless`] and reads pixels back synchronously. On wasm,
-/// render through [`CanvasSurface`](crate::canvas::CanvasSurface) instead.
+/// render through `CanvasSurface` (wasm `web` feature) instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct OffscreenRenderer {
     context: GpuContext,

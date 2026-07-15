@@ -5,7 +5,7 @@
 //! frame is scaled to the largest rectangle of the correct aspect that fits, and
 //! centered; the leftover margins become background-color bars. This math is
 //! pure and window-system-independent, so it is always compiled and unit-tested
-//! (the winit [`RealtimePlayer`](crate::preview::RealtimePlayer) is feature-gated).
+//! (the winit `RealtimePlayer` (`preview` feature) is feature-gated).
 
 /// A pixel-space rectangle: origin `(x, y)` (top-left) and size `(w, h)`.
 ///

@@ -2,7 +2,7 @@
 //! [Manim Community Edition](https://docs.manim.community): declarative,
 //! real-time mathematical animation.
 //!
-//! Scenes are described by a [`SceneBuilder`](prelude::SceneBuilder) whose
+//! Scenes are described by a [`SceneBuilder`] whose
 //! `construct` builds a timeline of animations; the timeline can then be
 //! played in real time, scrubbed, or rendered offline frame by frame.
 //!
@@ -58,8 +58,8 @@ use manim_render::RenderError;
 ///
 /// # Errors
 ///
-/// [`RenderError::Core`](manim_render::RenderError::Core) if `construct` fails,
-/// [`RenderError::FfmpegNotFound`](manim_render::RenderError::FfmpegNotFound) if
+/// [`RenderError::Core`] if `construct` fails,
+/// [`RenderError::FfmpegNotFound`] if
 /// `ffmpeg` is missing, or a GPU/encode error.
 ///
 /// ```no_run

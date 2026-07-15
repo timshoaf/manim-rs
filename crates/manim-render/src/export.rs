@@ -1,6 +1,6 @@
 //! Offline video and image-sequence export.
 //!
-//! [`VideoExporter`] renders a built [`Scene`](manim_core::scene::Scene) frame by
+//! [`VideoExporter`] renders a built [`Scene`] frame by
 //! frame (via the deterministic [`Scene::frames`](manim_core::scene::Scene::frames)
 //! sampler) through an offscreen [`OffscreenRenderer`], then either streams the
 //! raw RGBA frames into an `ffmpeg` subprocess for an `.mp4`

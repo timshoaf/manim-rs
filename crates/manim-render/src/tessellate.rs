@@ -1,6 +1,6 @@
 //! CPU tessellation: [`DisplayList`] → a flat GPU-ready triangle mesh.
 //!
-//! Each [`DrawItem`](manim_core::display::DrawItem)'s bezier [`Path`] is fed to
+//! Each [`DrawItem`]'s bezier [`Path`] is fed to
 //! [lyon](https://docs.rs/lyon): its [`FillTessellator`] fills closed regions
 //! with the non-zero winding rule and its [`StrokeTessellator`] outlines the
 //! path. Both emit [`Vertex`]es carrying **premultiplied linear** color, ready

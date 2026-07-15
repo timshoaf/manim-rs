@@ -16,7 +16,7 @@ use cosmic_text::FontSystem;
 /// The default bundled font family name.
 pub const DEFAULT_FONT: &str = "DejaVu Sans";
 
-/// The bundled monospace font family (for `<tt>` markup and [`Code`](crate::Code)).
+/// The bundled monospace font family (for `<tt>` markup and `Code` (`code` feature)).
 pub const MONO_FONT: &str = "DejaVu Sans Mono";
 
 /// Embedded DejaVu Sans regular.

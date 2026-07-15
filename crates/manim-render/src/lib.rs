@@ -9,14 +9,14 @@
 //! # Layers
 //!
 //! - [`tessellate`] — [`DisplayList`](manim_core::display::DisplayList) →
-//!   [`FrameMesh`](tessellate::FrameMesh), with a generation-keyed
-//!   [`TessellationCache`](tessellate::TessellationCache).
-//! - [`camera`] — [`Camera2D`](camera::Camera2D): a scene rectangle → an NDC
+//!   [`FrameMesh`], with a generation-keyed
+//!   [`TessellationCache`].
+//! - [`camera`] — [`Camera2D`]: a scene rectangle → an NDC
 //!   view-projection matrix.
-//! - [`renderer`] — the wgpu [`GpuContext`](renderer::GpuContext),
-//!   [`Pipeline`](renderer::Pipeline), offscreen
-//!   [`TextureTarget`](renderer::TextureTarget), and the high-level
-//!   [`OffscreenRenderer`](renderer::OffscreenRenderer).
+//! - [`renderer`] — the wgpu [`GpuContext`],
+//!   [`Pipeline`], offscreen
+//!   [`TextureTarget`], and the high-level
+//!   [`OffscreenRenderer`].
 //! - [`export`] — `VideoExporter`: MP4 (via `ffmpeg`) and PNG-sequence output
 //!   *(native only)*.
 //! - [`layout`] — letterbox math for fitting a fixed-aspect frame in a window.
@@ -49,7 +49,7 @@
 //! ```
 //!
 //! Realtime windowed playback lives in the `preview` module (behind the
-//! `preview` feature); it reuses the same [`Pipeline`](renderer::Pipeline),
+//! `preview` feature); it reuses the same [`Pipeline`],
 //! which renders into any [`wgpu::TextureView`] — surface or offscreen.
 
 pub mod camera;
