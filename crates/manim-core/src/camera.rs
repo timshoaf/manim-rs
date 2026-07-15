@@ -344,9 +344,11 @@ mod tests {
     #[test]
     fn camera_lerp_carries_and_blends_zoom_window() {
         let mut a = Camera2D::default();
-        let mut b = Camera2D::default();
         // Present on only one side → carried through.
-        b.zoom_window = Some(ZoomWindow::new(ORIGIN, 2.0, [0.5, 0.5, 0.3, 0.3]));
+        let b = Camera2D {
+            zoom_window: Some(ZoomWindow::new(ORIGIN, 2.0, [0.5, 0.5, 0.3, 0.3])),
+            ..Camera2D::default()
+        };
         let mid = Camera2D::lerp(&a, &b, 0.5);
         assert!(mid.zoom_window.is_some());
         // Present on both → interpolated.
@@ -357,8 +359,10 @@ mod tests {
 
     #[test]
     fn camera_frame_carries_zoom_window() {
-        let mut cam = Camera2D::default();
-        cam.zoom_window = Some(ZoomWindow::new(ORIGIN, 1.0, [0.6, 0.05, 0.3, 0.3]));
+        let cam = Camera2D {
+            zoom_window: Some(ZoomWindow::new(ORIGIN, 1.0, [0.6, 0.05, 0.3, 0.3])),
+            ..Camera2D::default()
+        };
         let frame = CameraFrame::from(&cam);
         assert!(frame.zoom_window.is_some());
     }
