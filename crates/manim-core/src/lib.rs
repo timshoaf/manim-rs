@@ -38,6 +38,7 @@
 
 pub mod animation;
 pub mod animations;
+pub mod camera;
 pub mod config;
 pub mod display;
 pub mod error;
@@ -49,13 +50,15 @@ pub mod style;
 pub mod timeline;
 
 pub use animation::{AnimConfig, Animation, IntoAnimations};
+pub use camera::{Camera2D, CameraFrame};
 pub use config::Config;
 pub use display::{DisplayList, DrawItem, Fill, Stroke};
 pub use error::{CoreError, Result};
 pub use mobject::{AnyId, BoundingBox, Buildable, Mobject, MobjectData, MobjectExt, MobjectId};
-pub use scene::{Camera2D, Scene, SceneBuilder};
+pub use scene::{Frame, Scene, SceneBuilder};
 pub use scene_state::{SceneState, UpdaterCtx};
 pub use style::Style;
+pub use timeline::Section;
 
 /// Curated re-exports for `use manim_core::prelude::*;`.
 ///
@@ -70,6 +73,7 @@ pub use style::Style;
 pub mod prelude {
     pub use crate::animation::{AnimConfig, Animation, IntoAnimations};
     pub use crate::animations::Animate;
+    pub use crate::camera::{Camera2D, CameraFrame};
     pub use crate::config::Config;
     pub use crate::display::{DisplayList, DrawItem, Fill, Stroke};
     pub use crate::error::{CoreError, Result};
@@ -77,9 +81,10 @@ pub mod prelude {
     pub use crate::mobject::{
         AnyId, BoundingBox, Buildable, Mobject, MobjectData, MobjectExt, MobjectId, RefTarget,
     };
-    pub use crate::scene::{Camera2D, Scene, SceneBuilder};
+    pub use crate::scene::{Frame, Scene, SceneBuilder};
     pub use crate::scene_state::{SceneState, UpdaterCtx};
     pub use crate::style::Style;
+    pub use crate::timeline::Section;
 
     pub use manim_color::{Color, BLACK, BLUE, GREEN, ORANGE, PINK, PURPLE, RED, WHITE, YELLOW};
     pub use manim_math::rate_functions::RateFn;

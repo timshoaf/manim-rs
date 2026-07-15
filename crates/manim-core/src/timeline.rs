@@ -29,6 +29,22 @@ struct Segment {
     snapshot: SceneState,
 }
 
+/// A named boundary in the timeline (manim's `next_section`), marking where a
+/// section begins.
+///
+/// ```
+/// use manim_core::timeline::Section;
+/// let s = Section { name: "intro".to_string(), start: 0.0 };
+/// assert_eq!(s.name, "intro");
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct Section {
+    /// The section name.
+    pub name: String,
+    /// The absolute start time in seconds.
+    pub start: f32,
+}
+
 /// An explicit, seekable schedule of animation segments.
 ///
 /// Built up by [`Scene`](crate::scene::Scene) during `construct`; consumed by
@@ -36,6 +52,7 @@ struct Segment {
 #[derive(Default)]
 pub struct Timeline {
     segments: Vec<Segment>,
+    sections: Vec<Section>,
     cursor: f32,
 }
 
@@ -158,5 +175,32 @@ impl Timeline {
     /// The current advance cursor time in seconds.
     pub fn cursor(&self) -> f32 {
         self.cursor
+    }
+
+    /// Records a named section boundary starting at the current end time
+    /// (manim's `next_section`).
+    pub fn push_section(&mut self, name: impl Into<String>) {
+        let start = self.duration();
+        self.sections.push(Section {
+            name: name.into(),
+            start,
+        });
+    }
+
+    /// The recorded section boundaries, in order.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// let mut scene = Scene::new(Config::default());
+    /// scene.next_section("intro");
+    /// scene.wait(1.0);
+    /// scene.next_section("body");
+    /// let sections = scene.sections();
+    /// assert_eq!(sections.len(), 2);
+    /// assert_eq!(sections[1].name, "body");
+    /// assert!((sections[1].start - 1.0).abs() < 1e-6);
+    /// ```
+    pub fn sections(&self) -> &[Section] {
+        &self.sections
     }
 }

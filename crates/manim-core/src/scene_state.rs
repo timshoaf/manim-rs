@@ -98,6 +98,8 @@ pub struct SceneState {
     saved_states: HashMap<DefaultKey, MobjectData>,
     /// Registered per-mobject updaters, in registration order.
     updaters: Vec<UpdaterEntry>,
+    /// The camera / frame state (captured by timeline snapshots).
+    camera: crate::camera::Camera2D,
 }
 
 impl SceneState {
@@ -729,6 +731,27 @@ impl SceneState {
             self.shift(*child, target - cur);
         }
         self.move_to(group, manim_math::ORIGIN);
+    }
+
+    /// The camera / frame state (manim's `camera.frame`).
+    ///
+    /// ```
+    /// use manim_core::scene_state::SceneState;
+    /// let scene = SceneState::new();
+    /// assert_eq!(scene.camera().frame_height, 8.0);
+    /// ```
+    pub fn camera(&self) -> &crate::camera::Camera2D {
+        &self.camera
+    }
+
+    /// Mutable access to the camera / frame state.
+    pub fn camera_mut(&mut self) -> &mut crate::camera::Camera2D {
+        &mut self.camera
+    }
+
+    /// Replaces the camera state.
+    pub fn set_camera(&mut self, camera: crate::camera::Camera2D) {
+        self.camera = camera;
     }
 
     /// Adds a mobject rebuilt from scratch every updater tick by `build`

@@ -29,55 +29,33 @@
 
 use std::ops::{Index, IndexMut};
 
-use manim_color::Color;
-use manim_math::Point;
-
 use crate::animation::IntoAnimations;
-use crate::animations::{AnimBuilder, Animate};
+use crate::animations::{AnimBuilder, Animate, CameraFrameHandle};
+pub use crate::camera::{Camera2D, CameraFrame};
 use crate::config::Config;
 use crate::display::DisplayList;
 use crate::error::{CoreError, Result};
 use crate::mobject::{AnyId, Mobject, MobjectId};
 use crate::scene_state::{SceneState, UpdaterCtx};
-use crate::timeline::Timeline;
+use crate::timeline::{Section, Timeline};
 
-/// A minimal 2D camera: the visible frame and background.
+/// One sampled frame: the time, its display list, and the camera at that time.
 ///
-/// Camera animation lands in a later phase; for now this carries the frame
-/// geometry a renderer needs.
-///
-/// ```
-/// use manim_core::scene::Camera2D;
-/// use manim_core::config::Config;
-/// let cam = Camera2D::from_config(&Config::default());
-/// assert_eq!(cam.frame_height, 8.0);
-/// ```
+/// Yielded by [`Scene::frames_with_camera`]; renderers consume this to follow
+/// camera motion.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Camera2D {
-    /// Center of the visible frame in scene units.
-    pub frame_center: Point,
-    /// Width of the visible frame in scene units.
-    pub frame_width: f32,
-    /// Height of the visible frame in scene units.
-    pub frame_height: f32,
-    /// Background color.
-    pub background: Color,
-}
-
-impl Camera2D {
-    /// Builds a camera from a [`Config`].
-    pub fn from_config(config: &Config) -> Self {
-        Self {
-            frame_center: Point::ZERO,
-            frame_width: config.frame_width,
-            frame_height: config.frame_height,
-            background: config.background_color,
-        }
-    }
+pub struct Frame {
+    /// Absolute time in seconds.
+    pub t: f32,
+    /// The display list at time `t`.
+    pub display_list: DisplayList,
+    /// The camera state at time `t`.
+    pub camera: CameraFrame,
 }
 
 /// A scene under construction: the live [`SceneState`], the [`Timeline`] being
-/// built, a [`Camera2D`], and the [`Config`].
+/// built, and the [`Config`]. The camera lives inside the [`SceneState`], so it
+/// is captured by timeline snapshots.
 ///
 /// ```
 /// use manim_core::prelude::*;
@@ -92,18 +70,17 @@ impl Camera2D {
 pub struct Scene {
     state: SceneState,
     timeline: Timeline,
-    camera: Camera2D,
     config: Config,
 }
 
 impl Scene {
     /// A new, empty scene with the given `config`.
     pub fn new(config: Config) -> Self {
-        let camera = Camera2D::from_config(&config);
+        let mut state = SceneState::new();
+        state.set_camera(Camera2D::from_config(&config));
         Self {
-            state: SceneState::new(),
+            state,
             timeline: Timeline::new(),
-            camera,
             config,
         }
     }
@@ -203,14 +180,38 @@ impl Scene {
         &mut self.state
     }
 
-    /// The scene camera.
+    /// The scene camera (stored in the scene state).
     pub fn camera(&self) -> &Camera2D {
-        &self.camera
+        self.state.camera()
     }
 
     /// Mutable access to the camera.
     pub fn camera_mut(&mut self) -> &mut Camera2D {
-        &mut self.camera
+        self.state.camera_mut()
+    }
+
+    /// A handle to the camera frame for animation, mirroring manim's
+    /// `self.camera.frame`.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// let mut scene = Scene::new(Config::default());
+    /// let _ = scene.add(Circle::new());
+    /// scene.play(scene.camera_frame().animate().scale(0.5)).unwrap();
+    /// assert!(scene.camera().frame_width < Config::default().frame_width);
+    /// ```
+    pub fn camera_frame(&self) -> CameraFrameHandle {
+        CameraFrameHandle
+    }
+
+    /// Marks the start of a named section (manim's `next_section`).
+    pub fn next_section(&mut self, name: impl Into<String>) {
+        self.timeline.push_section(name);
+    }
+
+    /// The recorded section boundaries, in order.
+    pub fn sections(&self) -> &[Section] {
+        self.timeline.sections()
     }
 
     /// The scene configuration.
@@ -266,6 +267,49 @@ impl Scene {
             let mut frame_state = reconstructed.unwrap_or_else(|| self.state.clone());
             frame_state.run_updaters(UpdaterCtx { dt, time: t });
             out.push((t, frame_state.display_list()));
+            if t >= total {
+                break;
+            }
+        }
+        out.into_iter()
+    }
+
+    /// Samples the scene like [`frames`](Self::frames), but yields the camera
+    /// state too — what renderers should consume to follow camera motion.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_math::UP;
+    /// let mut scene = Scene::new(Config::low());
+    /// let _ = scene.add(Circle::new());
+    /// scene.play(scene.camera_frame().animate().move_to(2.0 * UP)).unwrap();
+    /// let frames: Vec<_> = scene.frames_with_camera().collect();
+    /// // The camera pans up to y = 2 by the last frame.
+    /// assert!((frames.last().unwrap().camera.center.y - 2.0).abs() < 1e-3);
+    /// ```
+    pub fn frames_with_camera(&mut self) -> impl Iterator<Item = Frame> + '_ {
+        let dt = self.config.frame_dt();
+        let total = self.timeline.duration();
+        let mut out: Vec<Frame> = Vec::new();
+        if self.timeline.is_empty() || total <= 0.0 {
+            out.push(Frame {
+                t: 0.0,
+                display_list: self.state.display_list(),
+                camera: CameraFrame::from(self.state.camera()),
+            });
+            return out.into_iter();
+        }
+        let n = (total / dt).ceil() as usize;
+        for i in 0..=n {
+            let t = (i as f32 * dt).min(total);
+            let reconstructed = self.timeline.state_at(t);
+            let mut frame_state = reconstructed.unwrap_or_else(|| self.state.clone());
+            frame_state.run_updaters(UpdaterCtx { dt, time: t });
+            out.push(Frame {
+                t,
+                display_list: frame_state.display_list(),
+                camera: CameraFrame::from(frame_state.camera()),
+            });
             if t >= total {
                 break;
             }

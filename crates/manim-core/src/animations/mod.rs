@@ -8,6 +8,8 @@
 //! | transform | [`Transform`], [`TransformInto`], [`ReplacementTransform`], [`TransformFromCopy`], [`FadeTransform`], [`Restore`], [`ScaleInPlace`], [`ShrinkToCenter`], [`Swap`], [`CyclicReplace`] |
 //! | movement/rotation | [`Shift`], [`MoveTo`], [`Rotate`], [`Rotating`], [`MoveAlongPath`] |
 //! | apply | [`Homotopy`], [`ApplyPointwiseFunction`], [`ApplyFunction`], [`ApplyMatrix`], [`MaintainPositionRelativeTo`] |
+//! | indication | [`Indicate`], [`Flash`], [`FocusOn`], [`Circumscribe`], [`Wiggle`], [`ApplyWave`], [`ShowPassingFlash`], [`ChangeSpeed`] |
+//! | camera | [`CameraMove`], [`CameraFrameHandle`] |
 //! | growing | [`GrowFromPoint`], [`GrowFromCenter`], [`GrowFromEdge`], [`GrowArrow`], [`SpinInFromNothing`], [`SpiralIn`] |
 //! | composition | [`AnimationGroup`], [`Succession`], [`LaggedStart`], [`LaggedStartMap`] |
 //! | numbers/updaters | [`ValueTracker`], [`ComplexValueTracker`], [`SetValue`], [`UpdateFromFunc`], [`UpdateFromAlphaFunc`] |
@@ -16,10 +18,12 @@
 
 mod animate;
 mod apply;
+mod camera_move;
 mod composition;
 mod creation;
 mod fading;
 mod growing;
+mod indication;
 mod movement_rotation;
 pub mod paths;
 mod transform;
@@ -30,6 +34,7 @@ pub use animate::{AnimBuilder, Animate};
 pub use apply::{
     ApplyFunction, ApplyMatrix, ApplyPointwiseFunction, Homotopy, MaintainPositionRelativeTo,
 };
+pub use camera_move::{CameraFrameHandle, CameraMove};
 pub use composition::{
     AnimationGroup, LaggedStart, LaggedStartMap, Succession, DEFAULT_LAGGED_START_LAG_RATIO,
 };
@@ -39,6 +44,9 @@ pub use creation::{
 pub use fading::{FadeIn, FadeOut};
 pub use growing::{
     GrowArrow, GrowFromCenter, GrowFromEdge, GrowFromPoint, SpinInFromNothing, SpiralIn,
+};
+pub use indication::{
+    ApplyWave, ChangeSpeed, Circumscribe, Flash, FocusOn, Indicate, ShowPassingFlash, Wiggle,
 };
 pub use movement_rotation::{MoveAlongPath, MoveTo, Rotate, Rotating, Shift};
 pub use transform::{
