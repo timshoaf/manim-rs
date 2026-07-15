@@ -60,6 +60,30 @@ pub const STROKE_WIDTH_CONVERSION: f32 = 0.01;
 /// exact at the default frame size.
 pub const DEFAULT_TOLERANCE: f32 = 0.005;
 
+/// The frame height (scene units) the [default tolerance](DEFAULT_TOLERANCE) is
+/// calibrated for — manim's default `8.0`. Zoom buckets are measured relative to
+/// this (see [`TessellationCache::set_zoom`]).
+pub const REFERENCE_FRAME_HEIGHT: f32 = 8.0;
+
+/// The zoom bucket for a visible `frame_height`: `round(log2(height / 8))`.
+///
+/// Each unit is a 2× zoom step, so tessellation only re-runs when zoom crosses a
+/// doubling — cheap and visually sufficient (per `docs/design/05-rendering.md`).
+/// Zooming *in* (smaller height) gives negative buckets and a finer tolerance.
+///
+/// ```
+/// use manim_render::tessellate::{zoom_bucket_for, REFERENCE_FRAME_HEIGHT};
+/// assert_eq!(zoom_bucket_for(REFERENCE_FRAME_HEIGHT), 0);
+/// assert_eq!(zoom_bucket_for(4.0), -1); // 2× zoom in
+/// assert_eq!(zoom_bucket_for(16.0), 1); // 2× zoom out
+/// ```
+pub fn zoom_bucket_for(frame_height: f32) -> i32 {
+    if frame_height <= 0.0 || !frame_height.is_finite() {
+        return 0;
+    }
+    (frame_height / REFERENCE_FRAME_HEIGHT).log2().round() as i32
+}
+
 /// A single tessellated vertex: 2-D position and premultiplied-linear color.
 ///
 /// The layout is `#[repr(C)]` and [`bytemuck::Pod`] so a slice of vertices
@@ -119,17 +143,21 @@ impl MeshData {
 /// GPU.
 pub type FrameMesh = MeshData;
 
-/// One cached mobject mesh together with the generation it was built from.
+/// One cached mobject mesh together with the generation and zoom bucket it was
+/// built from.
 struct CacheEntry {
     generation: u64,
+    bucket: i32,
     mesh: MeshData,
 }
 
-/// Memoizes per-mobject tessellation, keyed on `(source, generation)`.
+/// Memoizes per-mobject tessellation, keyed on `(source, generation, zoom
+/// bucket)`.
 ///
-/// Re-tessellation happens only when a mobject's `generation` changes; entries
-/// for mobjects that vanish from the display list are evicted. [`hits`] and
-/// [`misses`] count cache outcomes for tests and diagnostics.
+/// Re-tessellation happens only when a mobject's `generation` changes or the
+/// camera zoom crosses a bucket boundary (see [`set_zoom`](Self::set_zoom));
+/// entries for mobjects that vanish from the display list are evicted. [`hits`]
+/// and [`misses`] count cache outcomes for tests and diagnostics.
 ///
 /// [`hits`]: TessellationCache::hits
 /// [`misses`]: TessellationCache::misses
@@ -151,7 +179,12 @@ struct CacheEntry {
 /// ```
 pub struct TessellationCache {
     entries: HashMap<AnyId, CacheEntry>,
+    /// Tolerance at the reference zoom (bucket 0).
+    base_tolerance: f32,
+    /// Effective tolerance for the current zoom bucket.
     tolerance: f32,
+    /// The current zoom bucket (see [`set_zoom`](Self::set_zoom)).
+    zoom_bucket: i32,
     hits: u64,
     misses: u64,
 }
@@ -184,10 +217,42 @@ impl TessellationCache {
     pub fn with_tolerance(tolerance: f32) -> Self {
         Self {
             entries: HashMap::new(),
+            base_tolerance: tolerance,
             tolerance,
+            zoom_bucket: 0,
             hits: 0,
             misses: 0,
         }
+    }
+
+    /// Adapts the tessellation tolerance to the camera zoom, given the visible
+    /// `frame_height` in scene units.
+    ///
+    /// Tolerance is quantized by [`zoom_bucket_for`]: it changes only when zoom
+    /// crosses a 2× boundary, and any bucket change invalidates cached meshes so
+    /// they re-tessellate at the new fidelity. Call this once per frame before
+    /// [`tessellate`](Self::tessellate) when following an animated camera.
+    ///
+    /// ```
+    /// use manim_render::tessellate::{TessellationCache, REFERENCE_FRAME_HEIGHT};
+    /// let mut cache = TessellationCache::new();
+    /// cache.set_zoom(REFERENCE_FRAME_HEIGHT / 4.0); // 4× zoom in
+    /// assert_eq!(cache.zoom_bucket(), -2);
+    /// ```
+    pub fn set_zoom(&mut self, frame_height: f32) {
+        let bucket = zoom_bucket_for(frame_height);
+        self.zoom_bucket = bucket;
+        self.tolerance = (self.base_tolerance * 2.0_f32.powi(bucket)).max(f32::MIN_POSITIVE);
+    }
+
+    /// The current zoom bucket (0 at the reference height).
+    pub fn zoom_bucket(&self) -> i32 {
+        self.zoom_bucket
+    }
+
+    /// The effective flattening tolerance at the current zoom.
+    pub fn tolerance(&self) -> f32 {
+        self.tolerance
     }
 
     /// The number of cached mobject meshes.
@@ -236,7 +301,7 @@ impl TessellationCache {
             let stale = self
                 .entries
                 .get(&item.source)
-                .map(|e| e.generation != item.generation)
+                .map(|e| e.generation != item.generation || e.bucket != self.zoom_bucket)
                 .unwrap_or(true);
             if stale {
                 self.misses += 1;
@@ -245,6 +310,7 @@ impl TessellationCache {
                     item.source,
                     CacheEntry {
                         generation: item.generation,
+                        bucket: self.zoom_bucket,
                         mesh,
                     },
                 );
@@ -423,6 +489,34 @@ mod tests {
         cache.tessellate(&dl);
         assert_eq!((cache.hits(), cache.misses()), (1, 1));
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn zoom_bucket_change_retessellates() {
+        let dl = filled_circle();
+        let mut cache = TessellationCache::new();
+        cache.tessellate(&dl);
+        assert_eq!((cache.hits(), cache.misses()), (0, 1));
+        // Same zoom bucket → hit.
+        cache.tessellate(&dl);
+        assert_eq!(cache.hits(), 1);
+        // Zoom in 4× (bucket -2) → the cached mesh is stale, re-tessellate.
+        cache.set_zoom(2.0);
+        assert_eq!(cache.zoom_bucket(), -2);
+        cache.tessellate(&dl);
+        assert_eq!((cache.hits(), cache.misses()), (1, 2));
+    }
+
+    #[test]
+    fn zooming_in_refines_curves() {
+        let dl = filled_circle();
+        let mut coarse = TessellationCache::new();
+        let coarse_mesh = coarse.tessellate(&dl);
+        let mut fine = TessellationCache::new();
+        fine.set_zoom(REFERENCE_FRAME_HEIGHT / 8.0); // 8× zoom in → finer tolerance
+        let fine_mesh = fine.tessellate(&dl);
+        assert!(fine.tolerance() < coarse.tolerance());
+        assert!(fine_mesh.vertices.len() > coarse_mesh.vertices.len());
     }
 
     #[test]

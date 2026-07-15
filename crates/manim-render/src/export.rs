@@ -107,11 +107,12 @@ impl VideoExporter {
             .take()
             .expect("ffmpeg stdin was piped and is available");
 
-        // Collect frames first (frames() borrows the scene mutably), then render.
-        let frames: Vec<_> = scene.frames().map(|(_, dl)| dl).collect();
+        // Collect frames first (the iterator borrows the scene mutably), then
+        // render each following its camera.
+        let frames: Vec<_> = scene.frames_with_camera().collect();
         let mut result = Ok(());
-        for list in &frames {
-            let image = match renderer.render_display_list(list) {
+        for frame in &frames {
+            let image = match renderer.render_frame(frame) {
                 Ok(img) => img,
                 Err(e) => {
                     result = Err(e);
@@ -163,9 +164,10 @@ impl VideoExporter {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir)?;
         let mut renderer = OffscreenRenderer::new(scene.config())?;
-        let frames: Vec<_> = scene.frames().map(|(_, dl)| dl).collect();
-        for (i, list) in frames.iter().enumerate() {
-            renderer.render_to_png(list, dir.join(format!("frame_{i:05}.png")))?;
+        let frames: Vec<_> = scene.frames_with_camera().collect();
+        for (i, frame) in frames.iter().enumerate() {
+            let image = renderer.render_frame(frame)?;
+            image.save(dir.join(format!("frame_{i:05}.png")))?;
         }
         Ok(())
     }

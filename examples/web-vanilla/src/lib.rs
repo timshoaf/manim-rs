@@ -10,8 +10,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use manim_core::animations::{Create, FadeOut, TransformInto};
-use manim_core::display::DisplayList;
 use manim_core::prelude::*;
+use manim_core::scene::Frame;
 use manim_render::CanvasSurface;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -61,7 +61,8 @@ async fn run() {
 
     let config = Config::low();
     let mut scene = Scene::build(&SquareToCircle, config.clone()).expect("build scene");
-    let frames: Vec<DisplayList> = scene.frames().map(|(_, dl)| dl).collect();
+    // frames_with_camera so the loop follows any camera motion in the scene.
+    let frames: Vec<Frame> = scene.frames_with_camera().collect();
     let mut surface = CanvasSurface::new(canvas, &config)
         .await
         .expect("create canvas surface");
@@ -72,7 +73,7 @@ async fn run() {
     let mut index = 0usize;
     *handle.borrow_mut() = Some(Closure::wrap(Box::new(move || {
         let frame = &frames[index % frames.len()];
-        if let Err(e) = surface.render(frame) {
+        if let Err(e) = surface.render_frame(frame) {
             web_sys::console::error_1(&format!("render error: {e}").into());
             return;
         }

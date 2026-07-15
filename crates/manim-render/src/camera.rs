@@ -100,6 +100,31 @@ impl From<&Config> for Camera2D {
     }
 }
 
+impl From<&manim_core::camera::CameraFrame> for Camera2D {
+    /// Builds the render camera from a per-frame
+    /// [`CameraFrame`](manim_core::camera::CameraFrame), so renderers can follow
+    /// animated camera motion. The frame's background is handled separately (it
+    /// is the clear color, not part of the projection).
+    ///
+    /// ```
+    /// use manim_core::camera::{Camera2D as CoreCamera, CameraFrame};
+    /// use manim_render::camera::Camera2D;
+    ///
+    /// let mut core = CoreCamera::default();
+    /// core.frame_width = 4.0;
+    /// let cam = Camera2D::from(&CameraFrame::from(&core));
+    /// assert_eq!(cam.frame_width, 4.0);
+    /// ```
+    fn from(c: &manim_core::camera::CameraFrame) -> Self {
+        Self {
+            frame_center: c.center,
+            frame_width: c.width,
+            frame_height: c.height,
+            rotation: c.rotation,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

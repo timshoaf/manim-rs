@@ -28,10 +28,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use manim_color::Color;
 use manim_core::config::Config;
-use manim_core::display::DisplayList;
-use manim_core::scene::Scene;
+use manim_core::scene::{Frame, Scene};
 use wgpu::util::DeviceExt;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -53,11 +51,9 @@ const SEEK_STEP: f32 = 1.0;
 /// [`run`](RealtimePlayer::run) to open the window and block until the user
 /// quits.
 pub struct RealtimePlayer {
-    frames: Vec<(f32, DisplayList)>,
+    frames: Vec<Frame>,
     total: f32,
     config: Config,
-    camera: Camera2D,
-    background: Color,
     aspect: f32,
 }
 
@@ -80,17 +76,15 @@ impl RealtimePlayer {
     /// ```
     pub fn new(scene: &mut Scene) -> Self {
         let config = scene.config().clone();
-        let background = scene.camera().background;
+        // Frame aspect stays constant under camera zoom (width and height scale
+        // together), so letterbox against the configured aspect.
         let aspect = config.frame_width / config.frame_height;
-        let camera = Camera2D::from(&config);
         let total = scene.total_duration();
-        let frames: Vec<_> = scene.frames().collect();
+        let frames: Vec<Frame> = scene.frames_with_camera().collect();
         Self {
             frames,
             total,
             config,
-            camera,
-            background,
             aspect,
         }
     }
@@ -190,11 +184,14 @@ impl PreviewApp {
             return Ok(());
         };
         let idx = self.player.frame_index(self.playhead);
-        let (_, list) = &self.player.frames[idx];
-        let mesh = self.cache.tessellate(list);
+        let frame_data = &self.player.frames[idx];
+        let camera = Camera2D::from(&frame_data.camera);
+        let background = frame_data.camera.background;
+        self.cache.set_zoom(frame_data.camera.height);
+        let mesh = self.cache.tessellate(&frame_data.display_list);
 
-        // Update the camera uniform.
-        let view_proj = self.player.camera.view_proj().to_cols_array_2d();
+        // Update the camera uniform (follows the animated camera per frame).
+        let view_proj = camera.view_proj().to_cols_array_2d();
         gfx.queue
             .write_buffer(&gfx.uniform, 0, bytemuck::cast_slice(&view_proj));
 
@@ -232,7 +229,7 @@ impl PreviewApp {
                 usage: wgpu::BufferUsages::INDEX,
             });
 
-        let bg = self.player.background.premultiplied();
+        let bg = background.premultiplied();
         let mut encoder = gfx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {

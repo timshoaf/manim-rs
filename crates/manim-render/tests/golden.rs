@@ -12,11 +12,13 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use manim_color::{BLUE, RED, WHITE};
+use manim_core::animations::{Flash, Indicate};
 use manim_core::config::Config;
 use manim_core::geometry::{Arrow, Circle, Square, Triangle};
 use manim_core::mobject::Buildable;
+use manim_core::scene::Scene;
 use manim_core::scene_state::SceneState;
-use manim_math::{LEFT, RIGHT};
+use manim_math::{LEFT, ORIGIN, RIGHT};
 use manim_render::golden::assert_golden;
 use manim_render::renderer::OffscreenRenderer;
 
@@ -140,4 +142,60 @@ fn core_geometry_scene() {
 
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("core_geometry_scene", &img);
+}
+
+/// Camera-follow: a fixed square with the camera zoomed to 0.5 renders the
+/// square twice as large (closes FE-96's "camera-follow rendered correctly").
+#[test]
+fn camera_zoom_follows() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = Scene::new(test_config());
+    let sq = scene.add(Square::new().with_fill(BLUE, 1.0));
+    let _ = sq;
+    // Zoom the camera to half-size (2× magnification) over the play.
+    scene
+        .play(scene.camera_frame().animate().scale(0.5))
+        .unwrap();
+
+    let frames: Vec<_> = scene.frames_with_camera().collect();
+    // Last frame: camera fully at 0.5 zoom. render_frame follows it.
+    let last = frames.last().expect("frames");
+    assert!((last.camera.height - 4.0).abs() < 1e-3, "zoom not applied");
+    let img = renderer.render_frame(last).unwrap();
+    assert_golden("camera_zoom", &img);
+}
+
+/// FE-97: `Indicate` at its midpoint — the square is scaled up and tinted.
+#[test]
+fn indicate_midframe() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = Scene::new(test_config());
+    let sq = scene.add(Square::new().with_fill(BLUE, 1.0));
+    scene.play(Indicate::new(sq)).unwrap();
+
+    let frames: Vec<_> = scene.frames_with_camera().collect();
+    let mid = &frames[frames.len() / 2];
+    let img = renderer.render_frame(mid).unwrap();
+    assert_golden("indicate_mid", &img);
+}
+
+/// FE-97: `Flash` at its midpoint — yellow lines radiate from the origin over a
+/// blue reference circle.
+#[test]
+fn flash_midframe() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = Scene::new(test_config());
+    scene.add(Circle::new().with_fill(BLUE, 1.0));
+    scene.play(Flash::new(ORIGIN)).unwrap();
+
+    let frames: Vec<_> = scene.frames_with_camera().collect();
+    let mid = &frames[frames.len() / 2];
+    let img = renderer.render_frame(mid).unwrap();
+    assert_golden("flash_mid", &img);
 }

@@ -741,7 +741,8 @@ impl OffscreenRenderer {
         &mut self.camera
     }
 
-    /// Tessellates and renders `list` to an [`RgbaImage`].
+    /// Tessellates and renders `list` to an [`RgbaImage`] with the current
+    /// camera and background.
     ///
     /// Unchanged mobjects reuse cached tessellation across calls, so animating a
     /// scene only re-tessellates what moved.
@@ -751,6 +752,32 @@ impl OffscreenRenderer {
     /// Propagates [`TextureTarget::render`] failures.
     pub fn render_display_list(&mut self, list: &DisplayList) -> Result<RgbaImage, RenderError> {
         let mesh = self.cache.tessellate(list);
+        self.target.render(&mesh, &self.camera, self.background)
+    }
+
+    /// Renders a [`Frame`](manim_core::scene::Frame), following its camera.
+    ///
+    /// Adopts the frame's camera (center/zoom/rotation) and background, adapts
+    /// the tessellation tolerance to the camera zoom, and rasterizes. This is
+    /// what makes camera-follow (`MovingCameraScene`) render correctly.
+    ///
+    /// ```no_run
+    /// # use manim_core::scene::{Scene, Frame};
+    /// # use manim_render::renderer::OffscreenRenderer;
+    /// # fn go(scene: &mut Scene, r: &mut OffscreenRenderer) -> Result<(), manim_render::RenderError> {
+    /// for frame in scene.frames_with_camera() {
+    ///     let _img = r.render_frame(&frame)?;
+    /// }
+    /// # Ok(()) }
+    /// ```
+    pub fn render_frame(
+        &mut self,
+        frame: &manim_core::scene::Frame,
+    ) -> Result<RgbaImage, RenderError> {
+        self.camera = Camera2D::from(&frame.camera);
+        self.background = frame.camera.background;
+        self.cache.set_zoom(frame.camera.height);
+        let mesh = self.cache.tessellate(&frame.display_list);
         self.target.render(&mesh, &self.camera, self.background)
     }
 

@@ -25,6 +25,7 @@
 use manim_color::Color;
 use manim_core::config::Config;
 use manim_core::display::DisplayList;
+use manim_core::scene::Frame;
 use web_sys::HtmlCanvasElement;
 
 use crate::camera::Camera2D;
@@ -224,6 +225,24 @@ impl CanvasSurface {
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
+    }
+
+    /// Renders a [`Frame`], following its camera (center/zoom/rotation) and
+    /// background — the web analogue of
+    /// [`OffscreenRenderer::render_frame`](crate::renderer::OffscreenRenderer::render_frame).
+    ///
+    /// Adopts the frame's camera and background and adapts the tessellation
+    /// tolerance to the zoom, then draws. Use this to follow an animated camera
+    /// in the browser.
+    ///
+    /// # Errors
+    ///
+    /// As [`render`](Self::render).
+    pub fn render_frame(&mut self, frame: &Frame) -> Result<(), RenderError> {
+        self.camera = Camera2D::from(&frame.camera);
+        self.background = frame.camera.background;
+        self.cache.set_zoom(frame.camera.height);
+        self.render(&frame.display_list)
     }
 }
 
