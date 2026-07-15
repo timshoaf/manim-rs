@@ -3,9 +3,9 @@
 Target: manim CE v0.19 public API. Status: ⬜ planned · 🟨 partial · ✅ done.
 This file is the source of truth for the Linear backlog; update as work lands.
 
-Milestones **M0–M5 are complete**; **M6 (3D)** geometry is done and its renderer
-(camera/projection/depth-sort, FE-107) is in flight. Statuses below reflect
-`0.1.0-dev`.
+Milestones **M0–M5 are complete**; **M6 (3D)** is functional end to end —
+geometry, perspective camera, depth sort, and blessed goldens (FE-107/108).
+Statuses below reflect `0.1.0-dev`.
 
 ## mobject
 
@@ -55,12 +55,13 @@ get_area ✅, get_secant_slope_group ✅, c2p/p2c ✅, add_coordinates ✅;
 ParametricFunction ✅, FunctionGraph ✅, BarChart ✅.
 Gaps: some auto-layouts (FE-105) 🟨. plot_implicit_curve / ImplicitFunction ✅.
 
-### three_d (M6) — geometry ✅, renderer in flight
+### three_d (M6) ✅ (rendered, goldens blessed)
 ThreeDVMobject 🟨 (faces-as-children model), Surface ✅, Sphere ✅, Dot3D ✅,
 Cube ✅, Prism ✅, Cone ✅, Cylinder ✅, Line3D ✅, Arrow3D ✅, Torus ✅,
 `ThreeDAxes` ✅, `rotate_about_axis` ✅. Geometry is camera-independent and
-unit-tested headlessly; **rendering (3D camera/projection/depth-sort, FE-107) is
-in flight**. `set_fill_by_value` (per-face value color) ⬜.
+unit-tested headlessly; 3D rendering landed (perspective orbit camera, camera-
+space depth sort, plane-fitted tessellation; sphere/cube/axes-surface/torus
+goldens). `set_fill_by_value` (per-face value color) ⬜.
 
 ### others (M5) ✅
 Matrix ✅, DecimalMatrix ✅, IntegerMatrix ✅, MobjectMatrix ✅,
@@ -73,10 +74,11 @@ Scene ✅, MovingCameraScene (moving camera) ✅, sections ✅,
 VectorScene helpers ✅ (`vector_space`), LinearTransformationScene ✅.
 ZoomedScene ⬜, ThreeDScene ✅ (FE-107 landed: 3D camera + orientation).
 
-## camera (M3 done, 3D in flight)
+## camera (M3 + 3D done)
 2D camera frame center / width / zoom / rotation animatable ✅; background
-color / opacity ✅. ThreeDCamera phi / theta / gamma / focal_distance — 🟨 in
-flight (FE-107). Multi-camera zoomed display — ⬜ (ZoomedScene).
+color / opacity ✅. ThreeDCamera phi / theta / gamma / focal_distance ✅
+(FE-107; set_camera_orientation, ambient rotation, fixed-in-frame HUD).
+Multi-camera zoomed display — ⬜ (ZoomedScene, FE-120).
 
 ## utils
 | CE module | Rust home | Status |
