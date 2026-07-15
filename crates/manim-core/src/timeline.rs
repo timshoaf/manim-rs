@@ -113,13 +113,19 @@ impl Timeline {
             } else {
                 1.0
             };
+            // All concurrent animations begin at the segment start (before any
+            // interpolate), so animations that read each other — e.g. a follower
+            // — capture the correct relationship. Matches manim CE.
             for anim in anims.iter_mut() {
                 anim.begin(&mut state);
-                if local >= 1.0 {
-                    anim.interpolate(&mut state, anim.rate_fn().apply(1.0));
+            }
+            for anim in anims.iter_mut() {
+                let eased = anim.rate_fn().apply(local);
+                anim.interpolate(&mut state, eased);
+            }
+            if local >= 1.0 {
+                for anim in anims.iter_mut() {
                     anim.finish(&mut state);
-                } else {
-                    anim.interpolate(&mut state, anim.rate_fn().apply(local));
                 }
             }
         }

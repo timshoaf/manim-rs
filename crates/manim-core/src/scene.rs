@@ -158,10 +158,16 @@ impl Scene {
             return Err(CoreError::EmptyPlay);
         }
         let snapshot = self.state.clone();
+        // Begin all concurrently, then interpolate to the end, then finish —
+        // so interacting animations (e.g. a follower) see consistent state.
         for anim in &mut anims {
             anim.begin(&mut self.state);
+        }
+        for anim in &mut anims {
             let end_alpha = anim.rate_fn().apply(1.0);
             anim.interpolate(&mut self.state, end_alpha);
+        }
+        for anim in &mut anims {
             anim.finish(&mut self.state);
         }
         self.timeline.push_play(anims, snapshot);

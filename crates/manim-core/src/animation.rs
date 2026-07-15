@@ -245,6 +245,7 @@ pub fn lerp_style(a: &Style, b: &Style, t: f32) -> Style {
 /// each `alpha`.
 pub struct FamilyMorph {
     entries: Vec<MorphEntry>,
+    path_fn: Option<PathFn>,
 }
 
 struct MorphEntry {
@@ -252,6 +253,11 @@ struct MorphEntry {
     start: MobjectData,
     end: MobjectData,
 }
+
+/// A transform path function `(start, end, alpha) → point`, used to move each
+/// control point along a curve (e.g. an arc) instead of a straight line. Port
+/// of manim CE's `path_func`. See [`crate::animations::paths`].
+pub type PathFn = std::sync::Arc<dyn Fn(Point, Point, f32) -> Point + Send + Sync>;
 
 impl FamilyMorph {
     /// Aligns each `(id, start, end)` triple's paths and stores them for
@@ -270,7 +276,17 @@ impl FamilyMorph {
                 }
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            path_fn: None,
+        }
+    }
+
+    /// Sets a transform path function, moving control points along its curve
+    /// rather than straight lines (manim's `path_func`).
+    pub fn with_path_fn(mut self, path_fn: Option<PathFn>) -> Self {
+        self.path_fn = path_fn;
+        self
     }
 
     /// Interpolates every entry into `state` at progress `alpha`.
@@ -280,11 +296,41 @@ impl FamilyMorph {
                 continue;
             }
             let data = state.get_dyn_mut(e.id).data_mut();
-            data.path = lerp_aligned_path(&e.start.path, &e.end.path, alpha);
+            data.path = match &self.path_fn {
+                Some(pf) => lerp_path_with(&e.start.path, &e.end.path, alpha, pf),
+                None => lerp_aligned_path(&e.start.path, &e.end.path, alpha),
+            };
             data.style = lerp_style(&e.start.style, &e.end.style, alpha);
             data.bump_generation();
         }
     }
+}
+
+/// Like [`lerp_aligned_path`], but each control point is moved by `path_fn`.
+fn lerp_path_with(a: &Path, b: &Path, t: f32, path_fn: &PathFn) -> Path {
+    let subpaths = a
+        .subpaths
+        .iter()
+        .zip(&b.subpaths)
+        .map(|(sa, sb)| {
+            let curves = sa
+                .curves
+                .iter()
+                .zip(&sb.curves)
+                .map(|(ca, cb)| manim_math::bezier::CubicBezier {
+                    p0: path_fn(ca.p0, cb.p0, t),
+                    p1: path_fn(ca.p1, cb.p1, t),
+                    p2: path_fn(ca.p2, cb.p2, t),
+                    p3: path_fn(ca.p3, cb.p3, t),
+                })
+                .collect();
+            manim_math::path::SubPath {
+                curves,
+                closed: sa.closed,
+            }
+        })
+        .collect();
+    Path { subpaths }
 }
 
 /// Collects `(id, data-clone)` for every member of `id`'s family.

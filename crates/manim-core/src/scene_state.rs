@@ -654,6 +654,120 @@ impl SceneState {
         items.sort_by_key(|it| it.z_index);
         DisplayList(items)
     }
+
+    // --- Layout (manim's `arrange` / `arrange_in_grid`) ---
+
+    /// Arranges `group`'s direct children in a row along `direction`, separated
+    /// by `buff`, then recenters the group at the origin. Port of manim CE's
+    /// `arrange`.
+    ///
+    /// ```
+    /// use manim_core::geometry::{Square, VGroup};
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_math::{RIGHT, MED_SMALL_BUFF};
+    /// let mut scene = SceneState::new();
+    /// let a = scene.add(Square::new()); // width 2
+    /// let b = scene.add(Square::new());
+    /// let g = VGroup::of(&mut scene, [a.erase(), b.erase()]);
+    /// scene.arrange(g.erase(), RIGHT, MED_SMALL_BUFF);
+    /// // Centers are 2 + buff apart.
+    /// let dx = scene.get(b).get_center().x - scene.get(a).get_center().x;
+    /// assert!((dx - (2.0 + MED_SMALL_BUFF)).abs() < 1e-5);
+    /// ```
+    pub fn arrange(&mut self, group: AnyId, direction: Point, buff: f32) {
+        let children = self.get_dyn(group).data().children.clone();
+        for i in 1..children.len() {
+            let prev = self.family_bounding_box(children[i - 1]);
+            let target_edge = prev.point_in_direction(direction);
+            let cur = self.family_bounding_box(children[i]);
+            let cur_anchor = cur.point_in_direction(-direction);
+            let delta = target_edge - cur_anchor + buff * direction;
+            self.shift(children[i], delta);
+        }
+        self.move_to(group, manim_math::ORIGIN);
+    }
+
+    /// Arranges `group`'s direct children into a `rows` × `cols` grid with `buff`
+    /// spacing, then recenters the group at the origin. Port of manim CE's
+    /// `arrange_in_grid`.
+    ///
+    /// Cells are laid out left-to-right, top-to-bottom on a uniform pitch sized
+    /// to the largest child plus `buff`.
+    ///
+    /// ```
+    /// use manim_core::geometry::{Square, VGroup};
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::MobjectExt;
+    /// let mut scene = SceneState::new();
+    /// let ids: Vec<_> = (0..4).map(|_| scene.add(Square::new()).erase()).collect();
+    /// let g = VGroup::of(&mut scene, ids.clone());
+    /// scene.arrange_in_grid(g.erase(), 2, 2, 0.5);
+    /// // 2×2 grid centered at origin → all four cells within the grid extent.
+    /// assert!(scene.family_bounding_box(g.erase()).center().length() < 1e-4);
+    /// ```
+    pub fn arrange_in_grid(&mut self, group: AnyId, rows: usize, cols: usize, buff: f32) {
+        let children = self.get_dyn(group).data().children.clone();
+        if children.is_empty() || rows == 0 || cols == 0 {
+            return;
+        }
+        // Uniform pitch based on the largest child.
+        let mut cell_w = 0.0_f32;
+        let mut cell_h = 0.0_f32;
+        for c in &children {
+            let bb = self.family_bounding_box(*c);
+            cell_w = cell_w.max(bb.width());
+            cell_h = cell_h.max(bb.height());
+        }
+        let pitch_x = cell_w + buff;
+        let pitch_y = cell_h + buff;
+        for (k, child) in children.iter().enumerate() {
+            let row = k / cols;
+            let col = k % cols;
+            let target = Point::new(col as f32 * pitch_x, -(row as f32) * pitch_y, 0.0);
+            let cur = self.family_bounding_box(*child).center();
+            self.shift(*child, target - cur);
+        }
+        self.move_to(group, manim_math::ORIGIN);
+    }
+
+    /// Adds a mobject rebuilt from scratch every updater tick by `build`
+    /// (manim's `always_redraw`).
+    ///
+    /// The closure reads the scene and returns a fresh mobject whose path and
+    /// style are copied into the live one each frame — so it can follow trackers
+    /// or other mobjects.
+    ///
+    /// ```
+    /// use manim_core::geometry::Dot;
+    /// use manim_core::scene_state::{SceneState, UpdaterCtx};
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_math::{Point, RIGHT};
+    /// let mut scene = SceneState::new();
+    /// let anchor = scene.add(Dot::new());
+    /// // A dot that always sits one unit right of `anchor`.
+    /// let follower = scene.always_redraw(move |s| {
+    ///     let base = s.try_get(anchor).map(|d| d.get_center()).unwrap_or(Point::ZERO);
+    ///     Dot::at(base + RIGHT)
+    /// });
+    /// scene.get_dyn_mut(anchor.erase()).data_mut().path.apply(|p| p + 2.0 * RIGHT);
+    /// scene.run_updaters(UpdaterCtx { dt: 0.0, time: 0.0 });
+    /// assert!((scene.get(follower).get_center() - 3.0 * RIGHT).length() < 1e-4);
+    /// ```
+    pub fn always_redraw<M: Mobject>(
+        &mut self,
+        build: impl Fn(&SceneState) -> M + Send + Sync + 'static,
+    ) -> MobjectId<M> {
+        let initial = build(self);
+        let id = self.add(initial);
+        self.add_updater(id.erase(), move |s, target, _ctx| {
+            let data = build(s).data().clone();
+            if s.contains(target) {
+                *s.get_dyn_mut(target).data_mut() = data;
+            }
+        });
+        id
+    }
 }
 
 impl<M: Mobject> Index<MobjectId<M>> for SceneState {

@@ -209,3 +209,58 @@ impl Animation for LaggedStart {
         Animation::rate_fn(&self.inner)
     }
 }
+
+/// Applies an animation-generating closure to each of several mobjects, played
+/// with a lag. Port of manim CE's `LaggedStartMap`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::{LaggedStartMap, FadeIn};
+/// let mut scene = Scene::new(Config::default());
+/// let ids: Vec<_> = (0..3)
+///     .map(|_| scene.add(Circle::new().with_fill(BLUE, 1.0)).erase())
+///     .collect();
+/// scene.play(LaggedStartMap::new(ids, |id| Box::new(FadeIn::new(id)))).unwrap();
+/// // Three 1 s fades at lag 0.05 → 1 + 2·0.05 = 1.1 s.
+/// assert!((scene.total_duration() - 1.1).abs() < 1e-4);
+/// ```
+pub struct LaggedStartMap {
+    inner: AnimationGroup,
+}
+
+impl LaggedStartMap {
+    /// Maps `map` over `ids` and plays the results with the default lag (0.05).
+    pub fn new(
+        ids: impl IntoIterator<Item = crate::mobject::AnyId>,
+        map: impl Fn(crate::mobject::AnyId) -> Box<dyn Animation>,
+    ) -> Self {
+        let anims: Vec<Box<dyn Animation>> = ids.into_iter().map(map).collect();
+        Self {
+            inner: AnimationGroup::new(anims).lag_ratio(DEFAULT_LAGGED_START_LAG_RATIO),
+        }
+    }
+
+    /// Sets an explicit lag ratio.
+    pub fn lag_ratio(mut self, lag_ratio: f32) -> Self {
+        self.inner = self.inner.lag_ratio(lag_ratio);
+        self
+    }
+}
+
+impl Animation for LaggedStartMap {
+    fn begin(&mut self, state: &mut SceneState) {
+        self.inner.begin(state);
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        self.inner.interpolate(state, alpha);
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        self.inner.finish(state);
+    }
+    fn duration(&self) -> f32 {
+        self.inner.duration()
+    }
+    fn rate_fn(&self) -> RateFn {
+        Animation::rate_fn(&self.inner)
+    }
+}

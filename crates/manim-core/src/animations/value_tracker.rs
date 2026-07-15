@@ -101,3 +101,56 @@ impl Animation for SetValue {
     }
     anim_config_accessors!();
 }
+
+/// A mobject holding a complex number (as a `(re, im)` pair). Port of manim
+/// CE's `ComplexValueTracker`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::ComplexValueTracker;
+/// let mut scene = Scene::new(Config::default());
+/// let z = scene.add(ComplexValueTracker::new(1.0, -2.0));
+/// assert_eq!(scene[z].get_value(), (1.0, -2.0));
+/// scene[z].set_value(3.0, 4.0);
+/// assert_eq!(scene[z].get_re(), 3.0);
+/// assert_eq!(scene[z].get_im(), 4.0);
+/// ```
+#[derive(Clone)]
+pub struct ComplexValueTracker {
+    data: MobjectData,
+    re: f32,
+    im: f32,
+}
+impl_mobject!(ComplexValueTracker);
+
+impl ComplexValueTracker {
+    /// A tracker initialized to `re + im·i`.
+    pub fn new(re: f32, im: f32) -> Self {
+        Self {
+            data: MobjectData::new(Default::default(), Style::default()),
+            re,
+            im,
+        }
+    }
+
+    /// The current value as `(re, im)`.
+    pub fn get_value(&self) -> (f32, f32) {
+        (self.re, self.im)
+    }
+
+    /// The real part.
+    pub fn get_re(&self) -> f32 {
+        self.re
+    }
+
+    /// The imaginary part.
+    pub fn get_im(&self) -> f32 {
+        self.im
+    }
+
+    /// Sets the value to `re + im·i`.
+    pub fn set_value(&mut self, re: f32, im: f32) {
+        self.re = re;
+        self.im = im;
+    }
+}

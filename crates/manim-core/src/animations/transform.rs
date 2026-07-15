@@ -5,7 +5,9 @@
 use crate::animation::AnimConfig;
 use crate::animation::{
     anim_builders, anim_config_accessors, family_data, morph_between, Animation, FamilyMorph,
+    PathFn,
 };
+use crate::animations::paths::path_along_arc;
 use crate::mobject::{AnyId, Mobject, MobjectData};
 use crate::scene_state::SceneState;
 
@@ -26,6 +28,7 @@ pub struct Transform {
     source: AnyId,
     target: AnyId,
     config: AnimConfig,
+    path_fn: Option<PathFn>,
     morph: Option<FamilyMorph>,
 }
 anim_builders!(Transform);
@@ -37,8 +40,23 @@ impl Transform {
             source: source.into(),
             target: target.into(),
             config: AnimConfig::default(),
+            path_fn: None,
             morph: None,
         }
+    }
+
+    /// Moves points along a circular arc of `angle` radians during the morph
+    /// (manim's `path_arc`).
+    pub fn path_arc(mut self, angle: f32) -> Self {
+        self.path_fn = Some(path_along_arc(angle));
+        self
+    }
+
+    /// Uses a custom transform path function (manim's `path_func`). See
+    /// [`crate::animations::paths`].
+    pub fn path_fn(mut self, path_fn: PathFn) -> Self {
+        self.path_fn = Some(path_fn);
+        self
     }
 }
 
@@ -46,7 +64,7 @@ impl Animation for Transform {
     fn begin(&mut self, state: &mut SceneState) {
         let start = family_data(state, self.source);
         let end = family_data(state, self.target);
-        self.morph = Some(FamilyMorph::build(start, end));
+        self.morph = Some(FamilyMorph::build(start, end).with_path_fn(self.path_fn.clone()));
     }
     fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
         if let Some(m) = &self.morph {
@@ -434,4 +452,140 @@ impl Animation for ShrinkToCenter {
     fn rate_fn(&self) -> manim_math::rate_functions::RateFn {
         Animation::rate_fn(&self.inner)
     }
+}
+
+/// Swaps the positions of two mobjects, each drifting along an arc to the
+/// other's center. Port of manim CE's `Swap`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::Swap;
+/// use manim_math::RIGHT;
+/// let mut scene = Scene::new(Config::default());
+/// let a = scene.add(Circle::new());
+/// let b = scene.add(Square::new().with_shift(4.0 * RIGHT));
+/// scene.play(Swap::new(a, b)).unwrap();
+/// // They exchange centers.
+/// assert!((scene[a].get_center() - 4.0 * RIGHT).length() < 1e-3);
+/// assert!(scene[b].get_center().length() < 1e-3);
+/// ```
+pub struct Swap {
+    inner: CyclicReplace,
+}
+
+impl Swap {
+    /// Swaps `a` and `b`.
+    pub fn new(a: impl Into<AnyId>, b: impl Into<AnyId>) -> Self {
+        Self {
+            inner: CyclicReplace::new([a.into(), b.into()]),
+        }
+    }
+
+    /// Sets the run time in seconds.
+    pub fn run_time(mut self, run_time: f32) -> Self {
+        self.inner = self.inner.run_time(run_time);
+        self
+    }
+}
+
+impl Animation for Swap {
+    fn begin(&mut self, state: &mut SceneState) {
+        self.inner.begin(state);
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        self.inner.interpolate(state, alpha);
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        self.inner.finish(state);
+    }
+    fn duration(&self) -> f32 {
+        self.inner.duration()
+    }
+    fn rate_fn(&self) -> manim_math::rate_functions::RateFn {
+        Animation::rate_fn(&self.inner)
+    }
+}
+
+/// Cyclically permutes a set of mobjects, each moving to the next one's center
+/// along an arc. Port of manim CE's `CyclicReplace`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::CyclicReplace;
+/// use manim_math::RIGHT;
+/// let mut scene = Scene::new(Config::default());
+/// let a = scene.add(Circle::new());
+/// let b = scene.add(Square::new().with_shift(2.0 * RIGHT));
+/// let c = scene.add(Circle::new().with_shift(4.0 * RIGHT));
+/// scene.play(CyclicReplace::new([a.erase(), b.erase(), c.erase()])).unwrap();
+/// // a→b's spot, b→c's spot, c→a's spot.
+/// assert!((scene[a].get_center() - 2.0 * RIGHT).length() < 1e-3);
+/// assert!((scene[c].get_center()).length() < 1e-3);
+/// ```
+pub struct CyclicReplace {
+    ids: Vec<AnyId>,
+    config: AnimConfig,
+    path_fn: PathFn,
+    morph: Option<FamilyMorph>,
+}
+
+impl CyclicReplace {
+    /// Cyclically replaces the given mobjects (each moves to the next's center).
+    pub fn new(ids: impl IntoIterator<Item = AnyId>) -> Self {
+        Self {
+            ids: ids.into_iter().collect(),
+            config: AnimConfig::default(),
+            path_fn: path_along_arc(std::f32::consts::PI),
+            morph: None,
+        }
+    }
+
+    /// Sets the run time in seconds.
+    pub fn run_time(mut self, run_time: f32) -> Self {
+        self.config.run_time = run_time;
+        self
+    }
+
+    /// Sets the easing curve.
+    pub fn rate_fn(mut self, rate_fn: manim_math::rate_functions::RateFn) -> Self {
+        self.config.rate_fn = rate_fn;
+        self
+    }
+}
+
+impl Animation for CyclicReplace {
+    fn begin(&mut self, state: &mut SceneState) {
+        let n = self.ids.len();
+        if n == 0 {
+            self.morph = None;
+            return;
+        }
+        // Each mobject's end center is the next one's current center.
+        let centers: Vec<_> = self
+            .ids
+            .iter()
+            .map(|id| state.family_bounding_box(*id).center())
+            .collect();
+        let mut start = Vec::new();
+        let mut end = Vec::new();
+        for (i, id) in self.ids.iter().enumerate() {
+            for (mid, data) in family_data(state, *id) {
+                let mut ed = data.clone();
+                let delta = centers[(i + 1) % n] - centers[i];
+                ed.path.apply(|p| p + delta);
+                start.push((mid, data));
+                end.push((mid, ed));
+            }
+        }
+        self.morph = Some(FamilyMorph::build(start, end).with_path_fn(Some(self.path_fn.clone())));
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        if let Some(m) = &self.morph {
+            m.apply(state, alpha);
+        }
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        self.interpolate(state, 1.0);
+    }
+    anim_config_accessors!();
 }

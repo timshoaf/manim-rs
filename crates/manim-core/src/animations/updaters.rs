@@ -63,3 +63,64 @@ impl Animation for UpdateFromFunc {
     }
     anim_config_accessors!();
 }
+
+/// An animation that calls a closure `(state, id, alpha)` each frame; identical
+/// to [`UpdateFromFunc`] in this port (both are alpha-driven). Port of manim
+/// CE's `UpdateFromAlphaFunc`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::UpdateFromAlphaFunc;
+/// use manim_math::RIGHT;
+/// let mut scene = Scene::new(Config::default());
+/// let d = scene.add(Dot::new());
+/// scene.play(UpdateFromAlphaFunc::new(d, |s, id, alpha| {
+///     s.get_dyn_mut(id).data_mut().path.apply(|_| 4.0 * RIGHT * alpha);
+/// })).unwrap();
+/// assert!((scene[d].get_center() - 4.0 * RIGHT).length() < 1e-4);
+/// ```
+pub struct UpdateFromAlphaFunc {
+    inner: UpdateFromFunc,
+}
+
+impl UpdateFromAlphaFunc {
+    /// Drives `id` each frame with `func(state, id, alpha)`.
+    pub fn new(
+        id: impl Into<AnyId>,
+        func: impl FnMut(&mut SceneState, AnyId, f32) + 'static,
+    ) -> Self {
+        Self {
+            inner: UpdateFromFunc::new(id, func),
+        }
+    }
+
+    /// Sets the run time in seconds.
+    pub fn run_time(mut self, run_time: f32) -> Self {
+        self.inner = self.inner.run_time(run_time);
+        self
+    }
+
+    /// Sets the easing curve.
+    pub fn rate_fn(mut self, rate_fn: manim_math::rate_functions::RateFn) -> Self {
+        self.inner = self.inner.rate_fn(rate_fn);
+        self
+    }
+}
+
+impl Animation for UpdateFromAlphaFunc {
+    fn begin(&mut self, state: &mut SceneState) {
+        self.inner.begin(state);
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        self.inner.interpolate(state, alpha);
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        self.inner.finish(state);
+    }
+    fn duration(&self) -> f32 {
+        self.inner.duration()
+    }
+    fn rate_fn(&self) -> manim_math::rate_functions::RateFn {
+        Animation::rate_fn(&self.inner)
+    }
+}

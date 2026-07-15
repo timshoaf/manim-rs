@@ -5,31 +5,45 @@
 //! | --- | --- |
 //! | creation | [`Create`], [`Uncreate`], [`DrawBorderThenFill`], [`ShowIncreasingSubsets`], [`ShowSubmobjectsOneByOne`] |
 //! | fading | [`FadeIn`], [`FadeOut`] |
-//! | transform | [`Transform`], [`TransformInto`], [`ReplacementTransform`], [`TransformFromCopy`], [`FadeTransform`], [`Restore`], [`ScaleInPlace`], [`ShrinkToCenter`] |
+//! | transform | [`Transform`], [`TransformInto`], [`ReplacementTransform`], [`TransformFromCopy`], [`FadeTransform`], [`Restore`], [`ScaleInPlace`], [`ShrinkToCenter`], [`Swap`], [`CyclicReplace`] |
 //! | movement/rotation | [`Shift`], [`MoveTo`], [`Rotate`], [`Rotating`], [`MoveAlongPath`] |
-//! | composition | [`AnimationGroup`], [`Succession`], [`LaggedStart`] |
-//! | numbers/updaters | [`ValueTracker`], [`SetValue`], [`UpdateFromFunc`] |
+//! | apply | [`Homotopy`], [`ApplyPointwiseFunction`], [`ApplyFunction`], [`ApplyMatrix`], [`MaintainPositionRelativeTo`] |
+//! | growing | [`GrowFromPoint`], [`GrowFromCenter`], [`GrowFromEdge`], [`GrowArrow`], [`SpinInFromNothing`], [`SpiralIn`] |
+//! | composition | [`AnimationGroup`], [`Succession`], [`LaggedStart`], [`LaggedStartMap`] |
+//! | numbers/updaters | [`ValueTracker`], [`ComplexValueTracker`], [`SetValue`], [`UpdateFromFunc`], [`UpdateFromAlphaFunc`] |
 //! | `.animate()` | [`Animate`], [`AnimBuilder`] |
+//! | transform paths | [`paths`] |
 
 mod animate;
+mod apply;
 mod composition;
 mod creation;
 mod fading;
+mod growing;
 mod movement_rotation;
+pub mod paths;
 mod transform;
 mod updaters;
 mod value_tracker;
 
 pub use animate::{AnimBuilder, Animate};
-pub use composition::{AnimationGroup, LaggedStart, Succession, DEFAULT_LAGGED_START_LAG_RATIO};
+pub use apply::{
+    ApplyFunction, ApplyMatrix, ApplyPointwiseFunction, Homotopy, MaintainPositionRelativeTo,
+};
+pub use composition::{
+    AnimationGroup, LaggedStart, LaggedStartMap, Succession, DEFAULT_LAGGED_START_LAG_RATIO,
+};
 pub use creation::{
     Create, DrawBorderThenFill, ShowIncreasingSubsets, ShowSubmobjectsOneByOne, Uncreate,
 };
 pub use fading::{FadeIn, FadeOut};
+pub use growing::{
+    GrowArrow, GrowFromCenter, GrowFromEdge, GrowFromPoint, SpinInFromNothing, SpiralIn,
+};
 pub use movement_rotation::{MoveAlongPath, MoveTo, Rotate, Rotating, Shift};
 pub use transform::{
-    FadeTransform, ReplacementTransform, Restore, ScaleInPlace, ShrinkToCenter, Transform,
-    TransformFromCopy, TransformInto,
+    CyclicReplace, FadeTransform, ReplacementTransform, Restore, ScaleInPlace, ShrinkToCenter,
+    Swap, Transform, TransformFromCopy, TransformInto,
 };
-pub use updaters::{UpdateFromFunc, UpdaterCtx};
-pub use value_tracker::{SetValue, ValueTracker};
+pub use updaters::{UpdateFromAlphaFunc, UpdateFromFunc, UpdaterCtx};
+pub use value_tracker::{ComplexValueTracker, SetValue, ValueTracker};

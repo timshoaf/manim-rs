@@ -505,7 +505,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Circle;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// let c = Circle::new();
     /// assert!((c.bounding_box().width() - 2.0).abs() < 1e-4);
     /// ```
@@ -517,7 +517,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Circle;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::Point;
     /// assert_eq!(Circle::new().get_center(), Point::ZERO);
     /// ```
@@ -549,7 +549,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Square;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{UR, Point};
     /// // A default (side 2) square spans [-1, 1]²; its upper-right corner is (1, 1).
     /// assert_eq!(Square::new().get_corner(UR), Point::new(1.0, 1.0, 0.0));
@@ -582,7 +582,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Dot;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{Point, RIGHT};
     /// let mut d = Dot::new();
     /// d.shift(3.0 * RIGHT);
@@ -600,7 +600,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Square;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// let mut s = Square::new(); // side 2
     /// s.scale(2.0);
     /// assert!((s.width() - 4.0).abs() < 1e-4);
@@ -618,7 +618,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Dot;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{Point, RIGHT};
     /// let mut d = Dot::new();
     /// d.shift(RIGHT).scale_about(2.0, Point::ZERO);
@@ -638,7 +638,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Square;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::TAU;
     /// let mut s = Square::new();
     /// let before = s.get_corner(manim_math::UR);
@@ -668,7 +668,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Dot;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{UP, RIGHT};
     /// let mut d = Dot::new();
     /// d.shift(RIGHT).flip_about(UP, manim_math::Point::ZERO);
@@ -698,7 +698,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Square;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// let mut s = Square::new(); // 2 × 2
     /// s.stretch(3.0, 0); // widen only
     /// assert!((s.width() - 6.0).abs() < 1e-4);
@@ -727,7 +727,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Circle;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{Point, UP};
     /// let mut c = Circle::new();
     /// c.move_to(2.0 * UP);
@@ -776,7 +776,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Square;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{UP, Point};
     /// let mut a = Square::new();
     /// // Align the top of `a` to y = 3.
@@ -804,7 +804,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Square;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{RIGHT, MED_SMALL_BUFF};
     /// let a = Square::new(); // spans x ∈ [-1, 1]
     /// let mut b = Square::new();
@@ -828,7 +828,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Dot;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// use manim_math::{LEFT, LARGE_BUFF, FRAME_WIDTH};
     /// let mut d = Dot::new();
     /// d.to_edge(LEFT, LARGE_BUFF);
@@ -860,7 +860,7 @@ pub trait MobjectExt: Mobject {
     ///
     /// ```
     /// use manim_core::geometry::Circle;
-    /// use manim_core::mobject::MobjectExt;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
     /// let mut c = Circle::new(); // width 2
     /// c.set_width(4.0, false);
     /// assert!((c.width() - 4.0).abs() < 1e-4);
@@ -974,6 +974,98 @@ pub trait MobjectExt: Mobject {
         Self: Sized,
     {
         self.data_mut().name = Some(name.into());
+        self
+    }
+
+    // --- Point-setting and adoption (manim's VMobject point API) ---
+
+    /// Replaces the geometry with straight segments through `corners` (manim's
+    /// `set_points_as_corners`).
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// use manim_math::{Point, RIGHT, UP};
+    /// let mut c = Circle::new();
+    /// c.set_points_as_corners(&[Point::ZERO, RIGHT, RIGHT + UP]);
+    /// assert_eq!(c.data().path.n_curves(), 2);
+    /// ```
+    fn set_points_as_corners(&mut self, corners: &[Point]) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().path = Path::from_corners(corners, false);
+        self.data_mut().bump_generation();
+        self
+    }
+
+    /// Replaces the geometry with a smooth spline through `anchors` (manim's
+    /// `set_points_smoothly`).
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// use manim_math::Point;
+    /// let mut c = Circle::new();
+    /// c.set_points_smoothly(&[
+    ///     Point::new(-1.0, 0.0, 0.0),
+    ///     Point::ZERO,
+    ///     Point::new(1.0, 1.0, 0.0),
+    /// ]);
+    /// assert_eq!(c.data().path.n_curves(), 2);
+    /// ```
+    fn set_points_smoothly(&mut self, anchors: &[Point]) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().path = Path::from_smooth_anchors(anchors, false);
+        self.data_mut().bump_generation();
+        self
+    }
+
+    /// Adopts another mobject's path and style, becoming a copy of its
+    /// appearance (manim's `become`). Named with a raw identifier because
+    /// `become` is a reserved keyword.
+    ///
+    /// ```
+    /// use manim_core::geometry::{Circle, Square};
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// let mut sq = Square::new();
+    /// let circle = Circle::new();
+    /// sq.r#become(&circle);
+    /// // The square now has the circle's (rounded) outline: width 2.
+    /// assert!((sq.bounding_box().width() - 2.0).abs() < 1e-4);
+    /// ```
+    fn r#become(&mut self, other: &dyn Mobject) -> &mut Self
+    where
+        Self: Sized,
+    {
+        let src = other.data();
+        let data = self.data_mut();
+        data.path = src.path.clone();
+        data.style = src.style.clone();
+        data.z_index = src.z_index;
+        data.bump_generation();
+        self
+    }
+
+    /// Copies another mobject's style (fill/stroke) without touching geometry
+    /// (manim's `match_style`).
+    ///
+    /// ```
+    /// use manim_core::geometry::{Circle, Square};
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// use manim_color::RED;
+    /// let mut sq = Square::new();
+    /// let circle = Circle::new(); // default stroke RED
+    /// sq.match_style(&circle);
+    /// assert_eq!(sq.data().style.stroke_color, Some(RED));
+    /// ```
+    fn match_style(&mut self, other: &dyn Mobject) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().style = other.data().style.clone();
         self
     }
 }

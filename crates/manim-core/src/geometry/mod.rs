@@ -22,12 +22,17 @@ mod arc;
 mod group;
 mod line;
 mod polygram;
+mod vectorized;
 
 pub use arc::{AnnularSector, Annulus, Arc, ArcBetweenPoints, Circle, Dot, Ellipse, Sector};
 pub use group::VGroup;
 pub use line::{Angle, Arrow, DashedLine, DoubleArrow, Elbow, Line, RightAngle, Vector};
 pub use polygram::{
     Polygon, Polygram, Rectangle, RegularPolygon, RoundedRectangle, Square, Star, Triangle,
+};
+pub use vectorized::{
+    CurvesAsSubmobjects, DashedVMobject, TracedPath, VDict, VMobject, VectorizedPoint,
+    DEFAULT_DASHED_RATIO, DEFAULT_NUM_DASHES,
 };
 
 use manim_math::bezier::CubicBezier;
