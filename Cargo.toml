@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/manim-math",
+    "crates/manim-color",
+    "crates/manim-core",
+    "crates/manim-render",
+    "crates/manim-text",
+    "crates/manim",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/cryptex-ai/manim_rust"
+rust-version = "1.85"
+
+[workspace.dependencies]
+manim-math = { path = "crates/manim-math" }
+manim-color = { path = "crates/manim-color" }
+manim-core = { path = "crates/manim-core" }
+manim-render = { path = "crates/manim-render" }
+manim-text = { path = "crates/manim-text" }
+
+glam = "0.30"
+slotmap = "1.0"
+thiserror = "2.0"
+smallvec = "1.13"
+lyon = "1.0"
+wgpu = "25"
+pollster = "0.4"
+bytemuck = { version = "1.16", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+approx = "0.5"
+proptest = "1.5"
+
+[workspace.lints.rust]
+missing_docs = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.dev.package."*"]
+opt-level = 2

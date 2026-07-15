@@ -1,0 +1,19 @@
+[package]
+name = "manim-math"
+description = "Math foundations for manim_rust: points, bezier curves, paths, space operations, and rate functions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+glam = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "manim-render"
+description = "wgpu renderer for manim_rust: tessellation, pipelines, offscreen and surface targets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+manim-math = { workspace = true }
+manim-color = { workspace = true }
+manim-core = { workspace = true }
+glam = { workspace = true }
+lyon = { workspace = true }
+wgpu = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+image = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[lints]
+workspace = true

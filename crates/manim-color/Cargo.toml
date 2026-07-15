@@ -1,0 +1,17 @@
+[package]
+name = "manim-color"
+description = "Color type, conversions, gradients, and the full manim CE named-color catalog"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+approx = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true
