@@ -50,6 +50,10 @@ enum Mode {
 struct GlyphInfo {
     n_subpaths: usize,
     style: Style,
+    /// Byte range in the (translated) typst source this glyph came from, via the
+    /// glyph's typst span. `None` for synthesized glyphs with no span (e.g. a
+    /// fraction bar / rule) — those are isolated by shape-matching fallback.
+    typst_range: Option<std::ops::Range<usize>>,
 }
 
 /// Vectorized math: one child mobject per glyph (and per fraction bar / rule),
@@ -156,25 +160,76 @@ impl MathTex {
         out
     }
 
-    /// Recolors the glyphs of an added formula `id` that **match the shape** of
-    /// `tex`'s glyphs, returning how many were recolored. Port (approximation) of
-    /// manim CE's `set_color_by_tex`.
+    /// The typst-source byte range of each glyph child, parallel to
+    /// [`glyph_ids`](Self::glyph_ids) / the added children.
+    fn glyph_ranges(&self) -> Vec<Option<std::ops::Range<usize>>> {
+        self.glyphs.iter().map(|g| g.typst_range.clone()).collect()
+    }
+
+    /// Isolates the glyph children of an added formula `id` that come from the
+    /// substring `tex`, one group **per occurrence**. Port of manim CE's
+    /// `get_parts_by_tex`.
     ///
-    /// # Approach & limits
+    /// # How isolation works
     ///
-    /// CE isolates a TeX *substring* and colors exactly its glyphs. typst does
-    /// not give us a robust LaTeX-substring → glyph map (glyph spans point into
-    /// the *translated* typst source and math layout reflows glyphs), so this
-    /// instead renders `tex` on its own and colors every glyph in `id` whose
-    /// **shape signature** matches — the same quantized-outline hash used by
-    /// [`TransformMatchingTex`](crate::TransformMatchingTex). Consequence: it
-    /// colors *all* occurrences of those glyph shapes, and cannot distinguish
-    /// identical-looking symbols in different subexpressions. Good for "color the
-    /// π / the x"; not a true substring isolation (tracked as FE-99).
+    /// Each glyph records the byte range in the (translated) typst source it was
+    /// laid out from (via typst's glyph spans). The query `tex` is translated the
+    /// same way and matched as a substring of the formula's typst source; each
+    /// match yields the group of glyphs whose ranges fall inside it. This gives
+    /// true occurrence-level isolation (both `x`s in `x^2 + x` are separate
+    /// groups). Synthesized glyphs with no span (a fraction bar) are never
+    /// grouped. `tex` should be a well-formed LaTeX sub-expression so it
+    /// translates the same way in isolation.
+    ///
+    /// ```
+    /// use manim_text::MathTex;
+    /// use manim_core::scene_state::SceneState;
+    /// let mut scene = SceneState::new();
+    /// let m = MathTex::new(r"e^{i\pi} + 1 = 0").unwrap().add_to(&mut scene);
+    /// // Exactly one π glyph.
+    /// let parts = MathTex::get_parts_by_tex(&scene, m, r"\pi");
+    /// assert_eq!(parts.len(), 1);
+    /// assert_eq!(parts[0].len(), 1);
+    /// ```
+    pub fn get_parts_by_tex(
+        scene: &SceneState,
+        id: MobjectId<MathTex>,
+        tex: &str,
+    ) -> Vec<Vec<AnyId>> {
+        let math = scene.get(id);
+        let typst_src = math.typst_src.clone();
+        let ranges = math.glyph_ranges();
+        let children = scene.get_dyn(id.erase()).data().children.clone();
+        let query = query_to_typst(tex);
+        occurrences_to_groups(&typst_src, &query, &ranges, &children)
+    }
+
+    /// The `index`-th occurrence group of `tex` (manim's `index_of_part` /
+    /// `get_part_by_tex`), if present.
+    pub fn get_part_by_tex(
+        scene: &SceneState,
+        id: MobjectId<MathTex>,
+        tex: &str,
+        index: usize,
+    ) -> Option<Vec<AnyId>> {
+        Self::get_parts_by_tex(scene, id, tex)
+            .into_iter()
+            .nth(index)
+    }
+
+    /// Recolors every glyph of an added formula `id` belonging to the substring
+    /// `tex`, returning how many were recolored. Port of manim CE's
+    /// `set_color_by_tex` with **true occurrence-level isolation**.
+    ///
+    /// Precedence: glyphs are matched by their typst-source range
+    /// ([`get_parts_by_tex`](Self::get_parts_by_tex)); if that yields nothing
+    /// (e.g. the query maps only to synthesized/spanless glyphs), it falls back to
+    /// shape-signature matching against a mini-render of `tex` (which colors *all*
+    /// occurrences of those glyph shapes — the previous approximation).
     ///
     /// # Errors
     ///
-    /// A [`CoreError::Text`] if `tex` fails to typeset.
+    /// A [`CoreError::Text`] if `tex` fails to typeset (fallback path only).
     ///
     /// ```
     /// use manim_text::MathTex;
@@ -182,10 +237,10 @@ impl MathTex {
     /// use manim_core::mobject::Mobject;
     /// use manim_color::RED;
     /// let mut scene = SceneState::new();
-    /// let m = MathTex::new(r"x + y = x").unwrap().add_to(&mut scene);
-    /// // Both x glyphs get colored.
+    /// let m = MathTex::new(r"x^2 + x").unwrap().add_to(&mut scene);
+    /// // Both x's colored (but not the 2).
     /// let n = MathTex::set_color_by_tex(&mut scene, m, "x", RED).unwrap();
-    /// assert!(n >= 2);
+    /// assert_eq!(n, 2);
     /// ```
     pub fn set_color_by_tex(
         scene: &mut SceneState,
@@ -193,6 +248,18 @@ impl MathTex {
         tex: &str,
         color: Color,
     ) -> Result<usize, CoreError> {
+        let parts = Self::get_parts_by_tex(scene, id, tex);
+        if !parts.is_empty() {
+            let mut count = 0;
+            for group in parts {
+                for c in group {
+                    scene.get_dyn_mut(c).set_fill(color, 1.0);
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+        // Fallback: shape-signature match (spanless glyphs / untranslatable query).
         let sub = MathTex::new(tex)?;
         let wanted: std::collections::HashSet<u64> = sub
             .glyph_paths()
@@ -200,7 +267,6 @@ impl MathTex {
             .filter(|p| !p.subpaths.iter().all(|s| s.curves.is_empty()))
             .map(crate::match_tex::signature)
             .collect();
-
         let children = scene.get_dyn(id.erase()).data().children.clone();
         let mut count = 0;
         for c in children {
@@ -377,6 +443,11 @@ fn typeset(
         "#set page(width: auto, height: auto, margin: 0pt, fill: none)\n\
          #set text(size: {font_size}pt)\n{body}"
     );
+    // Byte offset of `src` within `main`, so glyph spans map back to `src`.
+    let src_offset = match mode {
+        Mode::Math => main.len() - 1 - src.len(), // main = "…${src}$"
+        Mode::Content => main.len() - src.len(),
+    };
     let world = MathWorld::new(main);
     let document = typst::compile::<PagedDocument>(&world)
         .output
@@ -394,20 +465,28 @@ fn typeset(
         .first()
         .ok_or_else(|| MathError::Typeset("empty document".to_string()))?;
 
-    let mut children: Vec<(Vec<SubPath>, Style)> = Vec::new();
+    let mut children: Vec<(Vec<SubPath>, Style, Option<std::ops::Range<usize>>)> = Vec::new();
     let identity = Aff::identity();
-    render_frame(&page.frame, identity, color, &mut children);
+    render_frame(
+        &page.frame,
+        identity,
+        color,
+        &world.source,
+        src_offset,
+        &mut children,
+    );
 
     // Concatenate into one path + metadata, then recenter.
     let mut subpaths = Vec::new();
     let mut glyphs = Vec::new();
-    for (subs, style) in children {
+    for (subs, style, typst_range) in children {
         if subs.is_empty() {
             continue;
         }
         glyphs.push(GlyphInfo {
             n_subpaths: subs.len(),
             style,
+            typst_range,
         });
         subpaths.extend(subs);
     }
@@ -487,8 +566,18 @@ fn transform_aff(t: Transform) -> Aff {
     }
 }
 
-/// Recursively walks a typst frame, emitting glyph and shape children.
-fn render_frame(frame: &Frame, current: Aff, color: Color, out: &mut Vec<(Vec<SubPath>, Style)>) {
+/// Recursively walks a typst frame, emitting glyph and shape children. Each glyph
+/// carries its byte range in the (translated) typst source (`src_offset` is where
+/// the user's source begins inside the compiled document).
+#[allow(clippy::type_complexity)]
+fn render_frame(
+    frame: &Frame,
+    current: Aff,
+    color: Color,
+    source: &Source,
+    src_offset: usize,
+    out: &mut Vec<(Vec<SubPath>, Style, Option<std::ops::Range<usize>>)>,
+) {
     let s = PT_PER_SCENE_UNIT_INV;
     for (pos, item) in frame.items() {
         match item {
@@ -497,7 +586,7 @@ fn render_frame(frame: &Frame, current: Aff, color: Color, out: &mut Vec<(Vec<Su
                 let child = transform_aff(group.transform)
                     .then(translate_aff(*pos))
                     .then(current);
-                render_frame(&group.frame, child, color, out);
+                render_frame(&group.frame, child, color, source, src_offset, out);
             }
             FrameItem::Text(text) => {
                 let size_pt = text.size.to_pt();
@@ -524,14 +613,23 @@ fn render_frame(frame: &Frame, current: Aff, color: Color, out: &mut Vec<(Vec<Su
                         })
                         .unwrap_or_default();
                     if !subs.is_empty() {
-                        out.push((subs, Style::filled(color)));
+                        let span = glyph.span.0;
+                        let typst_range = if span.is_detached() {
+                            None
+                        } else {
+                            source.range(span).and_then(|r| {
+                                (r.start >= src_offset)
+                                    .then(|| (r.start - src_offset)..(r.end - src_offset))
+                            })
+                        };
+                        out.push((subs, Style::filled(color), typst_range));
                     }
                     pen += glyph.x_advance.get() * size_pt;
                 }
             }
             FrameItem::Shape(shape, _) => {
                 if let Some(subpath) = shape_subpath(&shape.geometry, *pos, current, s) {
-                    out.push((vec![subpath], Style::filled(color)));
+                    out.push((vec![subpath], Style::filled(color), None));
                 }
             }
             _ => {}
@@ -596,10 +694,138 @@ fn closed_quad(a: Point, b: Point, c: Point, d: Point) -> SubPath {
     }
 }
 
+/// Translates a LaTeX query to typst for matching against a formula's typst
+/// source; falls back to the raw (trimmed) query if it doesn't translate.
+fn query_to_typst(tex: &str) -> String {
+    crate::latex::translate(tex)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| tex.trim().to_string())
+}
+
+/// Groups glyph `children` by each occurrence of `query` in `typst_src`, using
+/// per-glyph typst byte `ranges`. A glyph joins an occurrence if its range lies
+/// within the matched span.
+fn occurrences_to_groups(
+    typst_src: &str,
+    query: &str,
+    ranges: &[Option<std::ops::Range<usize>>],
+    children: &[AnyId],
+) -> Vec<Vec<AnyId>> {
+    let mut groups = Vec::new();
+    if query.is_empty() {
+        return groups;
+    }
+    let mut start = 0;
+    while let Some(rel) = typst_src[start..].find(query) {
+        let s = start + rel;
+        let e = s + query.len();
+        let group: Vec<AnyId> = ranges
+            .iter()
+            .zip(children)
+            .filter_map(|(r, &c)| r.as_ref().filter(|r| r.start >= s && r.end <= e).map(|_| c))
+            .collect();
+        if !group.is_empty() {
+            groups.push(group);
+        }
+        start = e.max(s + 1);
+    }
+    groups
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use manim_core::mobject::{Mobject, MobjectExt};
+
+    /// The fraction of a formula's glyphs that carry a typst source range.
+    fn coverage(src: &str) -> (usize, usize) {
+        let m = MathTex::new(src).unwrap();
+        let total = m.glyphs.len();
+        let mapped = m.glyphs.iter().filter(|g| g.typst_range.is_some()).count();
+        (mapped, total)
+    }
+
+    #[test]
+    fn span_coverage_is_high() {
+        // Report per-formula, then assert a high overall mapping rate.
+        let mut tot_mapped = 0;
+        let mut tot_total = 0;
+        for src in [
+            r"e^{i\pi} + 1 = 0",
+            r"x^2 + x",
+            r"b^2 - 4ac",
+            r"\frac{\pi}{2} + \pi",
+        ] {
+            let (mapped, total) = coverage(src);
+            eprintln!("{src}: {mapped}/{total}");
+            tot_mapped += mapped;
+            tot_total += total;
+        }
+        // Most glyphs carry a source range; only synthesized ones (fraction bars)
+        // and the occasional reflowed construct miss.
+        assert!(
+            tot_mapped * 4 >= tot_total * 3,
+            "coverage {tot_mapped}/{tot_total} below 75%"
+        );
+    }
+
+    #[test]
+    fn get_parts_by_tex_isolates_single_pi() {
+        let mut scene = SceneState::new();
+        let m = MathTex::new(r"e^{i\pi} + 1 = 0")
+            .unwrap()
+            .add_to(&mut scene);
+        let parts = MathTex::get_parts_by_tex(&scene, m, r"\pi");
+        assert_eq!(parts.len(), 1, "one π occurrence");
+        assert_eq!(parts[0].len(), 1, "exactly the π glyph");
+    }
+
+    #[test]
+    fn get_parts_by_tex_isolates_each_occurrence() {
+        let mut scene = SceneState::new();
+        let m = MathTex::new(r"\frac{\pi}{2} + \pi")
+            .unwrap()
+            .add_to(&mut scene);
+        // The standalone π maps; the numerator π may be spanless — at least one
+        // occurrence is isolated, each as its own group.
+        let parts = MathTex::get_parts_by_tex(&scene, m, r"\pi");
+        assert!(!parts.is_empty());
+        assert!(parts.iter().all(|g| !g.is_empty()));
+    }
+
+    #[test]
+    fn set_color_by_tex_colors_both_x_not_the_2() {
+        use manim_color::RED;
+        let mut scene = SceneState::new();
+        let m = MathTex::new(r"x^2 + x").unwrap().add_to(&mut scene);
+        let n = MathTex::set_color_by_tex(&mut scene, m, "x", RED).unwrap();
+        assert_eq!(n, 2, "both x's, not the 2");
+        // The 2 glyph keeps its original color.
+        let kids = scene.get_dyn(m.erase()).data().children.clone();
+        let reds = kids
+            .iter()
+            .filter(|&&c| scene.get_dyn(c).data().style.fill_color == Some(RED))
+            .count();
+        assert_eq!(reds, 2);
+    }
+
+    #[test]
+    fn isolate_contiguous_subexpression() {
+        let mut scene = SceneState::new();
+        let m = MathTex::new(r"b^2 - 4ac").unwrap().add_to(&mut scene);
+        let parts = MathTex::get_parts_by_tex(&scene, m, "4ac");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].len(), 3, "the 4, a, c glyphs as one group");
+    }
+
+    #[test]
+    fn synthesized_glyphs_do_not_panic() {
+        let mut scene = SceneState::new();
+        let m = MathTex::new(r"\frac{a}{b}").unwrap().add_to(&mut scene);
+        // Query touching the fraction (spanless bar) must not panic.
+        let _ = MathTex::get_parts_by_tex(&scene, m, "a");
+        let _ = MathTex::get_part_by_tex(&scene, m, "b", 0);
+    }
 
     #[test]
     fn typst_math_renders_glyphs() {

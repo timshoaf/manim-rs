@@ -1,0 +1,6 @@
+# Incremental compilation is disabled project-wide: with multiple agents
+# rebuilding concurrently, the incremental caches repeatedly grew to 10G+ and
+# filled the volume (which runs near-capacity). Full-crate rebuilds are slightly
+# slower but bounded. Remove this if working solo with disk headroom.
+[build]
+incremental = false
