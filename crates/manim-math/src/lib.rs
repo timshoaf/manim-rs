@@ -8,7 +8,11 @@
 //! Points live in manim's scene space: origin at frame center, `+y` up,
 //! frame height 8.0 scene units. See [`Point`].
 
+pub mod bezier;
 pub mod constants;
+pub mod path;
+pub mod rate_functions;
+pub mod space_ops;
 
 pub use constants::*;
 
