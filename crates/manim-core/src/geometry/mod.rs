@@ -30,7 +30,7 @@ pub use arc::{
     Circle, Dot, Ellipse, Sector,
 };
 pub use brace::Brace;
-pub use group::VGroup;
+pub use group::{Group, VGroup};
 pub use line::{
     Angle, Arrow, CurvedArrow, CurvedDoubleArrow, DashedLine, DoubleArrow, Elbow, Line, RightAngle,
     TangentLine, TipShape, Vector,

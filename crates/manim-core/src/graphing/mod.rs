@@ -41,8 +41,8 @@ mod plane;
 
 pub use axes::Axes;
 pub use bar_chart::{default_bar_colors, BarChart};
-pub use coord::CoordSystem;
-pub use functions::{FunctionGraph, ParametricFunction};
+pub use coord::{CoordSystem, DEFAULT_IMPLICIT_RESOLUTION};
+pub use functions::{FunctionGraph, ImplicitFunction, ParametricFunction};
 pub use number_line::NumberLine;
 pub use plane::{ComplexPlane, NumberPlane, PolarPlane};
 

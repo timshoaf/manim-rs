@@ -325,7 +325,57 @@ impl StreamLines {
         }
         group
     }
+
+    /// Builds the streamlines **and** animates a continuous flow along them: a
+    /// short dash window travels down each line, phase-offset per line for the
+    /// flowing look, wrapping forever. Port (simplified) of manim CE's
+    /// `StreamLines.start_animation` — driven by an updater, so it plays whenever
+    /// the scene ticks. Returns the group.
+    pub fn animate_flow(&self, scene: &mut SceneState) -> MobjectId<VGroup> {
+        use manim_math::path::{Path, SubPath};
+
+        let seeds = self.seed_points();
+        let speeds: Vec<f32> = seeds
+            .iter()
+            .map(|&p| self.field.sample(p).length())
+            .collect();
+        let max_speed = speeds.iter().cloned().fold(0.0_f32, f32::max).max(1e-6);
+
+        let group = scene.add(VGroup::new());
+        let n = seeds.len().max(1);
+        for (i, (&seed, &speed)) in seeds.iter().zip(&speeds).enumerate() {
+            let pts = self.streamline(seed);
+            if pts.len() < 2 {
+                continue;
+            }
+            let color = ramp_color(speed / max_speed, &self.colors);
+            let full = Path {
+                subpaths: vec![SubPath::from_corners(&pts)],
+            };
+            let mut style = Style::stroked(color);
+            style.stroke_width = 2.0;
+            let child = scene.add(VMobject::new(full.clone(), style));
+            scene.add_child(group.erase(), child.erase());
+
+            let offset = i as f32 / n as f32;
+            scene.add_updater(child.erase(), move |s, id, ctx| {
+                // Sliding window [a, a+W] in path proportion, wrapping via time.
+                let a = (ctx.time * FLOW_SPEED + offset).rem_euclid(1.0);
+                let b = (a + FLOW_WINDOW).min(1.0);
+                let window = full.get_subcurve(a, b);
+                let data = s.get_dyn_mut(id).data_mut();
+                data.path = window;
+                data.bump_generation();
+            });
+        }
+        group
+    }
 }
+
+/// Flow speed for [`StreamLines::animate_flow`], in path-proportions per second.
+const FLOW_SPEED: f32 = 0.25;
+/// Length of the moving dash window, as a path proportion.
+const FLOW_WINDOW: f32 = 0.18;
 
 #[cfg(test)]
 mod tests {
@@ -333,6 +383,36 @@ mod tests {
 
     fn rotational() -> impl Fn(Point) -> Point + Send + Sync + 'static {
         |p: Point| Point::new(-p.y, p.x, 0.0)
+    }
+
+    #[test]
+    fn stream_flow_window_advances_and_wraps() {
+        use crate::scene_state::{SceneState, UpdaterCtx};
+
+        let mut scene = SceneState::new();
+        let lines = StreamLines::new(rotational())
+            .with_x_range([-2.0, 2.0, 1.0])
+            .with_y_range([-2.0, 2.0, 1.0]);
+        let group = lines.animate_flow(&mut scene);
+        let child = scene.get_dyn(group.erase()).data().children[0];
+
+        let tick = |scene: &mut SceneState, t: f32| {
+            scene.run_updaters(UpdaterCtx { dt: 0.0, time: t });
+            let p = &scene.get_dyn(child).data().path;
+            (p.point_from_proportion(0.0), p.n_curves())
+        };
+        let (p0, len0) = tick(&mut scene, 0.0);
+        let (p1, _) = tick(&mut scene, 1.0);
+        // The window (a short arc) has slid along the streamline.
+        assert!((p1 - p0).length() > 1e-3, "window should advance");
+        // And it's only a window, not the whole line.
+        assert!(len0 >= 1);
+        // After a full period (1/FLOW_SPEED s) it returns near the start.
+        let (pw, _) = tick(&mut scene, 1.0 / FLOW_SPEED);
+        assert!(
+            (pw - p0).length() < 0.2,
+            "window should wrap: {pw:?} vs {p0:?}"
+        );
     }
 
     #[test]

@@ -51,8 +51,8 @@ pub use indication::{
 };
 pub use movement_rotation::{MoveAlongPath, MoveTo, Rotate, Rotating, Shift};
 pub use transform::{
-    CyclicReplace, FadeTransform, ReplacementTransform, Restore, ScaleInPlace, ShrinkToCenter,
-    Swap, Transform, TransformFromCopy, TransformInto,
+    CyclicReplace, FadeTransform, MoveToTarget, ReplacementTransform, Restore, ScaleInPlace,
+    ShrinkToCenter, Swap, Transform, TransformFromCopy, TransformInto,
 };
 pub use transform_matching::{match_shapes, MatchResult, TransformMatchingShapes};
 pub use updaters::{UpdateFromAlphaFunc, UpdateFromFunc, UpdaterCtx};

@@ -24,15 +24,17 @@ Milestones **M0–M5 are complete**; **M6 (3D)** geometry is done and its render
 
 ### types (M1) ✅
 VMobject ✅, VGroup ✅, VDict ✅, VectorizedPoint ✅, CurvesAsSubmobjects ✅,
-DashedVMobject ✅, TracedPath ✅, Mobject ✅, ImageMobject ✅, SVGMobject ✅.
-Group, PMobject/Point (point clouds) — ⬜.
+DashedVMobject ✅, TracedPath ✅, Mobject ✅, ImageMobject ✅, SVGMobject ✅,
+Group ✅ (alias of `VGroup` — the type-erased arena holds any mobject).
+PMobject/Point (point clouds) — ⬜.
 
 ### animation (M2) ✅ — full core catalog
 creation / fading / transform / movement / rotation / growing / apply /
 composition / indication families, `.animate()`, updaters, ValueTracker,
-`TransformMatchingShapes` / `TransformMatchingTex`, `AnimatedBoundary`, transform
-path functions — all landed. Remaining tail: `AddTextLetterByLetter`, `Unwrite`,
-`PhaseFlow`/`ComplexHomotopy` variants — ⬜.
+`TransformMatchingShapes` / `TransformMatchingTex`, `AnimatedBoundary`,
+`MoveToTarget` / `generate_target`, transform path functions — all landed;
+`Unwrite` / `AddTextLetterByLetter` / `RemoveTextLetterByLetter` ✅ (manim-text).
+Remaining tail: `PhaseFlow` / `ComplexHomotopy` variants — ⬜.
 
 ### text (M4) ✅ (with gaps)
 Text ✅, Paragraph ✅, MarkupText ✅, Tex ✅, MathTex ✅, Typst ✅,
@@ -51,7 +53,7 @@ ComplexPlane ✅, PolarPlane ✅; CoordinateSystem methods — plot ✅,
 plot_parametric_curve ✅, get_graph_label ✅, get_riemann_rectangles ✅,
 get_area ✅, get_secant_slope_group ✅, c2p/p2c ✅, add_coordinates ✅;
 ParametricFunction ✅, FunctionGraph ✅, BarChart ✅.
-Gaps: plot_implicit_curve / ImplicitFunction ⬜; some auto-layouts (FE-105) 🟨.
+Gaps: some auto-layouts (FE-105) 🟨. plot_implicit_curve / ImplicitFunction ✅.
 
 ### three_d (M6) — geometry ✅, renderer in flight
 ThreeDVMobject 🟨 (faces-as-children model), Surface ✅, Sphere ✅, Dot3D ✅,
@@ -63,7 +65,7 @@ in flight**. `set_fill_by_value` (per-face value color) ⬜.
 ### others (M5) ✅
 Matrix ✅, DecimalMatrix ✅, IntegerMatrix ✅, MobjectMatrix ✅,
 Table (+ MathTable / DecimalTable) ✅, Graph / DiGraph (+ layouts) ✅,
-VectorField ✅, ArrowVectorField ✅, StreamLines ✅ (animated flow FE-106 🟨),
+VectorField ✅, ArrowVectorField ✅, StreamLines ✅ (animated flow via animate_flow ✅),
 ValueTracker ✅, ComplexValueTracker ✅, TracedPath ✅.
 
 ## scene (M3 / M6)

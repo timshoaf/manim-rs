@@ -33,6 +33,28 @@ pub struct VGroup {
 }
 impl_mobject!(VGroup);
 
+/// A group of **arbitrary** mobjects. Port of manim CE's `Group`.
+///
+/// CE distinguishes `Group` (holds any `Mobject`) from `VGroup` (vector mobjects
+/// only). In our arena model every group is type-erased — children are stored as
+/// `AnyId`, whatever their concrete type — so a `Group` and a [`VGroup`] are the
+/// **same type**. `Group` is provided as an alias for manim-name parity and to
+/// signal intent when a group holds non-vector content (an
+/// [`ImageMobject`](crate::image_mobject::ImageMobject) alongside vector
+/// mobjects), which CE's `VGroup` cannot. Construct with `Group::new()` /
+/// `Group::of(scene, ids)`.
+///
+/// ```
+/// use manim_core::geometry::Group;
+/// use manim_core::geometry::Circle;
+/// use manim_core::scene_state::SceneState;
+/// let mut scene = SceneState::new();
+/// let c = scene.add(Circle::new());
+/// let g = Group::of(&mut scene, [c.erase()]);
+/// assert_eq!(scene.family(g.erase()).len(), 2);
+/// ```
+pub type Group = VGroup;
+
 impl VGroup {
     /// An empty group.
     pub fn new() -> Self {

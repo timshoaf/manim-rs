@@ -7,7 +7,7 @@ use manim_color::{Color, BLUE};
 use manim_math::path::{Path, SubPath};
 use manim_math::Point;
 
-use super::functions::{runs_to_path, ScalarFn};
+use super::functions::{runs_to_path, ImplicitFunction, ScalarFn};
 use super::{closed_polygon, sample_runs, FunctionGraph, ParametricFunction};
 use crate::geometry::{Line, VMobject};
 use crate::style::Style;
@@ -227,6 +227,30 @@ impl CoordSystem {
         Line::new(self.coords_to_point(0.0, y), self.coords_to_point(x, y))
     }
 
+    /// Traces the implicit curve `f(x, y) = 0` over the coordinate ranges by
+    /// marching squares. `resolution` is the grid divisions per axis (default
+    /// [`DEFAULT_IMPLICIT_RESOLUTION`]); the curve is emitted as line-segment
+    /// subpaths, so disconnected branches (e.g. a hyperbola) come out naturally.
+    /// Port of manim CE's `plot_implicit_curve`.
+    pub fn plot_implicit_curve(
+        &self,
+        f: impl Fn(f32, f32) -> f32,
+        resolution: Option<usize>,
+    ) -> ImplicitFunction {
+        let res = resolution.unwrap_or(DEFAULT_IMPLICIT_RESOLUTION).max(2);
+        let segments = marching_squares(&f, self.x_range, self.y_range, res);
+        let subpaths = segments
+            .into_iter()
+            .map(|[a, b]| {
+                SubPath::from_corners(&[
+                    self.coords_to_point(a.0, a.1),
+                    self.coords_to_point(b.0, b.1),
+                ])
+            })
+            .collect();
+        ImplicitFunction::from_path(Path { subpaths })
+    }
+
     /// The scene point where the x-axis line sits (data `y` clamped into range),
     /// used when building axis geometry.
     pub(crate) fn x_axis_y(&self) -> f32 {
@@ -245,6 +269,54 @@ impl CoordSystem {
     }
 }
 
+/// Default marching-squares grid resolution per axis for implicit curves.
+pub const DEFAULT_IMPLICIT_RESOLUTION: usize = 100;
+
+/// Marching squares over `f = 0` on the `[min,max]` ranges, returning
+/// data-space line segments `[(x,y); 2]`.
+fn marching_squares(
+    f: &dyn Fn(f32, f32) -> f32,
+    x_range: [f32; 3],
+    y_range: [f32; 3],
+    res: usize,
+) -> Vec<[(f32, f32); 2]> {
+    let (x0, x1) = (x_range[0], x_range[1]);
+    let (y0, y1) = (y_range[0], y_range[1]);
+    let dx = (x1 - x0) / res as f32;
+    let dy = (y1 - y0) / res as f32;
+    // Zero crossing on the segment a→b given field values fa, fb of opposite sign.
+    let lerp = |t: f32, a: f32, b: f32| a + t * (b - a);
+    let mut segs = Vec::new();
+    for i in 0..res {
+        for j in 0..res {
+            let (cx0, cy0) = (x0 + i as f32 * dx, y0 + j as f32 * dy);
+            let (cx1, cy1) = (cx0 + dx, cy0 + dy);
+            let (bl, br, tr, tl) = (f(cx0, cy0), f(cx1, cy0), f(cx1, cy1), f(cx0, cy1));
+            let mut pts: Vec<(f32, f32)> = Vec::new();
+            let mut edge = |fa: f32, fb: f32, ax: f32, ay: f32, bx: f32, by: f32| {
+                if (fa > 0.0) != (fb > 0.0) && (fa - fb).abs() > 1e-12 {
+                    let t = fa / (fa - fb);
+                    pts.push((lerp(t, ax, bx), lerp(t, ay, by)));
+                }
+            };
+            edge(bl, br, cx0, cy0, cx1, cy0); // bottom
+            edge(br, tr, cx1, cy0, cx1, cy1); // right
+            edge(tr, tl, cx1, cy1, cx0, cy1); // top
+            edge(tl, bl, cx0, cy1, cx0, cy0); // left
+            match pts.len() {
+                2 => segs.push([pts[0], pts[1]]),
+                4 => {
+                    // Saddle: connect the crossings pairwise.
+                    segs.push([pts[0], pts[1]]);
+                    segs.push([pts[2], pts[3]]);
+                }
+                _ => {}
+            }
+        }
+    }
+    segs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +326,44 @@ mod tests {
     fn unit_cs() -> CoordSystem {
         // 1 scene unit per data unit on both axes.
         CoordSystem::new([-4.0, 4.0, 1.0], [-2.0, 2.0, 1.0], 8.0, 4.0)
+    }
+
+    #[test]
+    fn implicit_unit_circle_points_lie_on_curve() {
+        let cs = CoordSystem::new([-2.0, 2.0, 1.0], [-2.0, 2.0, 1.0], 4.0, 4.0);
+        let f = |x: f32, y: f32| x * x + y * y - 1.0;
+        let curve = cs.plot_implicit_curve(f, Some(60));
+        let path = &curve.data().path;
+        assert!(!path.subpaths.is_empty(), "circle should produce segments");
+        // Every emitted vertex satisfies |f| < eps (map back to data coords).
+        for sp in &path.subpaths {
+            for c in &sp.curves {
+                for p in [c.p0, c.p3] {
+                    let (x, y) = cs.point_to_coords(p);
+                    assert!(f(x, y).abs() < 5e-2, "|f|={} at ({x},{y})", f(x, y).abs());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn implicit_hyperbola_has_two_branches() {
+        // x^2 - y^2 - 1 = 0: two disjoint branches (x <= -1 and x >= 1).
+        let cs = CoordSystem::new([-3.0, 3.0, 1.0], [-3.0, 3.0, 1.0], 6.0, 6.0);
+        let curve = cs.plot_implicit_curve(|x, y| x * x - y * y - 1.0, Some(80));
+        let mut left = false;
+        let mut right = false;
+        for sp in &curve.data().path.subpaths {
+            for c in &sp.curves {
+                let (x, _) = cs.point_to_coords(c.p0);
+                if x < 0.0 {
+                    left = true;
+                } else {
+                    right = true;
+                }
+            }
+        }
+        assert!(left && right, "hyperbola should have both branches");
     }
 
     #[test]

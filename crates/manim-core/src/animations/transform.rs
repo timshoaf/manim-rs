@@ -402,6 +402,67 @@ impl Animation for ScaleInPlace {
     anim_config_accessors!();
 }
 
+/// Transforms a mobject into the state of its
+/// [`generate_target`](crate::scene_state::SceneState::generate_target) copy,
+/// then removes the target. Port of manim CE's `MoveToTarget`.
+///
+/// ```
+/// use manim_core::prelude::*;
+/// use manim_core::animations::MoveToTarget;
+/// use manim_math::RIGHT;
+/// let mut scene = Scene::new(Config::low());
+/// let sq = scene.add(Square::new());
+/// let target = scene.generate_target(sq);
+/// scene.state_mut().get_mut(target).shift(3.0 * RIGHT).scale(2.0);
+/// scene.play(MoveToTarget::new(sq)).unwrap();
+/// // The original ended at the target's position/size; the target is gone.
+/// assert!((scene[sq].get_center().x - 3.0).abs() < 1e-3);
+/// assert!(scene.state().try_get(target).is_none());
+/// ```
+pub struct MoveToTarget {
+    id: AnyId,
+    config: AnimConfig,
+    morph: Option<FamilyMorph>,
+    target: Option<AnyId>,
+}
+anim_builders!(MoveToTarget);
+
+impl MoveToTarget {
+    /// Moves `id` to its target's state.
+    pub fn new(id: impl Into<AnyId>) -> Self {
+        Self {
+            id: id.into(),
+            config: AnimConfig::default(),
+            morph: None,
+            target: None,
+        }
+    }
+}
+
+impl Animation for MoveToTarget {
+    fn begin(&mut self, state: &mut SceneState) {
+        self.target = state.target_of(self.id);
+        if let Some(t) = self.target {
+            let start = family_data(state, self.id);
+            let end = family_data(state, t);
+            self.morph = Some(FamilyMorph::build(start, end));
+        }
+    }
+    fn interpolate(&mut self, state: &mut SceneState, alpha: f32) {
+        if let Some(m) = &self.morph {
+            m.apply(state, alpha);
+        }
+    }
+    fn finish(&mut self, state: &mut SceneState) {
+        self.interpolate(state, 1.0);
+        if let Some(t) = self.target.take() {
+            state.take_target(self.id);
+            state.remove(t);
+        }
+    }
+    anim_config_accessors!();
+}
+
 /// Shrinks a mobject to nothing at its center. Port of manim CE's
 /// `ShrinkToCenter` (a [`ScaleInPlace`] to factor `0`).
 ///

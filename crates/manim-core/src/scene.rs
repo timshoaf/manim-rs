@@ -290,6 +290,14 @@ impl Scene {
         self.state.always_redraw(build)
     }
 
+    /// Creates a hidden target copy of `id` (manim's `generate_target`); mutate
+    /// it, then animate with [`MoveToTarget`](crate::animations::MoveToTarget).
+    /// Shorthand for
+    /// [`state_mut().generate_target`](crate::scene_state::SceneState::generate_target).
+    pub fn generate_target<M: Mobject>(&mut self, id: MobjectId<M>) -> MobjectId<M> {
+        self.state.generate_target(id)
+    }
+
     /// Removes a mobject (and its descendants) from the scene.
     pub fn remove(&mut self, id: impl Into<AnyId>) {
         self.state.remove(id.into());

@@ -169,7 +169,7 @@ pub mod prelude {
         AnimBuilder, Animate, AnimationGroup, Create, DrawBorderThenFill, FadeIn, FadeOut,
         LaggedStart, MoveAlongPath, MoveTo, Rotate, Rotating, SetValue, Shift,
         ShowIncreasingSubsets, ShowSubmobjectsOneByOne, Succession, Transform, TransformInto,
-        Uncreate, UpdateFromFunc, ValueTracker,
+        MoveToTarget, Uncreate, UpdateFromFunc, ValueTracker,
     };
     pub use manim_core::prelude::*;
 

@@ -178,3 +178,20 @@ pub(crate) fn with_color(mut mobj: FunctionGraph, color: Color) -> FunctionGraph
     mobj.data.style.stroke_color = Some(color);
     mobj
 }
+
+/// The zero set of `f(x, y) = 0`, traced by marching squares into line-segment
+/// subpaths. Port of manim CE's `ImplicitFunction`.
+#[derive(Clone)]
+pub struct ImplicitFunction {
+    data: MobjectData,
+}
+impl_mobject!(ImplicitFunction);
+
+impl ImplicitFunction {
+    /// Builds an implicit-curve mobject from an already-traced segment path.
+    pub(crate) fn from_path(path: Path) -> Self {
+        Self {
+            data: MobjectData::new(path, Style::stroked(WHITE)),
+        }
+    }
+}

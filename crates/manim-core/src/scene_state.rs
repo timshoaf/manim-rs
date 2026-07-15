@@ -99,6 +99,9 @@ pub struct SceneState {
     saved_states: HashMap<DefaultKey, MobjectData>,
     /// Registered per-mobject updaters, in registration order.
     updaters: Vec<UpdaterEntry>,
+    /// Original → hidden target mobject (manim's `mobject.target`), for
+    /// `generate_target` / `MoveToTarget`.
+    targets: HashMap<DefaultKey, AnyId>,
     /// The camera / frame state (captured by timeline snapshots).
     camera: crate::camera::Camera2D,
 }
@@ -132,6 +135,51 @@ impl SceneState {
         self.arena[key].mobject.data_mut().parent = None;
         self.roots.push(key);
         MobjectId::new(key)
+    }
+
+    /// Creates a hidden **target** copy of `id` (manim's `mobject.generate_target`).
+    ///
+    /// Mutate the returned handle with ordinary scene ops to build the desired
+    /// end state, then animate the original into it with
+    /// [`MoveToTarget`](crate::animations::MoveToTarget). The target is invisible
+    /// (never drawn) and is removed when the animation finishes.
+    ///
+    /// `.animate()` covers most cases in one call; `generate_target` is for
+    /// building the end state up incrementally before animating.
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_math::RIGHT;
+    /// let mut scene = SceneState::new();
+    /// let c = scene.add(Circle::new());
+    /// let t = scene.generate_target(c);
+    /// scene.get_mut(t).shift(3.0 * RIGHT).scale(2.0);
+    /// // The target is hidden; only `c` will be drawn (until MoveToTarget runs).
+    /// assert!(!scene.is_visible(t.erase()));
+    /// assert_eq!(scene.display_list().len(), 1);
+    /// ```
+    pub fn generate_target<M: Mobject>(&mut self, id: MobjectId<M>) -> MobjectId<M> {
+        let boxed = self.arena[id.key].mobject.clone_box();
+        let key = self.arena.insert(Entry {
+            mobject: boxed,
+            visible: false,
+        });
+        self.arena[key].mobject.data_mut().parent = None;
+        self.roots.push(key);
+        self.targets.insert(id.key, AnyId(key));
+        MobjectId::new(key)
+    }
+
+    /// The hidden target registered for `id`, if any (used by `MoveToTarget`).
+    pub(crate) fn target_of(&self, id: AnyId) -> Option<AnyId> {
+        self.targets.get(&id.0).copied()
+    }
+
+    /// Removes the target registration for `id`, returning its handle.
+    pub(crate) fn take_target(&mut self, id: AnyId) -> Option<AnyId> {
+        self.targets.remove(&id.0)
     }
 
     /// Makes `child` a submobject of `parent`, removing it from the root set.

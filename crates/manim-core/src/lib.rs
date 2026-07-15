@@ -90,8 +90,8 @@ pub mod prelude {
     pub use crate::error::{CoreError, Result};
     pub use crate::geometry::*;
     pub use crate::graphing::{
-        Axes, BarChart, ComplexPlane, CoordSystem, FunctionGraph, NumberLine, NumberPlane,
-        ParametricFunction, PolarPlane,
+        Axes, BarChart, ComplexPlane, CoordSystem, FunctionGraph, ImplicitFunction, NumberLine,
+        NumberPlane, ParametricFunction, PolarPlane,
     };
     pub use crate::image_mobject::ImageMobject;
     pub use crate::mobject::{

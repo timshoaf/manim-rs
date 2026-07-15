@@ -121,6 +121,24 @@ impl Axes {
         self.coords.plot(f, x_range)
     }
 
+    /// Traces the implicit curve `f(x, y) = 0` over these axes (see
+    /// [`CoordSystem::plot_implicit_curve`]).
+    ///
+    /// ```
+    /// use manim_core::graphing::Axes;
+    /// use manim_core::mobject::Mobject;
+    /// let axes = Axes::new([-2.0, 2.0, 1.0], [-2.0, 2.0, 1.0]);
+    /// let circle = axes.plot_implicit_curve(|x, y| x * x + y * y - 1.0, Some(40));
+    /// assert!(!circle.data().path.subpaths.is_empty());
+    /// ```
+    pub fn plot_implicit_curve(
+        &self,
+        f: impl Fn(f32, f32) -> f32,
+        resolution: Option<usize>,
+    ) -> super::ImplicitFunction {
+        self.coords.plot_implicit_curve(f, resolution)
+    }
+
     /// Plots a parametric curve in these axes.
     pub fn plot_parametric_curve(
         &self,
