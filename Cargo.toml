@@ -18,6 +18,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/cryptex-ai/manim_rust"
+readme = "README.md"
+homepage = "https://github.com/cryptex-ai/manim_rust"
 rust-version = "1.85"
 
 [workspace.dependencies]
@@ -65,5 +67,12 @@ broken_intra_doc_links = "deny"
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"
 
+# Keep dev builds lean: full DWARF debug info multiplies target/ size 5-10x
+# across our statically-linked test/example binaries (typst+wgpu+dioxus in
+# every one). Line tables keep backtraces usable; deps get no debug info.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
 opt-level = 2
+debug = false

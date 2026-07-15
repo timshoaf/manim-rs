@@ -5,7 +5,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords = ["manim", "dioxus", "wasm", "animation", "web"]
+categories = ["wasm", "gui", "graphics"]
+# Not published (yet): this is a thin integration/demo crate that pulls in the
+# whole render stack plus heavy wasm-only deps (dioxus web, wgpu, web-sys), and
+# its value is the browser gallery rather than a standalone library API.
+# Revisit once the core crates are on crates.io and the component API settles.
+publish = false
 
 [dependencies]
 dioxus = { workspace = true }

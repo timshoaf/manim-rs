@@ -40,6 +40,10 @@ fn test_config() -> Config {
 
 /// Builds a renderer, or returns `None` (with a warning) if no GPU is available
 /// so tests skip cleanly in adapter-less environments.
+///
+/// Set `REQUIRE_GPU=1` (CI does, with a software rasterizer) to turn a missing
+/// adapter into a hard failure instead of a silent skip — so the golden job can
+/// never pass by simply not running.
 fn try_renderer() -> Option<OffscreenRenderer> {
     match OffscreenRenderer::new(&test_config()) {
         Ok(r) => {
@@ -51,6 +55,12 @@ fn try_renderer() -> Option<OffscreenRenderer> {
             Some(r)
         }
         Err(e) => {
+            if std::env::var("REQUIRE_GPU").is_ok_and(|v| v != "0" && !v.is_empty()) {
+                panic!(
+                    "REQUIRE_GPU is set but no GPU adapter is available ({e}); \
+                     install a software rasterizer (e.g. mesa lavapipe) or unset REQUIRE_GPU"
+                );
+            }
             eprintln!("SKIP golden tests: no GPU adapter available ({e})");
             None
         }

@@ -37,8 +37,11 @@ impl SceneBuilder for MovingAngle {
         });
         let _arc = scene.always_redraw(move |s| {
             let th = s.get(theta).get_value();
-            Angle::new(&Line::new(ORIGIN, 3.0 * RIGHT), &Line::new(ORIGIN, ray_end(th)))
-                .with_color(YELLOW)
+            Angle::new(
+                &Line::new(ORIGIN, 3.0 * RIGHT),
+                &Line::new(ORIGIN, ray_end(th)),
+            )
+            .with_color(YELLOW)
         });
 
         scene.play(Create::new(fixed))?;

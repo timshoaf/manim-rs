@@ -8,6 +8,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   test:
@@ -21,10 +22,44 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      # Docs are a hard gate (RUSTDOCFLAGS=-D warnings) — broken links / bad
+      # intra-doc refs fail the build.
       - run: cargo doc --workspace --no-deps
 
-  # Golden-image tests need a software rasterizer; enabled once manim-render
-  # lands its offscreen target (FE-94).
+  # Software-rendered golden-image tests. `cargo test --workspace` above skips
+  # them (no GPU adapter on the default runner); here we install a software
+  # Vulkan adapter (mesa lavapipe) and set REQUIRE_GPU=1 so a missing adapter is
+  # a hard failure instead of a silent skip.
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mesa lavapipe (software Vulkan)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools
+      - name: Golden-image tests
+        env:
+          REQUIRE_GPU: "1"
+        # Single-threaded: parallel test threads contend on the one software
+        # adapter and can stall.
+        run: cargo test -p manim-render -- --test-threads=1
+
+  # Optional-feature matrix: the base build stays lean, so exercise the gated
+  # code paths explicitly.
+  features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Native realtime preview window (winit).
+      - run: cargo build -p manim-render -p manim --features preview
+      # Syntax-highlighted `Code` mobject (syntect).
+      - run: cargo test -p manim-text -p manim --features code
+
   wasm-check:
     runs-on: ubuntu-latest
     steps:

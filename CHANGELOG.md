@@ -10,6 +10,22 @@ The first end-to-end milestone: a headless scene graph and animation engine, a
 wgpu renderer, text/math typesetting, graphing, and 3D geometry — enough to port
 most of the manim CE example gallery. Summarized by crate.
 
+### Release readiness (FE-117)
+
+- **Packaging metadata** in place on every crate: `description`, `keywords`,
+  `categories`, `readme`, `homepage`, and the workspace `MIT` license (see
+  [`LICENSE`](LICENSE)). Workspace version pinned at `0.1.0`.
+- **Nothing is published to crates.io yet.** One decision remains before a first
+  release: the facade crate name. **`manim` may be unavailable/reserved on
+  crates.io** — if so the facade ships under a fallback (e.g. `manim-rs`) while
+  the `manim-*` component crates keep their names. `manim-dioxus` is
+  `publish = false` (a thin integration/demo crate over the whole stack).
+- **CI** gained a software-rendered golden job (mesa lavapipe + `REQUIRE_GPU=1`,
+  so a missing adapter fails loudly instead of skipping), an optional-feature
+  matrix (`preview`, `code`), and `-D warnings` on rustdoc. Toolchain pinned via
+  [`rust-toolchain.toml`](rust-toolchain.toml); contributor guide in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ### manim-math
 - Vectors on `glam` (`Point` = `Vec3`), affine transforms, and `space_ops`
   (rotation matrices about arbitrary axes, angle helpers).

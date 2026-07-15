@@ -5,7 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords = ["manim", "animation", "wgpu", "visualization", "math"]
+categories = ["graphics", "rendering", "mathematics", "visualization"]
 
 [dependencies]
 manim-math = { workspace = true }
@@ -30,6 +34,10 @@ approx = { workspace = true }
 [[example]]
 name = "preview"
 required-features = ["preview"]
+
+[[example]]
+name = "code_highlight"
+required-features = ["code"]
 
 [lints]
 workspace = true

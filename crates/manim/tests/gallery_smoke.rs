@@ -32,6 +32,15 @@ include_example!(
     transform_matching_tex,
     "../examples/transform_matching_tex.rs"
 );
+include_example!(three_d_surface, "../examples/three_d_surface.rs");
+include_example!(three_d_cube, "../examples/three_d_cube.rs");
+include_example!(math_isolation, "../examples/math_isolation.rs");
+include_example!(bar_chart_race, "../examples/bar_chart_race.rs");
+include_example!(matrix_table, "../examples/matrix_table.rs");
+include_example!(implicit_and_field, "../examples/implicit_and_field.rs");
+include_example!(graph_layouts, "../examples/graph_layouts.rs");
+#[cfg(feature = "code")]
+include_example!(code_highlight, "../examples/code_highlight.rs");
 
 /// Builds `builder`, asserting a positive duration and a non-empty final display
 /// list.
@@ -102,4 +111,45 @@ fn transform_matching_tex_constructs() {
         "transform_matching_tex",
         &transform_matching_tex::TransformMatchingTexDemo,
     );
+}
+
+#[test]
+fn three_d_surface_constructs() {
+    assert_constructs("three_d_surface", &three_d_surface::ThreeDSurface);
+}
+
+#[test]
+fn three_d_cube_constructs() {
+    assert_constructs("three_d_cube", &three_d_cube::ThreeDCube);
+}
+
+#[test]
+fn math_isolation_constructs() {
+    assert_constructs("math_isolation", &math_isolation::MathIsolation);
+}
+
+#[test]
+fn bar_chart_race_constructs() {
+    assert_constructs("bar_chart_race", &bar_chart_race::BarChartRace);
+}
+
+#[test]
+fn matrix_table_constructs() {
+    assert_constructs("matrix_table", &matrix_table::MatrixTable);
+}
+
+#[test]
+fn implicit_and_field_constructs() {
+    assert_constructs("implicit_and_field", &implicit_and_field::ImplicitAndField);
+}
+
+#[test]
+fn graph_layouts_constructs() {
+    assert_constructs("graph_layouts", &graph_layouts::GraphLayouts);
+}
+
+#[cfg(feature = "code")]
+#[test]
+fn code_highlight_constructs() {
+    assert_constructs("code_highlight", &code_highlight::CodeHighlight);
 }

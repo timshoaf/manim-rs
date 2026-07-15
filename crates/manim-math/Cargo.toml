@@ -5,7 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords = ["manim", "math", "bezier", "geometry", "animation"]
+categories = ["mathematics", "graphics"]
 
 [dependencies]
 glam = { workspace = true }

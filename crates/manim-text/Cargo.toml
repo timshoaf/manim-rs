@@ -5,7 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
 rust-version.workspace = true
+keywords = ["manim", "typesetting", "latex", "typst", "text"]
+categories = ["text-processing", "graphics"]
 
 [dependencies]
 manim-core = { workspace = true }

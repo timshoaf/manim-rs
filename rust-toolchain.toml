@@ -1,0 +1,7 @@
+# Pin the toolchain so local builds, CI, and the golden-image tests all agree.
+# `rust-version` in the workspace manifest (1.85) is the MSRV floor; this pins the
+# channel used to build and test.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]

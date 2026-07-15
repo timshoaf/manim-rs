@@ -167,9 +167,9 @@ pub fn preview(builder: &dyn SceneBuilder, config: Config) -> std::result::Resul
 pub mod prelude {
     pub use manim_core::animations::{
         AnimBuilder, Animate, AnimationGroup, Create, DrawBorderThenFill, FadeIn, FadeOut,
-        LaggedStart, MoveAlongPath, MoveTo, Rotate, Rotating, SetValue, Shift,
+        LaggedStart, MoveAlongPath, MoveTo, MoveToTarget, Rotate, Rotating, SetValue, Shift,
         ShowIncreasingSubsets, ShowSubmobjectsOneByOne, Succession, Transform, TransformInto,
-        MoveToTarget, Uncreate, UpdateFromFunc, ValueTracker,
+        Uncreate, UpdateFromFunc, ValueTracker,
     };
     pub use manim_core::prelude::*;
 

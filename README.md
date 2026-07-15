@@ -137,4 +137,23 @@ cargo doc --no-deps --open
 The `manim` facade and the `examples/dioxus-app/` gallery build to
 `wasm32-unknown-unknown`; golden-image tests run headless in CI.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full command set, the golden-image
+`BLESS` workflow, and the optional feature flags (`preview`, `web`, `code`).
+
 Project tracking lives in Linear (project “Manim Rust”, issues FE-77…).
+
+## Publishing & crate naming
+
+Nothing is published to crates.io yet — the version is `0.1.0` across the
+workspace and the packaging metadata (descriptions, keywords, categories,
+license) is in place ahead of a first release. One decision remains before we
+publish: the facade crate name. **`manim` on crates.io may be unavailable or
+reserved** — if so, the facade will ship under a fallback name (e.g. `manim-rs`)
+while the `manim-*` component crates keep theirs. `manim-dioxus` is marked
+`publish = false` for now (a thin integration/demo crate over the whole stack;
+revisit once the component crates are on crates.io). This is tracked in the
+[CHANGELOG](CHANGELOG.md).
+
+## License
+
+Licensed under the [MIT License](LICENSE).
