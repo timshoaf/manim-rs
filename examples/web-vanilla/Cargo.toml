@@ -1,0 +1,27 @@
+[package]
+name = "manim-web-vanilla"
+description = "Standalone wasm demo: SquareToCircle on an HTML canvas via manim-render's CanvasSurface"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Deliberately NOT a member of the root workspace (see the workspace `exclude`),
+# so native builds stay lean. Path deps reach the real crates.
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+manim-core = { path = "../../crates/manim-core" }
+manim-render = { path = "../../crates/manim-render", features = ["web"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlCanvasElement",
+    "console",
+] }
+console_error_panic_hook = "0.1"

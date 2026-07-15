@@ -9,6 +9,8 @@
 //! test prints a warning and returns rather than failing — CI with lavapipe
 //! exercises the real path.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use manim_color::{BLUE, RED, WHITE};
 use manim_core::config::Config;
 use manim_core::geometry::{Arrow, Circle, Square, Triangle};

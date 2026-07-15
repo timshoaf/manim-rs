@@ -27,8 +27,6 @@
 //! # Ok::<(), manim::render::RenderError>(())
 //! ```
 
-use std::path::Path;
-
 pub use manim_color as color;
 pub use manim_core as core;
 pub use manim_math as math;
@@ -37,9 +35,17 @@ pub use manim_render as render;
 pub use manim_core::animations;
 pub use manim_core::error::{CoreError, Result};
 
+/// The browser canvas renderer, re-exported on wasm32 with the `web` feature.
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use manim_render::CanvasSurface;
+
+// The offline `render` and native `preview` entry points below; their shared
+// imports are unused on wasm (both are native-only).
+#[cfg(not(target_arch = "wasm32"))]
 use manim_core::config::Config;
+#[cfg(not(target_arch = "wasm32"))]
 use manim_core::scene::{Scene, SceneBuilder};
-use manim_render::export::VideoExporter;
+#[cfg(not(target_arch = "wasm32"))]
 use manim_render::RenderError;
 
 /// Builds `builder` into a [`Scene`] and renders it to an MP4 at `out`.
@@ -69,13 +75,14 @@ use manim_render::RenderError;
 /// manim::render(&Demo, Config::low(), "demo.mp4")?;
 /// # Ok::<(), manim::render::RenderError>(())
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn render(
     builder: &dyn SceneBuilder,
     config: Config,
-    out: impl AsRef<Path>,
+    out: impl AsRef<std::path::Path>,
 ) -> std::result::Result<(), RenderError> {
     let mut scene = Scene::build(builder, config.clone())?;
-    VideoExporter::render_to_mp4(&mut scene, out, &config)
+    manim_render::export::VideoExporter::render_to_mp4(&mut scene, out, &config)
 }
 
 /// Builds `builder` into a [`Scene`] and opens a realtime preview window.

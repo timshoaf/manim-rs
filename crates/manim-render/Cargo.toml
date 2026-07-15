@@ -14,16 +14,36 @@ manim-core = { workspace = true }
 glam = { workspace = true }
 lyon = { workspace = true }
 wgpu = { workspace = true }
-pollster = { workspace = true }
 bytemuck = { workspace = true }
 image = { workspace = true }
 thiserror = { workspace = true }
+
+# Native-only: pollster blocks on the GPU (would spin forever on wasm), winit
+# owns the OS window. Neither is compiled for wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = { workspace = true }
 winit = { workspace = true, optional = true }
 
+# wasm-only (feature "web"): create a wgpu surface from an HtmlCanvasElement.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+web-sys = { workspace = true, optional = true }
+console_error_panic_hook = { workspace = true, optional = true }
+
 [features]
-## Realtime winit preview window (`RealtimePlayer`). Off by default so headless,
-## CI, and wasm builds stay lean and window-system-free.
+## Realtime winit preview window (`RealtimePlayer`). Native-only: off by default
+## so headless, CI, and wasm builds stay window-system-free. Enabling it on wasm
+## is a compile error (use `web` + `CanvasSurface` there).
 preview = ["dep:winit"]
+## Browser canvas rendering (`CanvasSurface`) on wasm32 via web-sys. Inert on
+## native targets.
+web = [
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:web-sys",
+    "dep:console_error_panic_hook",
+]
 
 [dev-dependencies]
 approx = { workspace = true }

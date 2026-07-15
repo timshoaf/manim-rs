@@ -31,12 +31,16 @@
 
 use image::RgbaImage;
 use manim_color::Color;
+#[cfg(not(target_arch = "wasm32"))]
 use manim_core::config::Config;
+#[cfg(not(target_arch = "wasm32"))]
 use manim_core::display::DisplayList;
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera2D;
-use crate::tessellate::{FrameMesh, TessellationCache, Vertex};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::tessellate::TessellationCache;
+use crate::tessellate::{FrameMesh, Vertex};
 
 /// Multisample count for the MSAA render target (4× is broadly supported).
 pub const SAMPLE_COUNT: u32 = 4;
@@ -155,35 +159,48 @@ pub struct GpuContext {
 }
 
 impl GpuContext {
-    /// Brings up a headless context, preferring a high-performance adapter but
-    /// accepting any (including software) so it works in CI without a GPU.
+    /// Brings up a surfaceless context asynchronously, preferring a
+    /// high-performance adapter but accepting any (including software).
     ///
-    /// Blocks internally via [`pollster`]; do not call from an async runtime's
-    /// thread. wasm needs the (future) async constructor instead.
+    /// This is the portable constructor: native code reaches it through the
+    /// blocking [`new_headless`](Self::new_headless), and wasm callers `.await`
+    /// it (there is no blocking on the web's single thread).
     ///
     /// # Errors
     ///
     /// [`RenderError::NoAdapter`] if no adapter is available at all, or
     /// [`RenderError::NoDevice`] if the adapter cannot create a device.
-    pub fn new_headless() -> Result<Self, RenderError> {
+    ///
+    /// ```no_run
+    /// # async fn demo() -> Result<(), manim_render::RenderError> {
+    /// use manim_render::renderer::GpuContext;
+    /// let ctx = GpuContext::new_async().await?;
+    /// let _ = ctx;
+    /// # Ok(()) }
+    /// ```
+    pub async fn new_async() -> Result<Self, RenderError> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: None,
-            force_fallback_adapter: false,
-        }))
-        .map_err(|e| RenderError::NoAdapter(e.to_string()))?;
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| RenderError::NoAdapter(e.to_string()))?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("manim-render device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
-            ..Default::default()
-        }))
-        .map_err(|e| RenderError::NoDevice(e.to_string()))?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("manim-render device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| RenderError::NoDevice(e.to_string()))?;
 
         Ok(Self {
             instance,
@@ -191,6 +208,21 @@ impl GpuContext {
             device,
             queue,
         })
+    }
+
+    /// Brings up a headless context, blocking on [`new_async`](Self::new_async)
+    /// via [`pollster`]. Native-only — wasm has no blocking; use
+    /// [`new_async`](Self::new_async) there.
+    ///
+    /// Do not call from an async runtime's thread (it blocks).
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::NoAdapter`] / [`RenderError::NoDevice`], as
+    /// [`new_async`](Self::new_async).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn new_headless() -> Result<Self, RenderError> {
+        pollster::block_on(Self::new_async())
     }
 
     /// The human-readable name of the active backend (e.g. `"Vulkan"`, `"Gl"`).
@@ -343,13 +375,19 @@ impl Pipeline {
             bind_group,
             mesh,
             background,
+            None,
         );
     }
 }
 
-/// The clear-and-draw pass shared by [`Pipeline::draw`] and [`TextureTarget`].
+/// The clear-and-draw pass shared by [`Pipeline::draw`], [`TextureTarget`], and
+/// the surface renderers (preview / canvas).
+///
+/// When `viewport` is `Some`, the draw is confined to that pixel rectangle
+/// (letterboxing); the clear still covers the whole attachment, so the margins
+/// show `background`.
 #[allow(clippy::too_many_arguments)]
-fn record_draw(
+pub(crate) fn record_draw(
     device: &wgpu::Device,
     encoder: &mut wgpu::CommandEncoder,
     pipeline: &wgpu::RenderPipeline,
@@ -358,6 +396,7 @@ fn record_draw(
     bind_group: &wgpu::BindGroup,
     mesh: &FrameMesh,
     background: Color,
+    viewport: Option<crate::layout::Viewport>,
 ) {
     let bg = background.premultiplied();
     let buffers = (!mesh.indices.is_empty()).then(|| {
@@ -395,6 +434,12 @@ fn record_draw(
     });
 
     if let Some((vb, ib)) = &buffers {
+        if let Some(vp) = viewport {
+            if vp.w <= 0.0 || vp.h <= 0.0 {
+                return;
+            }
+            pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+        }
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, bind_group, &[]);
         pass.set_vertex_buffer(0, vb.slice(..));
@@ -562,6 +607,7 @@ impl TextureTarget {
             &self.bind_group,
             mesh,
             background,
+            None,
         );
 
         encoder.copy_texture_to_buffer(
@@ -633,6 +679,11 @@ impl TextureTarget {
 /// let mut renderer = OffscreenRenderer::new(&Config::low()).unwrap();
 /// renderer.render_to_png(&scene.display_list(), "/tmp/square.png").unwrap();
 /// ```
+///
+/// Native-only: it constructs its context with the blocking
+/// [`GpuContext::new_headless`] and reads pixels back synchronously. On wasm,
+/// render through [`CanvasSurface`](crate::canvas::CanvasSurface) instead.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct OffscreenRenderer {
     context: GpuContext,
     cache: TessellationCache,
@@ -641,6 +692,7 @@ pub struct OffscreenRenderer {
     background: Color,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl OffscreenRenderer {
     /// Builds a renderer sized and colored by `config`.
     ///

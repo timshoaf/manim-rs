@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>manim_rust — web-vanilla demo</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #1a1a1a;
+        color: #eee;
+        font-family: system-ui, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        padding: 2rem;
+      }
+      canvas {
+        background: #000;
+        border-radius: 6px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+        max-width: 100%;
+        height: auto;
+      }
+      code {
+        background: #333;
+        padding: 0.1rem 0.35rem;
+        border-radius: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>manim_rust on the web</h1>
+    <p><code>SquareToCircle</code> rendered by <code>CanvasSurface</code> (wgpu → canvas).</p>
+    <!-- Sized to manim's 854×480 -ql frame (16:9). -->
+    <canvas id="manim-canvas" width="854" height="480"></canvas>
+
+    <!-- The wasm-bindgen glue (generated into ./pkg by `wasm-pack build`)
+         auto-runs the #[wasm_bindgen(start)] entry point on import. -->
+    <script type="module">
+      import init from "./pkg/manim_web_vanilla.js";
+      init();
+    </script>
+  </body>
+</html>

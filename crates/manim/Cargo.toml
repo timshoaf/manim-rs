@@ -17,6 +17,8 @@ manim-render = { workspace = true }
 ## Realtime winit preview window (re-exports `manim-render`'s `preview`). Off by
 ## default so headless/CI/wasm builds stay window-system-free.
 preview = ["manim-render/preview"]
+## Browser canvas rendering on wasm32 (re-exports `manim-render`'s `web`).
+web = ["manim-render/web"]
 
 [dev-dependencies]
 approx = { workspace = true }

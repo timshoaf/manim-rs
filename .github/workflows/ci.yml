@@ -33,4 +33,10 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      # Pure crates.
       - run: cargo check -p manim-math -p manim-color -p manim-core --target wasm32-unknown-unknown
+      # Renderer + facade, default (no window/ffmpeg) and with the browser `web` feature.
+      - run: cargo check -p manim-render -p manim --target wasm32-unknown-unknown
+      - run: cargo check -p manim-render -p manim --target wasm32-unknown-unknown --features web
+      # Standalone browser demo (excluded from the workspace).
+      - run: cargo build --target wasm32-unknown-unknown --manifest-path examples/web-vanilla/Cargo.toml

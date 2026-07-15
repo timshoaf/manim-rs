@@ -4,6 +4,8 @@
 //! the file exists and is non-trivial. Skips (with a notice) when `ffmpeg` or a
 //! GPU adapter is unavailable, so it is safe in headless/CI environments.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use manim_core::animations::TransformInto;
 use manim_core::config::Config;
 use manim_core::prelude::*;
