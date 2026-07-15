@@ -33,12 +33,14 @@ use manim_math::path::SubPath;
 use manim_math::Point;
 
 mod axes;
+mod bar_chart;
 mod coord;
 mod functions;
 mod number_line;
 mod plane;
 
 pub use axes::Axes;
+pub use bar_chart::{default_bar_colors, BarChart};
 pub use coord::CoordSystem;
 pub use functions::{FunctionGraph, ParametricFunction};
 pub use number_line::NumberLine;

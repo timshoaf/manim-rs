@@ -201,7 +201,8 @@ impl Graph {
 pub struct DiGraph;
 
 impl DiGraph {
-    /// Builds a directed [`Graph`].
+    /// Builds a directed [`Graph`] (a factory, so `new` returns a `Graph`).
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(n_vertices: usize, edges: &[(usize, usize)], layout: GraphLayout) -> Graph {
         Graph::new_directed(n_vertices, edges, layout)
     }

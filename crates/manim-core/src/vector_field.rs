@@ -4,7 +4,7 @@
 //! Color-by-magnitude and color-by-speed give each arrow / streamline its own
 //! color, which a single mobject's one style cannot express — so
 //! [`ArrowVectorField::add_to`] and [`StreamLines::add_to`] build a
-//! [`VGroup`](crate::geometry::VGroup) of per-element children (the arena-child
+//! [`VGroup`] of per-element children (the arena-child
 //! pattern). The pure [`VectorField`] integrator is standalone and needs no
 //! scene.
 
@@ -178,7 +178,7 @@ impl ArrowVectorField {
     }
 
     /// The drawn length for a vector of magnitude `mag`: a sqrt-scaled ramp
-    /// capped at [`max_length`](Self::max_length) so dense fields stay legible.
+    /// capped at the field's `max_length` so dense fields stay legible.
     pub fn arrow_length(&self, mag: f32) -> f32 {
         (mag.sqrt() * 0.3).min(self.max_length)
     }

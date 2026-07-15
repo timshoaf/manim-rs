@@ -82,7 +82,7 @@ pub mod prelude {
     pub use crate::error::{CoreError, Result};
     pub use crate::geometry::*;
     pub use crate::graphing::{
-        Axes, ComplexPlane, CoordSystem, FunctionGraph, NumberLine, NumberPlane,
+        Axes, BarChart, ComplexPlane, CoordSystem, FunctionGraph, NumberLine, NumberPlane,
         ParametricFunction, PolarPlane,
     };
     pub use crate::mobject::{

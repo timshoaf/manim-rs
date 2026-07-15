@@ -40,25 +40,33 @@ mod digits;
 mod extras;
 mod font;
 mod graph_labels;
+mod grid;
 mod labeled_dot;
 pub mod latex;
 mod markup;
 mod match_tex;
 mod math;
+mod matrix;
 mod outline;
 mod paragraph;
+mod table;
 mod text;
 mod write;
 
 pub use decimal::{ChangeDecimalToValue, ChangingDecimal, DecimalNumber, Integer, Variable};
 pub use extras::{BulletedList, Title, LIST_BUFF};
 pub use font::DEFAULT_FONT;
-pub use graph_labels::{AxesLabels, CoordinateLabels, GraphLabel, LABEL_FONT_SIZE};
+pub use graph_labels::{AxesLabels, BarChartLabels, CoordinateLabels, GraphLabel, LABEL_FONT_SIZE};
 pub use labeled_dot::{LabeledDot, LABELED_DOT_RADIUS};
 pub use latex::MathError;
 pub use markup::{MarkupError, MarkupText};
 pub use match_tex::{match_glyphs, MatchResult, TransformMatchingTex};
 pub use math::{MathTex, Tex, Typst, DEFAULT_MATH_FONT_SIZE};
+pub use matrix::{
+    DecimalMatrix, IntegerMatrix, Matrix, MobjectMatrix, ENTRY_FONT_SIZE, MATRIX_H_BUFF,
+    MATRIX_V_BUFF,
+};
 pub use paragraph::Paragraph;
+pub use table::{DecimalTable, MathTable, Table, CELL_PAD, TABLE_H_BUFF, TABLE_V_BUFF};
 pub use text::{Alignment, Slant, Text, Weighting, DEFAULT_FONT_SIZE, SCENE_UNITS_PER_PIXEL};
 pub use write::Write;

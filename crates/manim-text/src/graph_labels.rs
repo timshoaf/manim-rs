@@ -7,7 +7,7 @@
 //! the axes and labels together — the standard manim workflow.
 
 use manim_core::geometry::VGroup;
-use manim_core::graphing::{Axes, CoordSystem, FunctionGraph, NumberLine, NumberPlane};
+use manim_core::graphing::{Axes, BarChart, CoordSystem, FunctionGraph, NumberLine, NumberPlane};
 use manim_core::mobject::{AnyId, MobjectExt, MobjectId};
 use manim_core::scene_state::SceneState;
 use manim_math::{Point, DOWN, LEFT};
@@ -255,5 +255,33 @@ impl GraphLabel for Axes {
         let mut label = MathTex::new(tex)?.font_size(LABEL_FONT_SIZE);
         label.move_to(anchor);
         Ok(label.add_to(scene))
+    }
+}
+
+/// Numeric labels above [`BarChart`] bars (manim's `get_bar_labels`).
+pub trait BarChartLabels {
+    /// Adds a numeric label at each bar's end, returning the label group.
+    fn get_bar_labels(&self, scene: &mut SceneState) -> MobjectId<VGroup>;
+}
+
+impl BarChartLabels for BarChart {
+    /// ```
+    /// use manim_core::graphing::BarChart;
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::mobject::MobjectExt;
+    /// use manim_text::BarChartLabels;
+    /// let mut scene = SceneState::new();
+    /// let chart = BarChart::new(&[1.0, 2.0, 3.0]);
+    /// let labels = chart.get_bar_labels(&mut scene);
+    /// // One label per bar.
+    /// assert_eq!(scene.get_dyn(labels.erase()).data().children.len(), 3);
+    /// ```
+    fn get_bar_labels(&self, scene: &mut SceneState) -> MobjectId<VGroup> {
+        let values = self.values().to_vec();
+        let integral = all_integral(&values);
+        let ids: Vec<AnyId> = (0..self.len())
+            .map(|i| add_number(scene, values[i], integral, self.bar_label_point(i)))
+            .collect();
+        VGroup::of(scene, ids)
     }
 }
