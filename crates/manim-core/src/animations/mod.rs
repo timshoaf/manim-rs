@@ -40,7 +40,8 @@ pub use composition::{
     AnimationGroup, LaggedStart, LaggedStartMap, Succession, DEFAULT_LAGGED_START_LAG_RATIO,
 };
 pub use creation::{
-    Create, DrawBorderThenFill, ShowIncreasingSubsets, ShowSubmobjectsOneByOne, Uncreate,
+    border_then_fill_frame, default_border_color, Create, DrawBorderThenFill,
+    ShowIncreasingSubsets, ShowSubmobjectsOneByOne, Uncreate, DEFAULT_BORDER_WIDTH,
 };
 pub use fading::{FadeIn, FadeOut};
 pub use growing::{
