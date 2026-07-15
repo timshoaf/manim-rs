@@ -43,6 +43,7 @@ pub mod config;
 pub mod display;
 pub mod error;
 pub mod geometry;
+pub mod graphing;
 pub mod mobject;
 pub mod scene;
 pub mod scene_state;
@@ -78,6 +79,10 @@ pub mod prelude {
     pub use crate::display::{DisplayList, DrawItem, Fill, Stroke};
     pub use crate::error::{CoreError, Result};
     pub use crate::geometry::*;
+    pub use crate::graphing::{
+        Axes, ComplexPlane, CoordSystem, FunctionGraph, NumberLine, NumberPlane,
+        ParametricFunction, PolarPlane,
+    };
     pub use crate::mobject::{
         AnyId, BoundingBox, Buildable, Mobject, MobjectData, MobjectExt, MobjectId, RefTarget,
     };

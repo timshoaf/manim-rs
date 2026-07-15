@@ -11,10 +11,11 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
-use manim_color::{BLUE, RED, WHITE};
+use manim_color::{BLUE, GREEN, RED, WHITE, YELLOW};
 use manim_core::animations::{Flash, Indicate};
 use manim_core::config::Config;
 use manim_core::geometry::{Arrow, Circle, Line, Square, Triangle};
+use manim_core::graphing::{Axes, NumberPlane};
 use manim_core::mobject::Buildable;
 use manim_core::scene::Scene;
 use manim_core::scene_state::SceneState;
@@ -261,4 +262,64 @@ fn background_stroke() {
     });
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("background_stroke", &img);
+}
+
+/// FE-103: axes with a plotted sin curve.
+#[test]
+fn axes_with_graph() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let axes = Axes::new([-5.0, 5.0, 1.0], [-3.0, 3.0, 1.0]);
+    let graph = axes.plot(|x| 2.0 * x.sin(), None);
+    let a = scene.add(axes);
+    scene.set_style_family(a.erase(), |s| {
+        s.set_stroke(WHITE, 2.5, 1.0);
+    });
+    let g = scene.add(graph);
+    scene.set_style_family(g.erase(), |s| {
+        s.set_stroke(YELLOW, 4.0, 1.0);
+    });
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("axes_with_graph", &img);
+}
+
+/// FE-103: a Cartesian number plane (faded grid).
+#[test]
+fn number_plane() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    scene.add(NumberPlane::new([-6.0, 6.0, 1.0], [-4.0, 4.0, 1.0]));
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("number_plane", &img);
+}
+
+/// FE-103: Riemann rectangles under x² with the axes and curve.
+#[test]
+fn riemann_rectangles() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let axes = Axes::with_lengths([0.0, 4.0, 1.0], [0.0, 16.0, 4.0], 8.0, 6.0);
+    let graph = axes.plot(|x| x * x, None);
+    let rects = axes.get_riemann_rectangles(&graph, 0.0, 4.0, 0.5, 0.6);
+    // Center everything on screen (axes range is asymmetric).
+    let r = scene.add(rects);
+    scene.set_style_family(r.erase(), |s| {
+        s.set_fill(BLUE, 0.6).set_stroke(WHITE, 1.5, 1.0);
+    });
+    let a = scene.add(axes);
+    scene.set_style_family(a.erase(), |s| {
+        s.set_stroke(WHITE, 2.5, 1.0);
+    });
+    let g = scene.add(graph);
+    scene.set_style_family(g.erase(), |s| {
+        s.set_stroke(GREEN, 4.0, 1.0);
+    });
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("riemann_rectangles", &img);
 }
