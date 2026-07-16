@@ -613,3 +613,98 @@ fn perf_smoke_10k_instances() {
         renderer.context().adapter_info().name,
     );
 }
+
+/// GH #3 / FE-131: base-plane contour circles opting into `z_test` are
+/// occluded by a surface floating between them and the camera, while an
+/// ordinary (non-`z_test`) annotation still paints over everything.
+#[test]
+fn ztest_curves_hidden_under_floating_surface() {
+    use manim_core::geometry::Circle;
+    use manim_core::mobject::MobjectExt;
+
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    // A flat opaque plate floating above the base plane.
+    scene.add(
+        Surface3D::new(
+            |u, v| Vec3::new(u as f32, v as f32, 0.5),
+            (-1.6, 1.6),
+            (-1.6, 1.6),
+        )
+        .with_resolution(4, 4)
+        .with_checkerboard(None)
+        .with_material(MeshMaterial::new(ORANGE).with_lighting(0.35, 0.75, 0.2)),
+    );
+    // Base-plane "contour" circles, depth-tested: hidden where the plate sits
+    // between them and the camera.
+    for (r, color) in [(0.9, GREEN), (1.8, YELLOW), (2.7, BLUE)] {
+        let mut contour = Circle::new().with_scale(r).with_stroke(color, 4.0, 1.0);
+        contour.set_z_test(true);
+        scene.add(contour);
+    }
+    // A plain annotation circle: draws over the plate like any 2-D content.
+    scene.add(Circle::new().with_scale(0.4).with_stroke(RED, 4.0, 1.0));
+
+    orbit_camera(&mut renderer);
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+
+    // The same scene with the depth test off must differ — the contours would
+    // paint over the plate.
+    let mut plain = SceneState::new();
+    plain.add(
+        Surface3D::new(
+            |u, v| Vec3::new(u as f32, v as f32, 0.5),
+            (-1.6, 1.6),
+            (-1.6, 1.6),
+        )
+        .with_resolution(4, 4)
+        .with_checkerboard(None)
+        .with_material(MeshMaterial::new(ORANGE).with_lighting(0.35, 0.75, 0.2)),
+    );
+    for (r, color) in [(0.9, GREEN), (1.8, YELLOW), (2.7, BLUE)] {
+        plain.add(Circle::new().with_scale(r).with_stroke(color, 4.0, 1.0));
+    }
+    plain.add(Circle::new().with_scale(0.4).with_stroke(RED, 4.0, 1.0));
+    let img_plain = renderer.render_display_list(&plain.display_list()).unwrap();
+    assert_ne!(
+        img.as_raw(),
+        img_plain.as_raw(),
+        "z_test had no effect: contours are not occluded by the plate"
+    );
+
+    assert_golden("mesh_ztest_contours_under_plate", &img);
+}
+
+/// Without any meshes in the scene, a `z_test` item renders exactly like a
+/// plain one: the pass clears depth to 1.0, every fragment wins, and
+/// `mesh_view_proj` keeps x/y bit-identical to the ortho camera.
+#[test]
+fn ztest_without_meshes_is_invisible() {
+    use manim_core::geometry::Circle;
+    use manim_core::mobject::MobjectExt;
+
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut with_flag = SceneState::new();
+    let mut c = Circle::new().with_scale(1.5).with_stroke(WHITE, 4.0, 1.0);
+    c.set_z_test(true);
+    with_flag.add(c);
+    let img_flag = renderer
+        .render_display_list(&with_flag.display_list())
+        .unwrap();
+
+    let mut without = SceneState::new();
+    without.add(Circle::new().with_scale(1.5).with_stroke(WHITE, 4.0, 1.0));
+    let img_plain = renderer
+        .render_display_list(&without.display_list())
+        .unwrap();
+
+    assert_eq!(
+        img_flag.as_raw(),
+        img_plain.as_raw(),
+        "a z_test item in a mesh-less 2-D scene must render byte-identically"
+    );
+}

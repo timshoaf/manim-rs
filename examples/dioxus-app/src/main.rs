@@ -11,8 +11,8 @@ use glam::{Mat4, Quat, Vec3};
 use manim_color::TEAL_D;
 use manim_core::animations::{Create, FadeOut, TransformInto};
 use manim_core::graphing::{Axes, NumberPlane};
-use manim_core::mesh::{Mesh, MeshMaterial, Surface3D};
-use manim_core::mobject::AnyId;
+use manim_core::mesh::{HeightField, Mesh, MeshMaterial, Surface3D};
+use manim_core::mobject::{AnyId, MobjectId};
 use manim_core::prelude::*;
 use manim_core::vector_field::ArrowVectorField;
 use manim_dioxus::{LiveUpdater, ManimPlayer};
@@ -196,6 +196,65 @@ impl SceneBuilder for ZoomScene {
     }
 }
 
+/// An empty host scene for the live 3-D orbit — everything (field, camera) is
+/// built by [`orbit_updater`] on its first frame, like [`cursor_updater`]'s dot.
+#[derive(Clone, PartialEq)]
+struct LiveOrbitScene;
+impl SceneBuilder for LiveOrbitScene {
+    fn construct(&self, _scene: &mut Scene) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A live, interactive 3-D scene (FE-130 / GH #2): an evolving `HeightField`
+/// wave rendered under the **live state's own camera**, orbitable by dragging.
+///
+/// Each frame the updater re-evaluates the wave (one height-texture upload —
+/// the grid never re-tessellates) and, while a button is held, converts the
+/// pointer drag into camera `(phi, theta)`. The player's live path follows the
+/// scene camera exactly like timeline playback follows its per-frame cameras,
+/// so this renders depth-tested 3-D with real relief.
+fn orbit_updater() -> LiveUpdater {
+    const N: usize = 96;
+    const EXTENT: f32 = 3.0;
+    let field: Rc<Cell<Option<MobjectId<HeightField>>>> = Rc::new(Cell::new(None));
+    let angles = Rc::new(Cell::new((62_f32.to_radians(), -45_f32.to_radians())));
+    let last_drag: Rc<Cell<Option<Point>>> = Rc::new(Cell::new(None));
+    LiveUpdater::new(move |state, pointer, t| {
+        let id = match field.get() {
+            Some(id) => id,
+            None => {
+                let id = state.add(
+                    HeightField::from_fn(N, N, (EXTENT, EXTENT), |_, _| 0.0).with_material(
+                        MeshMaterial::new(TEAL_D).with_lighting(0.28, 0.72, 0.45),
+                    ),
+                );
+                field.set(Some(id));
+                id
+            }
+        };
+        // Drag to orbit: pointer deltas (scene units) become camera angles.
+        let (mut phi, mut theta) = angles.get();
+        if pointer.pressed {
+            if let Some(prev) = last_drag.get() {
+                theta -= (pointer.position.x - prev.x) * 0.25;
+                phi = (phi + (pointer.position.y - prev.y) * 0.25)
+                    .clamp(0.15, std::f32::consts::FRAC_PI_2);
+            }
+            last_drag.set(Some(pointer.position));
+            angles.set((phi, theta));
+        } else {
+            last_drag.set(None);
+        }
+        state.camera_mut().set_camera_orientation(phi, theta);
+        // The evolving wave: one 96×96 R32Float texture write per frame.
+        state.get_mut(id).update_heights(|x, y| {
+            let r2 = x * x + y * y;
+            0.5 * (-0.10 * r2).exp() * (2.0 * x - 2.2 * t).sin() * (1.8 * y).cos()
+        });
+    })
+}
+
 /// Which scene the gallery is showing.
 #[derive(Clone, Copy, PartialEq)]
 enum Which {
@@ -203,6 +262,7 @@ enum Which {
     Plot,
     Field,
     Mesh3D,
+    Orbit,
     Cursor,
     Zoom,
 }
@@ -228,6 +288,11 @@ const SCENES: &[(Which, &str, &str)] = &[
         Which::Mesh3D,
         "3D mesh",
         "Depth-tested meshes: a shaded saddle with a translucent sphere sinking through it.",
+    ),
+    (
+        Which::Orbit,
+        "Live 3D (drag)",
+        "A live HeightField wave under the live camera — drag to orbit it (FE-130).",
     ),
     (
         Which::Cursor,
@@ -287,6 +352,9 @@ fn app() -> Element {
                         },
                         Which::Mesh3D => rsx! {
                             ManimPlayer { scene: MeshScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                        },
+                        Which::Orbit => rsx! {
+                            ManimPlayer { scene: LiveOrbitScene, live: orbit_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
                         },
                         Which::Cursor => rsx! {
                             ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }

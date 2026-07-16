@@ -91,7 +91,12 @@ pub struct PointerState {
 /// When a [`ManimPlayer`] is given a `live` updater, it stops playing precomputed
 /// frames and instead, each animation frame, calls the updater with a mutable
 /// live [`SceneState`], the current [`PointerState`], and the elapsed wall-clock
-/// time, then renders the resulting display list.
+/// time, then renders the resulting display list **following the live state's
+/// own camera** (FE-130): an updater that calls
+/// `scene.camera_mut().set_camera_orientation(phi, theta)` — from a timer or a
+/// pointer drag — renders real, depth-tested 3-D exactly like timeline playback
+/// follows its per-frame camera. Background, zoom window, and zoom-adaptive
+/// tessellation follow the live camera the same way.
 ///
 /// # Why this seam
 ///
@@ -644,10 +649,19 @@ mod wasm {
                 };
 
                 if let Some(updater) = &live {
-                    // Live mode: mutate the scene from the cursor, then render it.
+                    // Live mode: mutate the scene from the cursor, then render
+                    // it following the live state's own camera — so an updater
+                    // driving `set_camera_orientation` (or a pointer-drag
+                    // orbit) renders real 3-D, exactly like timeline playback
+                    // follows its per-frame camera.
                     let mut sc = live_state.borrow_mut();
                     updater.0(&mut sc, &ptr, elapsed);
-                    let _ = surface.borrow_mut().render(&sc.display_list());
+                    let frame = manim_core::scene::Frame {
+                        t: 0.0,
+                        display_list: sc.display_list(),
+                        camera: manim_core::camera::CameraFrame::from(sc.camera()),
+                    };
+                    let _ = surface.borrow_mut().render_frame(&frame);
                 } else if let Some(list) = data.frames.get(idx) {
                     // Playback mode: draw the sampled frame, following its camera.
                     let frame = manim_core::scene::Frame {

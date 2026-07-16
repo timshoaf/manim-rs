@@ -38,7 +38,9 @@ use manim_core::display::DisplayList;
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera2D;
-use crate::mesh_pipeline::{MeshBufferCache, MeshFrame, MeshGlobals, MeshPipeline, SceneLight};
+use crate::mesh_pipeline::{
+    MeshBufferCache, MeshFrame, MeshGlobals, MeshPipeline, SceneLight, DEPTH_FORMAT,
+};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tessellate::TessellationCache;
 use crate::tessellate::{FrameMesh, Vertex};
@@ -275,6 +277,35 @@ impl Pipeline {
     /// let _ = pipeline;
     /// ```
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::build(device, format, None)
+    }
+
+    /// Builds the depth-tested variant for `format`: identical shader, blending
+    /// and MSAA, but the pipeline tests (read-only, `LessEqual`) against the
+    /// mesh pass's depth buffer — the [`DrawItem::z_test`] opt-in
+    /// (`docs/design/12-mesh-pipeline.md` §4). Only usable in a pass with the
+    /// depth attachment bound.
+    ///
+    /// [`DrawItem::z_test`]: manim_core::display::DrawItem::z_test
+    pub fn new_depth_tested(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::build(
+            device,
+            format,
+            Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+        )
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        depth_stencil: Option<wgpu::DepthStencilState>,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("manim-render shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
@@ -344,7 +375,7 @@ impl Pipeline {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil,
             multisample: wgpu::MultisampleState {
                 count: SAMPLE_COUNT,
                 mask: !0,
@@ -836,6 +867,17 @@ pub struct TextureTarget {
     mesh_globals_bind_group: wgpu::BindGroup,
     mesh_zoom_globals_buffer: wgpu::Buffer,
     mesh_zoom_globals_bind_group: wgpu::BindGroup,
+    /// The depth-tested vector pipeline for [`DrawItem::z_test`] items, and its
+    /// camera uniforms (built from [`Camera2D::mesh_view_proj`] so vector depth
+    /// agrees with mesh depth; a second pair serves the zoom-window inset).
+    /// Untouched by frames with no `z_test` content.
+    ///
+    /// [`DrawItem::z_test`]: manim_core::display::DrawItem::z_test
+    ztest_pipeline: wgpu::RenderPipeline,
+    ztest_uniform_buffer: wgpu::Buffer,
+    ztest_bind_group: wgpu::BindGroup,
+    ztest_zoom_uniform_buffer: wgpu::Buffer,
+    ztest_zoom_bind_group: wgpu::BindGroup,
     /// Uploaded image textures, keyed on `(arena, source)` for the same reason
     /// the tessellation and mesh caches are — a bare mobject id collides across
     /// independently-built scenes.
@@ -966,6 +1008,36 @@ impl TextureTarget {
 
         let image_pipeline = ImagePipeline::new(device, &pipeline.bind_group_layout, TARGET_FORMAT);
 
+        let ztest = Pipeline::new_depth_tested(device, TARGET_FORMAT);
+        let ztest_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("manim-render z-test camera uniform"),
+            size: std::mem::size_of::<CameraUniform>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ztest_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("manim-render z-test camera bind group"),
+            layout: &ztest.bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ztest_uniform_buffer.as_entire_binding(),
+            }],
+        });
+        let ztest_zoom_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("manim-render z-test zoom camera uniform"),
+            size: std::mem::size_of::<CameraUniform>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ztest_zoom_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("manim-render z-test zoom camera bind group"),
+            layout: &ztest.bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ztest_zoom_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         let mesh_pipeline = MeshPipeline::new(device, TARGET_FORMAT, SAMPLE_COUNT);
         let (mesh_globals_buffer, mesh_globals_bind_group) =
             mesh_pipeline.make_globals(device, "manim-render mesh globals");
@@ -987,6 +1059,11 @@ impl TextureTarget {
             mesh_globals_bind_group,
             mesh_zoom_globals_buffer,
             mesh_zoom_globals_bind_group,
+            ztest_pipeline: ztest.pipeline,
+            ztest_uniform_buffer,
+            ztest_bind_group,
+            ztest_zoom_uniform_buffer,
+            ztest_zoom_bind_group,
             texture_cache: std::collections::HashMap::new(),
             uniform_buffer,
             bind_group,
@@ -1145,6 +1222,16 @@ impl TextureTarget {
 
         let mesh_frame = self.prepare_meshes(arena, meshes, camera);
         let gpu_ops = self.build_gpu_ops(arena, ops);
+        let ztest_ops = self.build_ztest_gpu_ops(ops);
+        if !ztest_ops.is_empty() {
+            self.queue.write_buffer(
+                &self.ztest_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&CameraUniform {
+                    view_proj: camera.mesh_view_proj().to_cols_array_2d(),
+                }),
+            );
+        }
         let mut encoder = self.begin_ops_encoder();
         let drew_meshes = self.record_mesh_pass(
             &mut encoder,
@@ -1153,8 +1240,17 @@ impl TextureTarget {
             &self.mesh_globals_bind_group,
             None,
         );
+        let drew_ztest = self.record_ztest_pass(
+            &mut encoder,
+            &ztest_ops,
+            background,
+            drew_meshes,
+            drew_meshes,
+            &self.ztest_bind_group,
+            None,
+        );
         {
-            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes);
+            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes || drew_ztest);
             self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
         }
         self.copy_and_read(encoder)
@@ -1245,6 +1341,94 @@ impl TextureTarget {
         true
     }
 
+    /// Records the depth-tested vector pass for [`DrawItem::z_test`] items,
+    /// between the mesh pass and the unconditional vector pass. The pipeline
+    /// tests read-only (`LessEqual`) against the mesh depth buffer, and
+    /// `camera_bg` must bind a [`Camera2D::mesh_view_proj`] matrix so vector
+    /// depth agrees with mesh depth. Reports whether it ran.
+    ///
+    /// `color_loaded` / `depth_loaded` say whether earlier passes already
+    /// initialized the MSAA color / depth attachments this frame. A `false`
+    /// clears that attachment (background color / depth `1.0`). Note a pass
+    /// `Clear` covers the **whole attachment**, scissor or not — an inset call
+    /// must therefore always pass `color_loaded: true`. With cleared depth,
+    /// every item wins the depth test and the frame reads exactly as if the
+    /// items were plain vector content.
+    ///
+    /// Image quads never reach this pass — the tessellation split routes them
+    /// to the plain vector pass (`z_test` is documented as ignored for images).
+    ///
+    /// [`DrawItem::z_test`]: manim_core::display::DrawItem::z_test
+    #[allow(clippy::too_many_arguments)]
+    fn record_ztest_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        gpu_ops: &[GpuOp],
+        background: Color,
+        color_loaded: bool,
+        depth_loaded: bool,
+        camera_bg: &wgpu::BindGroup,
+        inset: Option<(crate::layout::Viewport, (u32, u32, u32, u32))>,
+    ) -> bool {
+        if gpu_ops.is_empty() {
+            return false;
+        }
+        let bg = background.premultiplied();
+        let color_load = if color_loaded {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: bg[0] as f64,
+                g: bg[1] as f64,
+                b: bg[2] as f64,
+                a: bg[3] as f64,
+            })
+        };
+        let depth_load = if depth_loaded {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(1.0)
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("manim-render z-test vector pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.msaa_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: color_load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: depth_load,
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some((vp, (sx, sy, sw, sh))) = inset {
+            if vp.w <= 0.0 || vp.h <= 0.0 {
+                return false;
+            }
+            pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+            pass.set_scissor_rect(sx, sy, sw, sh);
+        }
+        for op in gpu_ops {
+            if let GpuOp::Vector { vb, ib, count } = op {
+                pass.set_pipeline(&self.ztest_pipeline);
+                pass.set_bind_group(0, camera_bg, &[]);
+                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..*count, 0, 0..1);
+            }
+        }
+        true
+    }
+
     /// Renders `ops` with the `main` camera full-frame, then a second time with
     /// the `zoom` camera scissored into the `inset` pixel rectangle (a magnifying
     /// window), and finally a border around the inset — all in one pass.
@@ -1311,6 +1495,23 @@ impl TextureTarget {
             );
         }
         let gpu_ops = self.build_gpu_ops(arena, ops);
+        let ztest_gpu = self.build_ztest_gpu_ops(ops);
+        if !ztest_gpu.is_empty() {
+            self.queue.write_buffer(
+                &self.ztest_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&CameraUniform {
+                    view_proj: main.mesh_view_proj().to_cols_array_2d(),
+                }),
+            );
+            self.queue.write_buffer(
+                &self.ztest_zoom_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&CameraUniform {
+                    view_proj: zoom.mesh_view_proj().to_cols_array_2d(),
+                }),
+            );
+        }
         let border = border_mesh_ndc(inset, self.width, self.height, border_px, border_color);
         let border_gpu = self.build_gpu_ops(arena, &[FrameOp::Vector(border)]);
 
@@ -1321,7 +1522,7 @@ impl TextureTarget {
         let sh = (inset.h.round() as u32).min(self.height.saturating_sub(sy));
 
         let mut encoder = self.begin_ops_encoder();
-        if mesh_frame.is_empty() {
+        if mesh_frame.is_empty() && ztest_gpu.is_empty() {
             // The original, mesh-free path, verbatim: one pass for the main
             // draw, the magnified inset, and the border. Every zoom golden
             // guards these exact commands.
@@ -1339,24 +1540,35 @@ impl TextureTarget {
             return self.copy_and_read(encoder);
         }
 
-        // With meshes the vector pass has to split, because the inset's mesh
-        // pass must land between the main vector draw and the magnified one.
-        self.record_mesh_pass(
+        // With meshes (or depth-tested vector content) the vector pass has to
+        // split, because the inset's mesh pass must land between the main
+        // vector draw and the magnified one.
+        let drew_meshes = self.record_mesh_pass(
             &mut encoder,
             &mesh_frame,
             background,
             &self.mesh_globals_bind_group,
             None,
         );
+        let drew_ztest = self.record_ztest_pass(
+            &mut encoder,
+            &ztest_gpu,
+            background,
+            drew_meshes,
+            drew_meshes,
+            &self.ztest_bind_group,
+            None,
+        );
         {
-            let mut pass = self.begin_ops_pass(&mut encoder, background, true);
+            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes || drew_ztest);
             self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
         }
         if sw > 0 && sh > 0 {
             // The inset re-runs the same sequence, scissored and magnified. It
             // needs its own mesh pass: the depth buffer must be re-cleared for
             // the zoom camera's geometry, and the color target must not be.
-            {
+            let mut inset_depth_valid = false;
+            if !mesh_frame.is_empty() {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("manim-render mesh zoom pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1385,7 +1597,19 @@ impl TextureTarget {
                     &self.mesh_pipeline,
                     &self.mesh_zoom_globals_bind_group,
                 );
+                inset_depth_valid = true;
             }
+            // The magnified depth-tested vector content, against the inset's
+            // own depth (color always loads: the full frame is already drawn).
+            self.record_ztest_pass(
+                &mut encoder,
+                &ztest_gpu,
+                background,
+                true,
+                inset_depth_valid,
+                &self.ztest_zoom_bind_group,
+                Some((inset, (sx, sy, sw, sh))),
+            );
             let mut pass = self.begin_ops_pass(&mut encoder, background, true);
             pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
@@ -1450,6 +1674,18 @@ impl TextureTarget {
         let mesh_frame = self.prepare_meshes(arena, meshes, camera);
         let world_gpu = self.build_gpu_ops(arena, world);
         let hud_gpu = self.build_gpu_ops(arena, hud);
+        // z_test only applies to world content: the tessellation split never
+        // emits VectorZ for fixed_in_frame items, so `hud` has none.
+        let ztest_gpu = self.build_ztest_gpu_ops(world);
+        if !ztest_gpu.is_empty() {
+            self.queue.write_buffer(
+                &self.ztest_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&CameraUniform {
+                    view_proj: camera.mesh_view_proj().to_cols_array_2d(),
+                }),
+            );
+        }
         let mut encoder = self.begin_ops_encoder();
         let drew_meshes = self.record_mesh_pass(
             &mut encoder,
@@ -1458,8 +1694,17 @@ impl TextureTarget {
             &self.mesh_globals_bind_group,
             None,
         );
+        let drew_ztest = self.record_ztest_pass(
+            &mut encoder,
+            &ztest_gpu,
+            background,
+            drew_meshes,
+            drew_meshes,
+            &self.ztest_bind_group,
+            None,
+        );
         {
-            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes);
+            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes || drew_ztest);
             self.record_ops(&mut pass, &world_gpu, &self.bind_group);
             self.record_ops(&mut pass, &hud_gpu, &self.hud_bind_group);
         }
@@ -1521,6 +1766,9 @@ impl TextureTarget {
         let mut gpu_ops = Vec::new();
         for op in ops {
             match op {
+                // Depth-tested batches are drawn by record_ztest_pass from the
+                // list build_ztest_gpu_ops builds; the plain pass skips them.
+                FrameOp::VectorZ(_) => {}
                 FrameOp::Vector(mesh) if !mesh.indices.is_empty() => {
                     gpu_ops.push(GpuOp::Vector {
                         vb: self
@@ -1569,6 +1817,41 @@ impl TextureTarget {
                         texture: (arena, q.source),
                     });
                 }
+            }
+        }
+        gpu_ops
+    }
+
+    /// Pre-builds GPU buffers for the [`FrameOp::VectorZ`] batches only — the
+    /// depth-tested list [`record_ztest_pass`](Self::record_ztest_pass) draws.
+    /// Empty for the 2-D majority of frames, which never allocates anything.
+    ///
+    /// [`FrameOp::VectorZ`]: crate::tessellate::FrameOp::VectorZ
+    fn build_ztest_gpu_ops(&self, ops: &[crate::tessellate::FrameOp]) -> Vec<GpuOp> {
+        use crate::tessellate::FrameOp;
+        let mut gpu_ops = Vec::new();
+        for op in ops {
+            if let FrameOp::VectorZ(mesh) = op {
+                if mesh.indices.is_empty() {
+                    continue;
+                }
+                gpu_ops.push(GpuOp::Vector {
+                    vb: self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("manim-render z-test vertices"),
+                            contents: bytemuck::cast_slice(&mesh.vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        }),
+                    ib: self
+                        .device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("manim-render z-test indices"),
+                            contents: bytemuck::cast_slice(&mesh.indices),
+                            usage: wgpu::BufferUsages::INDEX,
+                        }),
+                    count: mesh.indices.len() as u32,
+                });
             }
         }
         gpu_ops

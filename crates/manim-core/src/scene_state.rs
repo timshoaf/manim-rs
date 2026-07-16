@@ -910,6 +910,7 @@ impl SceneState {
                     background_stroke,
                     image,
                     fixed_in_frame: data.fixed_in_frame,
+                    z_test: data.z_test,
                     z_index: data.z_index,
                     source: member,
                     generation: data.generation,

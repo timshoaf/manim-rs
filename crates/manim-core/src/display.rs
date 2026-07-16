@@ -202,6 +202,13 @@ pub struct DrawItem {
     /// 3-D camera the renderer draws it with the orthographic matrix instead of
     /// the perspective one, so it stays flat and unmoving; ignored in 2-D.
     pub fixed_in_frame: bool,
+    /// Whether this item is depth-tested (read-only) against the mesh pass's
+    /// depth buffer, so meshes in front of it occlude it — for 2-D content that
+    /// lives *inside* the 3-D scene (contour curves under a surface, wireframe
+    /// parameter curves, world-pinned labels). `false` (the default) keeps
+    /// today's behavior: vector content draws unconditionally over meshes.
+    /// Ignored for image items and `fixed_in_frame` HUD content.
+    pub z_test: bool,
     /// Draw order key; higher draws on top.
     pub z_index: i32,
     /// The mobject this item came from.

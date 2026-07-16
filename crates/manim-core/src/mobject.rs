@@ -90,6 +90,10 @@ pub struct MobjectData {
     /// Whether this mobject is fixed in the camera frame (a HUD overlay drawn
     /// orthographically under a 3-D camera). manim's `add_fixed_in_frame_mobjects`.
     pub fixed_in_frame: bool,
+    /// Whether this mobject's vector geometry is depth-tested against the mesh
+    /// pass, so meshes in front of it occlude it (see
+    /// [`DrawItem::z_test`](crate::display::DrawItem::z_test)).
+    pub z_test: bool,
 }
 
 impl MobjectData {
@@ -1154,6 +1158,26 @@ pub trait MobjectExt: Mobject {
         Self: Sized,
     {
         self.data_mut().fixed_in_frame = fixed;
+        self
+    }
+
+    /// Opts this mobject's vector geometry in (or out) of depth testing against
+    /// the mesh pass, so meshes in front of it occlude it — for 2-D content that
+    /// lives *inside* the 3-D scene, like contour curves under a floating
+    /// surface. Off by default: vector content draws over meshes.
+    ///
+    /// ```
+    /// use manim_core::geometry::Circle;
+    /// use manim_core::mobject::{Mobject, MobjectExt};
+    /// let mut contour = Circle::new();
+    /// contour.set_z_test(true);
+    /// assert!(contour.data().z_test);
+    /// ```
+    fn set_z_test(&mut self, z_test: bool) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.data_mut().z_test = z_test;
         self
     }
 

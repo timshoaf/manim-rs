@@ -460,6 +460,33 @@ impl TessellationCache {
         self.build_ops(list.arena(), order.into_iter().map(|(_, it)| it))
     }
 
+    /// Like [`tessellate`](Self::tessellate), but with
+    /// [`z_test`](DrawItem::z_test) vector items split into a second mesh for
+    /// the renderer's depth-tested vector pass. Both meshes keep painter's
+    /// order; `fixed_in_frame` and image items always stay in the plain mesh
+    /// (`z_test` is documented as ignored for them). A list with no `z_test`
+    /// items returns `(everything, empty)` — the split is free for the 2-D
+    /// majority.
+    pub fn tessellate_split(&mut self, list: &DisplayList) -> (FrameMesh, FrameMesh) {
+        self.refresh(list);
+
+        let mut order: Vec<(usize, &DrawItem)> = list.iter().enumerate().collect();
+        order.sort_by_key(|(i, it)| (it.z_index, *i));
+
+        let mut plain = FrameMesh::default();
+        let mut ztest = FrameMesh::default();
+        for (_, item) in order {
+            if let Some(entry) = self.entries.get(&(list.arena(), item.source)) {
+                if item.z_test && !item.fixed_in_frame && item.image.is_none() {
+                    ztest.append(&entry.mesh);
+                } else {
+                    plain.append(&entry.mesh);
+                }
+            }
+        }
+        (plain, ztest)
+    }
+
     /// Builds ops for a 3-D camera: world content depth-sorted by per-item mean
     /// *camera-space* z (painter's algorithm — farthest first, for correct
     /// translucent blending without a depth buffer), plus a `fixed_in_frame` HUD
@@ -525,20 +552,40 @@ impl TessellationCache {
     fn build_ops<'a>(&self, arena: u64, items: impl Iterator<Item = &'a DrawItem>) -> Vec<FrameOp> {
         let mut ops: Vec<FrameOp> = Vec::new();
         let mut batch = MeshData::default();
+        // Whether the open batch holds z-tested items; a flag flip flushes it,
+        // so plain and depth-tested geometry never share a draw.
+        let mut batch_z = false;
+        let wrap = |z: bool, mesh: MeshData| {
+            if z {
+                FrameOp::VectorZ(mesh)
+            } else {
+                FrameOp::Vector(mesh)
+            }
+        };
         for item in items {
             if let Some(paint) = &item.image {
                 if !batch.is_empty() {
-                    ops.push(FrameOp::Vector(std::mem::take(&mut batch)));
+                    ops.push(wrap(batch_z, std::mem::take(&mut batch)));
                 }
+                // Image quads never depth-test (DrawItem::z_test is documented
+                // as ignored for images).
                 if let Some(quad) = image_quad(item, paint.clone()) {
                     ops.push(FrameOp::Image(quad));
                 }
             } else if let Some(entry) = self.entries.get(&(arena, item.source)) {
+                // HUD content is drawn with the orthographic matrix after
+                // everything else; depth-testing it is meaningless, so
+                // fixed_in_frame wins over z_test.
+                let z = item.z_test && !item.fixed_in_frame;
+                if z != batch_z && !batch.is_empty() {
+                    ops.push(wrap(batch_z, std::mem::take(&mut batch)));
+                }
+                batch_z = z;
                 batch.append(&entry.mesh);
             }
         }
         if !batch.is_empty() {
-            ops.push(FrameOp::Vector(batch));
+            ops.push(wrap(batch_z, batch));
         }
         ops
     }
@@ -578,6 +625,11 @@ pub struct LayeredFrame {
 pub enum FrameOp {
     /// A concatenated mesh of consecutive vector items.
     Vector(MeshData),
+    /// A concatenated mesh of consecutive [`z_test`](DrawItem::z_test) vector
+    /// items: drawn depth-tested (read-only) against the mesh pass's depth
+    /// buffer, *before* the plain vector content, so meshes in front occlude
+    /// them and ordinary annotations still paint on top.
+    VectorZ(MeshData),
     /// A single raster-image quad.
     Image(ImageQuad),
 }
@@ -1191,6 +1243,71 @@ mod tests {
             panic!("expected a hud vector op");
         };
         assert_eq!(h.vertices[0].color, RED.premultiplied());
+    }
+
+    #[test]
+    fn z_test_items_batch_into_vectorz_ops() {
+        let mut scene = SceneState::new();
+        let plain = scene.add(Square::new());
+        scene.set_style_family(plain.erase(), |s| {
+            s.set_fill(BLUE, 1.0);
+        });
+        let contour = scene.add(Circle::new());
+        scene.set_style_family(contour.erase(), |s| {
+            s.set_fill(RED, 1.0);
+        });
+        scene.get_dyn_mut(contour.erase()).data_mut().z_test = true;
+
+        let mut cache = TessellationCache::new();
+        let ops = cache.tessellate_ops(&scene.display_list());
+        // The flag flip splits the batch: one plain op, one depth-tested op.
+        assert_eq!(ops.len(), 2);
+        let FrameOp::Vector(p) = &ops[0] else {
+            panic!("expected the plain vector op first");
+        };
+        assert_eq!(p.vertices[0].color, BLUE.premultiplied());
+        let FrameOp::VectorZ(z) = &ops[1] else {
+            panic!("expected a depth-tested vector op second");
+        };
+        assert_eq!(z.vertices[0].color, RED.premultiplied());
+    }
+
+    #[test]
+    fn fixed_in_frame_wins_over_z_test() {
+        // A HUD overlay that also (nonsensically) opts into depth testing stays
+        // a plain op: depth-testing orthographic HUD content is meaningless.
+        let mut scene = SceneState::new();
+        let hud = scene.add(Circle::new());
+        let data = scene.get_dyn_mut(hud.erase()).data_mut();
+        data.fixed_in_frame = true;
+        data.z_test = true;
+
+        let mut cache = TessellationCache::new();
+        let ops = cache.tessellate_ops(&scene.display_list());
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], FrameOp::Vector(_)));
+    }
+
+    #[test]
+    fn tessellate_split_routes_z_items() {
+        let mut scene = SceneState::new();
+        scene.add(Square::new());
+        let contour = scene.add(Circle::new());
+        scene.get_dyn_mut(contour.erase()).data_mut().z_test = true;
+
+        let mut cache = TessellationCache::new();
+        let (plain, ztest) = cache.tessellate_split(&scene.display_list());
+        assert!(!plain.is_empty());
+        assert!(!ztest.is_empty());
+
+        // Without any z_test items everything lands in the plain mesh, exactly
+        // as `tessellate` builds it — the split is free for 2-D scenes.
+        let mut scene2 = SceneState::new();
+        scene2.add(Square::new());
+        let list = scene2.display_list();
+        let (plain2, ztest2) = cache.tessellate_split(&list);
+        assert!(ztest2.is_empty());
+        assert_eq!(plain2, cache.tessellate(&list));
     }
 
     #[test]

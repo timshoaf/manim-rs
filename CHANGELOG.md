@@ -26,6 +26,24 @@ most of the manim CE example gallery. Summarized by crate.
   [`rust-toolchain.toml`](rust-toolchain.toml); contributor guide in
   [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+### Mesh-pipeline follow-ons (FE-130, FE-131)
+
+- **`set_z_test(true)`** ([#3]): opt a vector mobject into depth testing against
+  the mesh pass, so meshes in front occlude it — for 2D content living *inside*
+  a 3D scene (contour curves under a floating surface, wireframe parameter
+  curves, world-pinned labels). Off by default and byte-identical when off (or
+  in a mesh-less scene); ignored for image quads and `fixed_in_frame` HUD
+  content. Opted-in items draw in their own read-only depth pass between the
+  mesh pass and the plain vector pass, on native and canvas alike.
+- **Live 3D in the browser** ([#2]): `ManimPlayer`'s `LiveUpdater` path now
+  renders under the **live state's own camera** (plus its background and zoom
+  window), so an updater driving `set_camera_orientation` — a timer, or a
+  pointer-drag orbit — shows real depth-tested 3D. The dioxus gallery gained a
+  "Live 3D (drag)" scene: an evolving `HeightField` wave you orbit by dragging.
+
+[#2]: https://github.com/timshoaf/manim-rs/issues/2
+[#3]: https://github.com/timshoaf/manim-rs/issues/3
+
 ### Depth-tested 3D mesh pipeline (FE-123…129)
 
 A **second, parallel render path for triangle meshes** — depth-tested, per-pixel

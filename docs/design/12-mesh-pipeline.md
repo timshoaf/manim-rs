@@ -143,10 +143,18 @@ frames to today (guarded by existing goldens).
 ### Depth ↔ painter's coexistence
 
 The vector pass draws unconditionally over the mesh pass (no depth test).
-This is deliberate: 2D content is annotation. Mixed scenes that need vector
-strokes *occluded by* meshes (e.g. wireframe parameter curves on a surface)
-can use the existing project-and-sort path, or a later `z_test: bool` opt-in
-on `DrawItem` — recorded as future work, not in scope.
+This is deliberate: 2D content is annotation. Vector content that must live
+*inside* the 3D scene (contour curves under a floating surface, wireframe
+parameter curves, world-pinned labels) opts in per mobject via
+`set_z_test(true)` (FE-131, GH #3): those items batch separately
+(`FrameOp::VectorZ`) and draw in their own pass between the mesh pass and
+the plain vector pass — depth **read-only** `LessEqual` against the mesh
+depth buffer, with a `mesh_view_proj` camera uniform so vector depth agrees
+with mesh depth. Default-off keeps every existing frame byte-identical, and
+a `z_test` item in a mesh-less scene renders byte-identically to a plain
+one (depth clears to 1.0, every fragment wins). `z_test` is ignored for
+image quads and `fixed_in_frame` HUD content, and canvas zoom-window insets
+omit z-tested content exactly as they omit meshes.
 
 ## 5. Transparency (FE-127)
 

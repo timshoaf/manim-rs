@@ -27,6 +27,7 @@ use manim_core::config::Config;
 use manim_core::display::DisplayList;
 use manim_core::scene::Frame;
 use web_sys::HtmlCanvasElement;
+use wgpu::util::DeviceExt;
 
 use crate::camera::Camera2D;
 use crate::layout::letterbox;
@@ -66,6 +67,14 @@ pub struct CanvasSurface {
     border_uniform: wgpu::Buffer,
     border_bind_group: wgpu::BindGroup,
     msaa_view: wgpu::TextureView,
+    /// The depth-tested vector pipeline for [`DrawItem::z_test`] items and its
+    /// [`Camera2D::mesh_view_proj`] uniform. Idle until a display list carries
+    /// z-tested items.
+    ///
+    /// [`DrawItem::z_test`]: manim_core::display::DrawItem::z_test
+    ztest_pipeline: Pipeline,
+    ztest_uniform: wgpu::Buffer,
+    ztest_bind_group: wgpu::BindGroup,
     /// The depth-tested mesh pass. Everything here stays idle — the depth
     /// texture is allocated but never attached — until a display list actually
     /// carries meshes.
@@ -144,6 +153,9 @@ impl CanvasSurface {
         surface.configure(&device, &surface_config);
 
         let pipeline = Pipeline::new(&device, format);
+        let ztest_pipeline = Pipeline::new_depth_tested(&device, format);
+        let (ztest_uniform, ztest_bind_group) =
+            make_camera_bind_group(&device, &ztest_pipeline, "canvas z-test camera");
         let (uniform, bind_group) = make_camera_bind_group(&device, &pipeline, "canvas camera");
         let (zoom_uniform, zoom_bind_group) =
             make_camera_bind_group(&device, &pipeline, "canvas zoom camera");
@@ -169,6 +181,9 @@ impl CanvasSurface {
             border_uniform,
             border_bind_group,
             msaa_view,
+            ztest_pipeline,
+            ztest_uniform,
+            ztest_bind_group,
             mesh_pipeline,
             mesh_cache: MeshBufferCache::new(),
             depth_view,
@@ -240,7 +255,10 @@ impl CanvasSurface {
     ///
     /// A list carrying [`meshes`](DisplayList::meshes) runs the depth-tested
     /// mesh pass first and composites the vector content over it; a list without
-    /// them draws exactly as it always has.
+    /// them draws exactly as it always has. Vector items opting into
+    /// [`z_test`](manim_core::display::DrawItem::z_test) draw depth-tested
+    /// between the two, so meshes occlude them; note a zoom-window inset omits
+    /// them (like it omits meshes — the inset never re-runs the depth passes).
     ///
     /// # Errors
     ///
@@ -248,7 +266,7 @@ impl CanvasSurface {
     /// a reason other than a recoverable lost/outdated surface (which is
     /// reconfigured and skipped).
     pub fn render(&mut self, list: &DisplayList) -> Result<(), RenderError> {
-        let mesh = self.cache.tessellate(list);
+        let (mesh, ztest_mesh) = self.cache.tessellate_split(list);
         let mesh_frame = if list.meshes().is_empty() {
             // Skipping the pass must not strand the last mesh scene's buffers.
             self.mesh_cache.clear();
@@ -336,6 +354,77 @@ impl CanvasSurface {
             );
         }
 
+        // Depth-tested vector content, between the mesh pass and the plain
+        // vector draw — the wasm mirror of the native z-test pass. Clears what
+        // the mesh pass didn't (whole-attachment clears; scissors don't apply).
+        let drew_ztest = !ztest_mesh.is_empty();
+        if drew_ztest {
+            self.queue.write_buffer(
+                &self.ztest_uniform,
+                0,
+                bytemuck::cast_slice(&self.camera.mesh_view_proj().to_cols_array_2d()),
+            );
+            let bg = self.background.premultiplied();
+            let color_load = if drew_meshes {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: bg[0] as f64,
+                    g: bg[1] as f64,
+                    b: bg[2] as f64,
+                    a: bg[3] as f64,
+                })
+            };
+            let depth_load = if drew_meshes {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(1.0)
+            };
+            let vb = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("canvas z-test vertices"),
+                    contents: bytemuck::cast_slice(&ztest_mesh.vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+            let ib = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("canvas z-test indices"),
+                    contents: bytemuck::cast_slice(&ztest_mesh.indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("canvas z-test vector pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: color_load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: depth_load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if vp.w > 0.0 && vp.h > 0.0 {
+                pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+            }
+            pass.set_pipeline(&self.ztest_pipeline.pipeline);
+            pass.set_bind_group(0, &self.ztest_bind_group, &[]);
+            pass.set_vertex_buffer(0, vb.slice(..));
+            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..ztest_mesh.indices.len() as u32, 0, 0..1);
+        }
+
         if let Some(zw) = self.zoom_window {
             // A magnifying inset: second pass with a zoom camera + border.
             let inset =
@@ -381,7 +470,7 @@ impl CanvasSurface {
                 inset,
                 out_w,
                 out_h,
-                drew_meshes,
+                drew_meshes || drew_ztest,
             );
         } else {
             record_draw_over(
@@ -394,7 +483,7 @@ impl CanvasSurface {
                 &mesh,
                 self.background,
                 Some(vp),
-                drew_meshes,
+                drew_meshes || drew_ztest,
             );
         }
         self.queue.submit(Some(encoder.finish()));
