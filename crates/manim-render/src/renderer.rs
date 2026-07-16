@@ -1088,6 +1088,12 @@ impl TextureTarget {
         self.light
     }
 
+    /// The mesh pass's GPU buffer cache — upload counters, for tests and
+    /// diagnostics.
+    pub fn mesh_cache(&self) -> &MeshBufferCache {
+        &self.mesh_cache
+    }
+
     /// Sets the scene light the mesh pass shades with. Has no effect on the 2-D
     /// vector pass, which carries its color per vertex.
     pub fn set_light(&mut self, light: SceneLight) {
@@ -1157,6 +1163,9 @@ impl TextureTarget {
         camera: &Camera2D,
     ) -> MeshFrame {
         if meshes.is_empty() {
+            // Nothing to draw — but the last mesh scene's buffers must not stay
+            // resident just because this frame skipped the pass.
+            self.mesh_cache.clear();
             return MeshFrame::default();
         }
         self.queue.write_buffer(
@@ -1164,8 +1173,13 @@ impl TextureTarget {
             0,
             bytemuck::bytes_of(&MeshGlobals::new(camera, self.light)),
         );
-        self.mesh_cache
-            .prepare(&self.device, &self.mesh_pipeline, meshes, camera)
+        self.mesh_cache.prepare(
+            &self.device,
+            &self.queue,
+            &self.mesh_pipeline,
+            meshes,
+            camera,
+        )
     }
 
     /// Records the mesh pass — clearing color *and* depth, drawing the opaque
@@ -1763,6 +1777,12 @@ impl OffscreenRenderer {
     /// The directional light the mesh pass shades with.
     pub fn light(&self) -> SceneLight {
         self.target.light()
+    }
+
+    /// The mesh pass's GPU buffer cache — upload counters, for tests and
+    /// diagnostics.
+    pub fn mesh_cache(&self) -> &MeshBufferCache {
+        self.target.mesh_cache()
     }
 
     /// Sets the directional light the mesh pass shades with; 2-D vector content

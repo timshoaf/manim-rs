@@ -185,6 +185,16 @@ finite differences of neighboring texels, also in-shader. A live wave
 equation / ultrasound field costs one `nu × nv × 4 B` texture upload per
 frame. Neither ManimGL nor CE has an equivalent.
 
+Two implementation notes (as built): the displacement branch is a uniform
+flag on the one mesh pipeline (a dummy 1×1 height texture satisfies the
+layout for undisplaced items), and the GPU cache diffs **per resource** by
+`Arc` identity — the cache holds `Arc` clones so copy-on-write must
+relocate, making pointer identity sound; a heights-only change re-writes
+just the `R32Float` texture (same allocation when dims are unchanged).
+Caveat: a *translucent* height field sorts by its flat grid's centroid —
+the displacement exists only on the GPU. Fine for ground-plane fields;
+revisit if wildly-displaced translucent fields ever matter.
+
 ## 8. Portability
 
 Everything above runs on wgpu's WebGL2 backend as well as WebGPU: depth
@@ -202,7 +212,16 @@ anywhere in the mesh path. wasm CI check extends to the mesh module.
 - Regression: every existing golden byte-identical (no-mesh scenes never
   touch the new pass).
 - Bench: 10k instanced spheres in native preview, target 60 fps (M2
-  acceptance; record numbers here when measured).
+  acceptance). Measured: **0.8 ms/frame** for 10k spheres (~5.76M tris) at
+  427×240 offscreen incl. readback, release, RTX 4090/Vulkan — unchanged
+  after the heightfield work.
+
+Known footgun (pre-existing, also hits `TessellationCache`): `AnyId` is
+unique per *arena*, not globally — two fresh `SceneState`s give their first
+mobject identical `(source, generation)` keys, so rendering multiple scenes
+through one renderer can silently reuse cache entries across scenes. Tests
+comparing two renders must mutate one scene. A real fix (arena stamp in the
+cache key) is tracked under FE-129.
 
 ## 10. Non-goals
 

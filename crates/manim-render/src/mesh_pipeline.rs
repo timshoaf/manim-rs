@@ -44,6 +44,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use glam::{Mat3, Mat4, Vec3};
 use manim_core::display::MeshItem;
@@ -56,6 +57,17 @@ use crate::camera::Camera2D;
 /// The depth attachment format. `Depth32Float` is core in both WebGPU and
 /// WebGL2 (`DEPTH_COMPONENT32F`), so the mesh path stays portable.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// The [`HeightField`](manim_core::mesh::HeightField) displacement texture
+/// format: one `f32` per grid vertex.
+///
+/// `R32Float` matches the core's `Arc<[f32]>` payload byte for byte, so an
+/// evolving field uploads with no repacking. It is *unfilterable* without the
+/// `FLOAT32_FILTERABLE` feature, which costs nothing here: the vertex shader
+/// reads it with `textureLoad` at exact integer texels and never samples between
+/// them. On the WebGL2 backend this maps to an `R32F` texture read with
+/// `texelFetch` — both core GLSL ES 3.00 — so no fallback packing is needed.
+pub const HEIGHT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 /// The default scene light direction: the unit vector pointing **from the
 /// surface toward the light**.
@@ -170,8 +182,19 @@ pub struct MeshItemUniform {
     pub base_color: [f32; 4],
     /// `(ambient, diffuse, specular, shininess)`.
     pub params: [f32; 4],
-    /// `x` = 1.0 for [`Shading::Flat`], 0.0 for [`Shading::Smooth`]; `yzw` pad.
+    /// `x` = 1.0 for [`Shading::Flat`], 0.0 for [`Shading::Smooth`]. `y` = 1.0
+    /// when the item carries a [`HeightPayload`](manim_core::mesh::HeightPayload)
+    /// and the vertex shader must displace the grid; `zw` pad.
     pub flags: [f32; 4],
+    /// Heightmap displacement parameters: `(nu, nv, dx, dy)` — the grid's vertex
+    /// dimensions and its scene-space spacing along each axis. All zero when the
+    /// item has no height payload.
+    ///
+    /// The spacing is what turns the finite differences of neighboring texels
+    /// into a real gradient; it is derived from the grid's own bounds at upload
+    /// time, since [`HeightPayload`](manim_core::mesh::HeightPayload) carries
+    /// only the dimensions.
+    pub height_params: [f32; 4],
 }
 
 impl MeshItemUniform {
@@ -194,6 +217,14 @@ impl MeshItemUniform {
         let m = item.material;
         let normal = Mat3::from_mat4(item.transform).inverse().transpose();
         let base = m.base_color;
+        let height_params = item
+            .height
+            .as_ref()
+            .map(|h| {
+                let (dx, dy) = grid_spacing(item, h);
+                [h.nu as f32, h.nv as f32, dx, dy]
+            })
+            .unwrap_or([0.0; 4]);
         Self {
             model: item.transform.to_cols_array_2d(),
             normal_matrix: Mat4::from_mat3(normal).to_cols_array_2d(),
@@ -204,12 +235,34 @@ impl MeshItemUniform {
                     Shading::Flat => 1.0,
                     Shading::Smooth => 0.0,
                 },
-                0.0,
+                if item.height.is_some() { 1.0 } else { 0.0 },
                 0.0,
                 0.0,
             ],
+            height_params,
         }
     }
+}
+
+/// The scene-space `(dx, dy)` between neighboring grid vertices of a height
+/// field, read off the flat grid's own bounds.
+///
+/// [`HeightPayload`](manim_core::mesh::HeightPayload) carries only `nu`/`nv`, so
+/// the extent has to come from the geometry — which is exactly where it is
+/// authoritative anyway. A degenerate (single-column or empty) grid yields `0`,
+/// and the shader treats a zero span as "no gradient" rather than dividing by it.
+fn grid_spacing(item: &MeshItem, h: &manim_core::mesh::HeightPayload) -> (f32, f32) {
+    let Some((lo, hi)) = item.mesh.bounds() else {
+        return (0.0, 0.0);
+    };
+    let span = |extent: f32, n: usize| {
+        if n > 1 {
+            extent / (n - 1) as f32
+        } else {
+            0.0
+        }
+    };
+    (span(hi.x - lo.x, h.nu), span(hi.y - lo.y, h.nv))
 }
 
 /// One mesh vertex: 48 interleaved bytes, matching
@@ -324,12 +377,23 @@ struct Item {
     base_color: vec4<f32>,
     // (ambient, diffuse, specular, shininess)
     params: vec4<f32>,
-    // x = 1.0 for flat shading
+    // x = 1.0 for flat shading, y = 1.0 for heightmap displacement
     flags: vec4<f32>,
+    // (nu, nv, dx, dy) — grid vertex dims and scene-space spacing
+    height_params: vec4<f32>,
 };
 @group(1) @binding(0) var<uniform> item: Item;
 
+// The nu × nv R32Float displacement map, read with textureLoad in the *vertex*
+// stage (vertex texture fetch is core WebGL2; no filtering, so an unfilterable
+// float format is fine). Bound to a 1×1 dummy when flags.y is 0.
+@group(1) @binding(1) var height_map: texture_2d<f32>;
+
 struct VsIn {
+    // The grid's vertex index *is* its texel index: HeightField lays its
+    // vertices out row-major as `j * nu + i`, exactly matching the height
+    // buffer. That identity is the contract, so no uv round-trip is needed.
+    @builtin(vertex_index) vertex_index: u32,
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     // Premultiplied linear per-vertex tint.
@@ -359,11 +423,53 @@ fn unpremultiply(c: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(c.rgb / c.a, c.a);
 }
 
+/// The height at grid texel (i, j), clamped to the edge.
+fn height_at(i: i32, j: i32, nu: i32, nv: i32) -> f32 {
+    let c = vec2<i32>(clamp(i, 0, nu - 1), clamp(j, 0, nv - 1));
+    return textureLoad(height_map, c, 0).x;
+}
+
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
+    var local = in.position;
+    var local_normal = in.normal;
+
+    // Heightmap displacement (FE-128): raise the flat grid along local +Z by its
+    // texel, and rebuild the normal from central differences of the neighbors.
+    // The whole point is that an evolving field re-uploads nu × nv × 4 B and
+    // never re-meshes on the CPU.
+    if (item.flags.y > 0.5) {
+        let nu = i32(item.height_params.x);
+        let nv = i32(item.height_params.y);
+        let idx = i32(in.vertex_index);
+        let i = idx % nu;
+        let j = idx / nu;
+        local.z = local.z + height_at(i, j, nu, nv);
+
+        // Clamp the sample window at the edges and divide by the span actually
+        // spanned, so an edge vertex gets a one-sided difference rather than a
+        // halved gradient.
+        let ip = min(i + 1, nu - 1);
+        let im = max(i - 1, 0);
+        let jp = min(j + 1, nv - 1);
+        let jm = max(j - 1, 0);
+        let span_x = f32(ip - im) * item.height_params.z;
+        let span_y = f32(jp - jm) * item.height_params.w;
+        var dzdx = 0.0;
+        var dzdy = 0.0;
+        if (span_x > 0.0) {
+            dzdx = (height_at(ip, j, nu, nv) - height_at(im, j, nu, nv)) / span_x;
+        }
+        if (span_y > 0.0) {
+            dzdy = (height_at(i, jp, nu, nv) - height_at(i, jm, nu, nv)) / span_y;
+        }
+        // The surface is z = h(x, y); its normal is (-∂h/∂x, -∂h/∂y, 1).
+        local_normal = normalize(vec3<f32>(-dzdx, -dzdy, 1.0));
+    }
+
     let instance = mat4x4<f32>(in.m0, in.m1, in.m2, in.m3);
     // Instances are local -> mobject space; the model matrix is mobject -> world.
-    let world = item.model * instance * vec4<f32>(in.position, 1.0);
+    let world = item.model * instance * vec4<f32>(local, 1.0);
 
     // The instance's linear part transforms the normal directly rather than via
     // its inverse-transpose: exact for the rigid and axis-aligned scales the
@@ -380,7 +486,7 @@ fn vs_main(in: VsIn) -> VsOut {
     var out: VsOut;
     out.clip = globals.view_proj * world;
     out.world = world.xyz;
-    out.normal = model3 * (inst3 * in.normal);
+    out.normal = model3 * (inst3 * local_normal);
     out.color = vec4<f32>(
         vertex_tint.rgb * in.tint.rgb * item.base_color.rgb,
         vertex_tint.a * in.tint.a * item.base_color.a,
@@ -423,6 +529,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     let alpha = in.color.a;
     let rgb = (ambient + diffuse) * in.color.rgb + vec3<f32>(specular);
+
     // Premultiplied out, for the (One, OneMinusSrcAlpha) blend the 2D pipeline
     // also uses; the sRGB target encodes on store.
     return vec4<f32>(rgb * alpha, alpha);
@@ -436,6 +543,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 /// tests against it read-only (design doc §5). Both use `cull_mode: None` —
 /// [`Surface3D`](manim_core::mesh::Surface3D) grids and translucent shells are
 /// open geometry whose back faces must draw.
+///
+/// Heightmap displacement (design doc §7) rides the *same* two pipelines behind
+/// a uniform flag rather than adding a third: the branch is on a uniform, so it
+/// is perfectly coherent across a draw, and a separate variant would have to be
+/// crossed with the opaque/translucent split — four pipelines to avoid one
+/// predictable branch. Undisplaced items bind [`dummy_height`](Self::dummy_height).
 pub struct MeshPipeline {
     /// Depth write + `LessEqual` test: the opaque queue.
     pub opaque: wgpu::RenderPipeline,
@@ -443,8 +556,12 @@ pub struct MeshPipeline {
     pub translucent: wgpu::RenderPipeline,
     /// The `@group(0)` layout: [`MeshGlobals`].
     pub globals_layout: wgpu::BindGroupLayout,
-    /// The `@group(1)` layout: [`MeshItemUniform`].
+    /// The `@group(1)` layout: [`MeshItemUniform`] + the height map.
     pub item_layout: wgpu::BindGroupLayout,
+    /// A 1×1 zeroed `R32Float` texture, bound by every item that has no height
+    /// payload. The shader never reads it (its `flags.y` is 0), but the binding
+    /// must be satisfied for the pipeline layout to be complete.
+    pub dummy_height: wgpu::TextureView,
 }
 
 impl MeshPipeline {
@@ -483,10 +600,23 @@ impl MeshPipeline {
         });
         let item_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("manim-render mesh item layout"),
-            entries: &[uniform_entry(
-                0,
-                wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-            )],
+            entries: &[
+                uniform_entry(0, wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    // Vertex texture fetch: the displacement happens in vs_main.
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        // `textureLoad` never filters, so an unfilterable float
+                        // format needs no FLOAT32_FILTERABLE feature — which is
+                        // what keeps R32Float usable on the WebGL2 backend.
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("manim-render mesh pipeline layout"),
@@ -569,11 +699,29 @@ impl MeshPipeline {
             })
         };
 
+        let dummy_height = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("manim-render mesh dummy height map"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HEIGHT_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
         Self {
             opaque: make("manim-render mesh opaque pipeline", true),
             translucent: make("manim-render mesh translucent pipeline", false),
             globals_layout,
             item_layout,
+            dummy_height,
         }
     }
 
@@ -767,9 +915,111 @@ impl MeshQueues {
     }
 }
 
-/// One mobject's uploaded GPU buffers, keyed by its geometry generation.
-struct GpuMesh {
+/// What a refresh must re-upload for one item.
+///
+/// A mobject's `generation` bumps for *any* change, so it can only answer
+/// "something moved". These three flags answer "what", which is what keeps an
+/// evolving [`HeightField`](manim_core::mesh::HeightField) cheap: its heights
+/// change every frame while its grid never does.
+///
+/// ```
+/// use manim_render::mesh_pipeline::UploadPlan;
+/// assert!(UploadPlan::default().is_noop());
+/// assert!(!UploadPlan::everything().is_noop());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UploadPlan {
+    /// Re-upload the vertex and index buffers.
+    pub geometry: bool,
+    /// Re-upload the instance buffer.
+    pub instances: bool,
+    /// Re-upload the height texture.
+    pub height: bool,
+}
+
+impl UploadPlan {
+    /// The plan for an item that has never been seen: upload all of it.
+    pub fn everything() -> Self {
+        Self {
+            geometry: true,
+            instances: true,
+            height: true,
+        }
+    }
+
+    /// Whether nothing needs uploading.
+    pub fn is_noop(&self) -> bool {
+        !self.geometry && !self.instances && !self.height
+    }
+}
+
+/// Two optional [`Arc`]s point at the same allocation (or are both absent).
+fn opt_arc_ptr_eq<T: ?Sized>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+        _ => false,
+    }
+}
+
+/// The identity of what the cache last uploaded for one mobject.
+///
+/// # Why the `Arc`s are held, not just their pointers
+///
+/// Each field is compared by [`Arc::ptr_eq`], which is only a sound "unchanged"
+/// test because the cache **keeps a clone alive**. The core mutates shared
+/// payloads copy-on-write via [`Arc::make_mut`], and `make_mut` mutates *in
+/// place* when the refcount is 1 — so a bare pointer could see the same address
+/// with different contents once a frame's display list is dropped. Holding the
+/// `Arc` keeps every refcount at 2 or more, which forces `make_mut` to clone, so
+/// a changed payload always lands at a new address. The cost is one pointer per
+/// resource; no vertex data is copied.
+struct CachedKeys {
     generation: u64,
+    mesh: Arc<manim_core::mesh::TriMesh>,
+    instances: Option<Arc<[manim_core::mesh::Instance]>>,
+    heights: Option<Arc<[f32]>>,
+    height_dims: Option<(usize, usize)>,
+}
+
+impl CachedKeys {
+    /// The keys describing `item` as it stands now.
+    fn of(item: &MeshItem) -> Self {
+        Self {
+            generation: item.generation,
+            mesh: Arc::clone(&item.mesh),
+            instances: item.instances.clone(),
+            heights: item.height.as_ref().map(|h| Arc::clone(&h.heights)),
+            height_dims: item.height.as_ref().map(|h| (h.nu, h.nv)),
+        }
+    }
+
+    /// What must be re-uploaded to bring these keys up to date with `item`.
+    ///
+    /// An unchanged generation short-circuits to a no-op — the common case for
+    /// static geometry. Otherwise each resource is judged on its own identity,
+    /// so a heights-only edit re-uploads a texture and leaves the grid's vertex
+    /// and index buffers alone (design doc §7), and a per-instance edit
+    /// re-uploads the instance buffer and leaves the base mesh alone (§6).
+    fn plan_against(&self, item: &MeshItem) -> UploadPlan {
+        if self.generation == item.generation {
+            return UploadPlan::default();
+        }
+        UploadPlan {
+            geometry: !Arc::ptr_eq(&self.mesh, &item.mesh),
+            instances: !opt_arc_ptr_eq(&self.instances, &item.instances),
+            height: !opt_arc_ptr_eq(
+                &self.heights,
+                &item.height.as_ref().map(|h| Arc::clone(&h.heights)),
+            ) || self.height_dims != item.height.as_ref().map(|h| (h.nu, h.nv)),
+        }
+    }
+}
+
+/// One mobject's uploaded GPU resources, plus the identities they were built
+/// from.
+struct GpuMesh {
+    keys: CachedKeys,
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     n_indices: u32,
@@ -777,6 +1027,8 @@ struct GpuMesh {
     /// holding the single [`MeshInstance::IDENTITY`].
     instances: wgpu::Buffer,
     n_instances: u32,
+    /// The `nu × nv` displacement texture, for a height field only.
+    height: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 /// Memoizes each mesh mobject's GPU buffers, keyed on `(source, generation)`.
@@ -792,6 +1044,9 @@ pub struct MeshBufferCache {
     entries: HashMap<AnyId, GpuMesh>,
     hits: u64,
     misses: u64,
+    geometry_uploads: u64,
+    instance_uploads: u64,
+    height_uploads: u64,
 }
 
 impl MeshBufferCache {
@@ -815,62 +1070,224 @@ impl MeshBufferCache {
         self.entries.is_empty()
     }
 
-    /// Uploads for cache hits.
+    /// Drops every cached mobject's GPU resources.
+    ///
+    /// Callers that skip [`prepare`](Self::prepare) for a mesh-less frame must
+    /// call this instead, or the last mesh scene's buffers stay resident for the
+    /// life of the renderer.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Items found completely unchanged (generation match).
     pub fn hits(&self) -> u64 {
         self.hits
     }
 
-    /// Uploads for cache misses.
+    /// Items whose generation had moved on, so *something* needed re-uploading.
+    ///
+    /// A miss does not mean a full re-upload — see
+    /// [`geometry_uploads`](Self::geometry_uploads).
     pub fn misses(&self) -> u64 {
         self.misses
     }
 
-    /// Uploads any mesh whose `(source, generation)` is new, then evicts
-    /// mobjects absent from `meshes`.
-    fn refresh(&mut self, device: &wgpu::Device, meshes: &[MeshItem]) {
+    /// Vertex/index buffer uploads.
+    ///
+    /// This is the number that must stay flat while a
+    /// [`HeightField`](manim_core::mesh::HeightField) animates: its grid uploads
+    /// once, no matter how many times its heights change.
+    pub fn geometry_uploads(&self) -> u64 {
+        self.geometry_uploads
+    }
+
+    /// Instance buffer uploads.
+    pub fn instance_uploads(&self) -> u64 {
+        self.instance_uploads
+    }
+
+    /// Height texture uploads.
+    pub fn height_uploads(&self) -> u64 {
+        self.height_uploads
+    }
+
+    /// Brings every item's GPU resources up to date, uploading only what
+    /// actually changed, then evicts mobjects absent from `meshes`.
+    fn refresh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, meshes: &[MeshItem]) {
         let mut present: Vec<AnyId> = Vec::with_capacity(meshes.len());
         for item in meshes {
             present.push(item.source);
-            let fresh = self
-                .entries
-                .get(&item.source)
-                .is_some_and(|e| e.generation == item.generation);
-            if fresh {
+            // Taking the entry out sidesteps borrowing `self.entries` across the
+            // rebuild; it goes straight back in either branch.
+            let old = self.entries.remove(&item.source);
+            let plan = old
+                .as_ref()
+                .map(|e| e.keys.plan_against(item))
+                .unwrap_or_else(UploadPlan::everything);
+
+            if plan.is_noop() {
                 self.hits += 1;
+                if let Some(e) = old {
+                    self.entries.insert(item.source, e);
+                }
                 continue;
             }
             self.misses += 1;
-
-            let verts = vertices_of(&item.mesh);
-            let instances: Vec<MeshInstance> = match item.instances.as_ref() {
-                Some(xs) if !xs.is_empty() => xs.iter().map(MeshInstance::from_core).collect(),
-                // One identity instance keeps plain meshes on the instanced path.
-                _ => vec![MeshInstance::IDENTITY],
-            };
-            let entry = GpuMesh {
-                generation: item.generation,
-                vbuf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("manim-render mesh vertices"),
-                    contents: bytemuck::cast_slice(&verts),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                ibuf: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("manim-render mesh indices"),
-                    contents: bytemuck::cast_slice(&item.mesh.indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                }),
-                n_indices: item.mesh.indices.len() as u32,
-                instances: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("manim-render mesh instances"),
-                    contents: bytemuck::cast_slice(&instances),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                n_instances: instances.len() as u32,
-            };
+            let entry = self.rebuild(device, queue, item, old, plan);
             self.entries.insert(item.source, entry);
         }
         self.entries.retain(|id, _| present.contains(id));
     }
+
+    /// Rebuilds one item's entry, reusing whatever `old` still holds that `plan`
+    /// says is unchanged.
+    fn rebuild(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        item: &MeshItem,
+        old: Option<GpuMesh>,
+        plan: UploadPlan,
+    ) -> GpuMesh {
+        // wgpu handles are reference-counted, so carrying a buffer over from the
+        // old entry is a pointer copy — the point of the whole exercise.
+        let reuse = old.filter(|_| !plan.geometry || !plan.instances || !plan.height);
+
+        let (vbuf, ibuf, n_indices) = match reuse.as_ref().filter(|_| !plan.geometry) {
+            Some(e) => (e.vbuf.clone(), e.ibuf.clone(), e.n_indices),
+            None => {
+                self.geometry_uploads += 1;
+                let verts = vertices_of(&item.mesh);
+                (
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("manim-render mesh vertices"),
+                        contents: bytemuck::cast_slice(&verts),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("manim-render mesh indices"),
+                        contents: bytemuck::cast_slice(&item.mesh.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    }),
+                    item.mesh.indices.len() as u32,
+                )
+            }
+        };
+
+        let (instances, n_instances) = match reuse.as_ref().filter(|_| !plan.instances) {
+            Some(e) => (e.instances.clone(), e.n_instances),
+            None => {
+                self.instance_uploads += 1;
+                let xs: Vec<MeshInstance> = match item.instances.as_ref() {
+                    Some(xs) if !xs.is_empty() => xs.iter().map(MeshInstance::from_core).collect(),
+                    // One identity instance keeps plain meshes on the instanced path.
+                    _ => vec![MeshInstance::IDENTITY],
+                };
+                (
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("manim-render mesh instances"),
+                        contents: bytemuck::cast_slice(&xs),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    }),
+                    xs.len() as u32,
+                )
+            }
+        };
+
+        let height = match &item.height {
+            None => None,
+            Some(h) => {
+                let cached = reuse.as_ref().and_then(|e| e.height.as_ref());
+                if !plan.height {
+                    cached.cloned()
+                } else {
+                    self.height_uploads += 1;
+                    // Reuse the texture itself whenever the grid keeps its
+                    // dimensions, so an evolving field costs exactly one
+                    // nu × nv × 4 B write per frame and no reallocation — the
+                    // whole promise of design doc §7.
+                    match cached.filter(|(t, _)| {
+                        t.width() == h.nu.max(1) as u32 && t.height() == h.nv.max(1) as u32
+                    }) {
+                        Some((t, v)) => {
+                            write_heights(queue, t, h);
+                            Some((t.clone(), v.clone()))
+                        }
+                        None => Some(create_height_texture(device, queue, h)),
+                    }
+                }
+            }
+        };
+
+        GpuMesh {
+            keys: CachedKeys::of(item),
+            vbuf,
+            ibuf,
+            n_indices,
+            instances,
+            n_instances,
+            height,
+        }
+    }
+}
+
+/// Creates an `nu × nv` [`HEIGHT_FORMAT`] texture and fills it with `h`.
+///
+/// Only needed when a field first appears or changes dimensions; an evolving
+/// field of a fixed size re-writes the same texture through [`write_heights`].
+fn create_height_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    h: &manim_core::mesh::HeightPayload,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("manim-render height map"),
+        size: wgpu::Extent3d {
+            width: h.nu.max(1) as u32,
+            height: h.nv.max(1) as u32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: HEIGHT_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    write_heights(queue, &texture, h);
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+/// Writes `h` into an existing height texture of matching size.
+///
+/// The core's `Arc<[f32]>` is already the texture's exact byte layout (row-major,
+/// 4 B/texel), so this is one `write_texture` with no repacking.
+fn write_heights(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    h: &manim_core::mesh::HeightPayload,
+) {
+    let (w, hgt) = (h.nu.max(1) as u32, h.nv.max(1) as u32);
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytemuck::cast_slice(&h.heights),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w * 4),
+            rows_per_image: Some(hgt),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: hgt,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 /// One recorded mesh draw: its `@group(1)` bind group plus the buffers to bind.
@@ -945,6 +1362,7 @@ impl MeshBufferCache {
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         pipeline: &MeshPipeline,
         meshes: &[MeshItem],
         camera: &Camera2D,
@@ -953,10 +1371,10 @@ impl MeshBufferCache {
             self.entries.clear();
             return MeshFrame::default();
         }
-        self.refresh(device, meshes);
+        self.refresh(device, queue, meshes);
         let queues = MeshQueues::split(meshes, &camera.view_matrix());
 
-        let make_item_bind_group = |item: &MeshItem| {
+        let make_item_bind_group = |item: &MeshItem, height: Option<&wgpu::TextureView>| {
             let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("manim-render mesh item uniform"),
                 contents: bytemuck::bytes_of(&MeshItemUniform::new(item)),
@@ -965,10 +1383,18 @@ impl MeshBufferCache {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("manim-render mesh item bind group"),
                 layout: &pipeline.item_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            height.unwrap_or(&pipeline.dummy_height),
+                        ),
+                    },
+                ],
             })
         };
 
@@ -982,7 +1408,7 @@ impl MeshBufferCache {
                 continue;
             }
             frame.opaque.push(MeshDraw {
-                bind_group: make_item_bind_group(item),
+                bind_group: make_item_bind_group(item, entry.height.as_ref().map(|(_, v)| v)),
                 vbuf: entry.vbuf.clone(),
                 ibuf: entry.ibuf.clone(),
                 instances: entry.instances.clone(),
@@ -1016,7 +1442,7 @@ impl MeshBufferCache {
                 _ => entry.instances.clone(),
             };
             frame.translucent.push(MeshDraw {
-                bind_group: make_item_bind_group(item),
+                bind_group: make_item_bind_group(item, entry.height.as_ref().map(|(_, v)| v)),
                 vbuf: entry.vbuf.clone(),
                 ibuf: entry.ibuf.clone(),
                 instances,
@@ -1034,7 +1460,9 @@ mod tests {
     use glam::Vec3;
     use manim_color::{BLUE, RED, WHITE};
     use manim_core::config::Config;
-    use manim_core::mesh::{Instance, InstancedMesh, Mesh, MeshMaterial, Shading, TriMesh};
+    use manim_core::mesh::{
+        HeightField, Instance, InstancedMesh, Mesh, MeshMaterial, Shading, TriMesh,
+    };
     use manim_core::scene_state::SceneState;
 
     fn camera() -> Camera2D {
@@ -1065,8 +1493,8 @@ mod tests {
     fn uniform_blocks_are_std140_sized() {
         // mat4 (64) + vec4 (16) + vec4 (16).
         assert_eq!(std::mem::size_of::<MeshGlobals>(), 96);
-        // mat4 + mat4 + 3 × vec4.
-        assert_eq!(std::mem::size_of::<MeshItemUniform>(), 176);
+        // mat4 + mat4 + 4 × vec4.
+        assert_eq!(std::mem::size_of::<MeshItemUniform>(), 192);
         // Uniform blocks must be 16-byte multiples.
         assert_eq!(std::mem::size_of::<MeshGlobals>() % 16, 0);
         assert_eq!(std::mem::size_of::<MeshItemUniform>() % 16, 0);
@@ -1266,6 +1694,170 @@ mod tests {
         assert_eq!(vs.len(), 3);
         assert!(vs.iter().all(|v| v.color == [1.0, 1.0, 1.0, 1.0]));
         assert!(vs.iter().all(|v| v.uv == [0.0, 0.0]));
+    }
+
+    // --- FE-128: heightmap displacement ---------------------------------
+
+    #[test]
+    fn height_params_carry_dims_and_spacing() {
+        let mut scene = SceneState::new();
+        // 5 × 3 vertices over 4 × 2 scene units → spacing 1.0 × 1.0.
+        scene.add(HeightField::from_fn(5, 3, (4.0, 2.0), |_, _| 0.0));
+        let dl = scene.display_list();
+        let u = MeshItemUniform::new(&dl.meshes()[0]);
+        assert_eq!(u.flags[1], 1.0, "the displacement flag must be set");
+        assert_eq!(u.height_params[0..2], [5.0, 3.0]);
+        assert!((u.height_params[2] - 1.0).abs() < 1e-6, "dx");
+        assert!((u.height_params[3] - 1.0).abs() < 1e-6, "dy");
+    }
+
+    #[test]
+    fn a_plain_mesh_has_no_height_params() {
+        let mut scene = SceneState::new();
+        scene.add(Mesh::sphere());
+        let dl = scene.display_list();
+        let u = MeshItemUniform::new(&dl.meshes()[0]);
+        assert_eq!(u.flags[1], 0.0);
+        assert_eq!(u.height_params, [0.0; 4]);
+    }
+
+    #[test]
+    fn grid_spacing_survives_a_degenerate_grid() {
+        // nu = 1 would divide by zero; the shader reads a zero span as
+        // "no gradient" rather than producing NaN normals.
+        let item = &{
+            let mut scene = SceneState::new();
+            scene.add(HeightField::from_fn(2, 2, (0.0, 0.0), |_, _| 0.0));
+            scene.display_list()
+        }
+        .meshes()[0]
+            .clone();
+        let (dx, dy) = grid_spacing(item, item.height.as_ref().unwrap());
+        assert_eq!((dx, dy), (0.0, 0.0));
+    }
+
+    /// The FE-128 contract: an evolving field re-uploads its texture and nothing
+    /// else. If this regresses, a live wave equation silently starts re-uploading
+    /// its whole grid every frame.
+    #[test]
+    fn a_heights_only_bump_re_uploads_only_the_texture() {
+        let mut scene = SceneState::new();
+        let f = scene.add(HeightField::from_fn(16, 16, (2.0, 2.0), |_, _| 0.0));
+        let before = scene.display_list();
+        let keys = CachedKeys::of(&before.meshes()[0]);
+
+        scene.get_mut(f).update_heights(|x, y| x * y);
+        let after = scene.display_list();
+        let item = &after.meshes()[0];
+
+        // The generation moved, so the cache cannot short-circuit …
+        assert_ne!(keys.generation, item.generation);
+        let plan = keys.plan_against(item);
+        // … but only the heights actually changed.
+        assert_eq!(
+            plan,
+            UploadPlan {
+                geometry: false,
+                instances: false,
+                height: true,
+            }
+        );
+    }
+
+    #[test]
+    fn an_unchanged_height_field_plans_nothing() {
+        let mut scene = SceneState::new();
+        scene.add(HeightField::from_fn(8, 8, (2.0, 2.0), |x, _| x));
+        let dl = scene.display_list();
+        let keys = CachedKeys::of(&dl.meshes()[0]);
+        // A second display list of an untouched scene must be a pure cache hit.
+        let again = scene.display_list();
+        assert!(keys.plan_against(&again.meshes()[0]).is_noop());
+    }
+
+    /// The §6 counterpart: a per-instance edit leaves the base mesh cached.
+    #[test]
+    fn an_instances_only_bump_re_uploads_only_the_instance_buffer() {
+        let mut scene = SceneState::new();
+        let m = scene.add(InstancedMesh::spheres(&[Vec3::ZERO, Vec3::X], 0.3));
+        let before = scene.display_list();
+        let keys = CachedKeys::of(&before.meshes()[0]);
+
+        scene.get_mut(m).update_instances(|xs| xs[0].color = BLUE);
+        let after = scene.display_list();
+        let plan = keys.plan_against(&after.meshes()[0]);
+        assert!(!plan.geometry, "the base mesh must stay cached");
+        assert!(plan.instances);
+    }
+
+    #[test]
+    fn a_geometry_edit_re_uploads_the_geometry() {
+        let mut scene = SceneState::new();
+        let m = scene.add(Mesh::sphere());
+        let before = scene.display_list();
+        let keys = CachedKeys::of(&before.meshes()[0]);
+
+        // Copy-on-write must land the new geometry at a new address — which it
+        // does precisely because `keys` still holds an Arc to the old one.
+        scene
+            .get_mut(m)
+            .update_mesh(|mesh| mesh.transform(Mat4::from_scale(Vec3::splat(2.0))));
+        let after = scene.display_list();
+        assert!(keys.plan_against(&after.meshes()[0]).geometry);
+    }
+
+    /// `Arc::make_mut` mutates in place at refcount 1, so pointer identity is
+    /// only a sound cache key because `CachedKeys` keeps a clone alive. This
+    /// test pins that reasoning: with the display list dropped, the cache's own
+    /// handle is what forces the clone.
+    #[test]
+    fn holding_the_arc_forces_copy_on_write_to_relocate() {
+        let mut scene = SceneState::new();
+        let m = scene.add(Mesh::sphere());
+        let keys = CachedKeys::of(&scene.display_list().meshes()[0]);
+        // Nothing else holds the mesh now except `keys`.
+        scene
+            .get_mut(m)
+            .update_mesh(|mesh| mesh.positions[0].x += 1.0);
+        let after = scene.display_list();
+        assert!(
+            !Arc::ptr_eq(&keys.mesh, &after.meshes()[0].mesh),
+            "make_mut must have cloned rather than mutating the cached allocation"
+        );
+        assert!(keys.plan_against(&after.meshes()[0]).geometry);
+    }
+
+    /// The guard behind every "did this payload change" decision. A payload
+    /// appearing or vanishing is not reachable through today's mobjects (a
+    /// `HeightField` always has heights, a `Mesh` never does), so this pins the
+    /// predicate rather than routing through a scene that cannot express it.
+    #[test]
+    fn opt_arc_ptr_eq_distinguishes_identity_presence_and_content() {
+        let a: Arc<[f32]> = vec![1.0, 2.0].into();
+        let b: Arc<[f32]> = vec![1.0, 2.0].into();
+        // Same allocation → unchanged.
+        assert!(opt_arc_ptr_eq(&Some(Arc::clone(&a)), &Some(Arc::clone(&a))));
+        // Equal contents at a different allocation → treated as changed, which
+        // is the safe direction: a re-upload, never a stale texture.
+        assert!(!opt_arc_ptr_eq(&Some(a.clone()), &Some(b)));
+        // Presence changing either way is a change.
+        assert!(!opt_arc_ptr_eq(&Some(a.clone()), &None));
+        assert!(!opt_arc_ptr_eq(&None, &Some(a)));
+        // Absent on both sides is not.
+        assert!(opt_arc_ptr_eq::<[f32]>(&None, &None));
+    }
+
+    #[test]
+    fn resizing_a_height_grid_re_uploads_the_texture() {
+        // Dims are compared alongside the Arc, so a differently-shaped grid can
+        // never reuse a texture of the wrong size.
+        let mut small = SceneState::new();
+        small.add(HeightField::from_fn(4, 4, (2.0, 2.0), |_, _| 0.0));
+        let dl = small.display_list();
+        let mut keys = CachedKeys::of(&dl.meshes()[0]);
+        keys.generation = u64::MAX; // force past the short-circuit
+        keys.height_dims = Some((8, 8));
+        assert!(keys.plan_against(&dl.meshes()[0]).height);
     }
 
     #[test]

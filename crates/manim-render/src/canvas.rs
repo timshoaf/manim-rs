@@ -250,6 +250,8 @@ impl CanvasSurface {
     pub fn render(&mut self, list: &DisplayList) -> Result<(), RenderError> {
         let mesh = self.cache.tessellate(list);
         let mesh_frame = if list.meshes().is_empty() {
+            // Skipping the pass must not strand the last mesh scene's buffers.
+            self.mesh_cache.clear();
             crate::mesh_pipeline::MeshFrame::default()
         } else {
             self.queue.write_buffer(
@@ -259,6 +261,7 @@ impl CanvasSurface {
             );
             self.mesh_cache.prepare(
                 &self.device,
+                &self.queue,
                 &self.mesh_pipeline,
                 list.meshes(),
                 &self.camera,
