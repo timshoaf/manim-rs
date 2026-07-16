@@ -13,6 +13,10 @@
 //!   [`TessellationCache`].
 //! - [`camera`] — [`Camera2D`]: a scene rectangle → an NDC
 //!   view-projection matrix.
+//! - [`mesh_pipeline`] — the *second* render path: depth-tested, per-pixel
+//!   shaded, GPU-instanced triangle meshes drawn *under* the vector pass, with
+//!   their own generation-keyed [`MeshBufferCache`]. A display list with no
+//!   meshes never touches it. See `docs/design/12-mesh-pipeline.md`.
 //! - [`renderer`] — the wgpu [`GpuContext`],
 //!   [`Pipeline`], offscreen
 //!   [`TextureTarget`], and the high-level
@@ -54,6 +58,7 @@
 
 pub mod camera;
 pub mod layout;
+pub mod mesh_pipeline;
 pub mod renderer;
 pub mod tessellate;
 
@@ -78,6 +83,7 @@ pub mod preview;
 pub mod canvas;
 
 pub use camera::Camera2D;
+pub use mesh_pipeline::{MeshBufferCache, MeshPipeline, SceneLight};
 pub use renderer::{GpuContext, Pipeline, RenderError, TextureTarget};
 pub use tessellate::{FrameMesh, MeshData, TessellationCache, Vertex};
 

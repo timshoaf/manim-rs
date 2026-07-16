@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use manim_math::{Point, OUT};
 use slotmap::{DefaultKey, SlotMap};
 
-use crate::display::{DisplayList, DrawItem, Fill, LinearGradient, Stroke};
+use crate::display::{DisplayList, DrawItem, Fill, LinearGradient, MeshItem, Stroke};
 use crate::mobject::{
     apply_rotate_about, apply_scale_about, apply_shift, bbox_of, AnyId, BoundingBox, Mobject,
     MobjectData, MobjectId,
@@ -752,6 +752,13 @@ impl SceneState {
     /// Builds the display list: visible roots, then their families, in
     /// z-then-insertion order, skipping empty paths and fully-transparent styles.
     ///
+    /// Mesh mobjects (those reporting a
+    /// [`mesh_payload`](crate::mobject::Mobject::mesh_payload)) go to the list's
+    /// separate [`meshes`](DisplayList::meshes) channel instead, and emit no
+    /// [`DrawItem`]. Their world transform is already composed through the family
+    /// hierarchy for the same reason paths are: family ops mutate every member's
+    /// own data, and a mesh's transform rides on its path.
+    ///
     /// ```
     /// use manim_core::geometry::{Circle, Square};
     /// use manim_core::scene_state::SceneState;
@@ -769,6 +776,7 @@ impl SceneState {
     /// ```
     pub fn display_list(&self) -> DisplayList {
         let mut items: Vec<DrawItem> = Vec::new();
+        let mut meshes: Vec<MeshItem> = Vec::new();
         for root in self.iter_visible_roots() {
             for member in self.family(root) {
                 let entry = match self.arena.get(member.0) {
@@ -776,6 +784,20 @@ impl SceneState {
                     _ => continue,
                 };
                 let data = entry.mobject.data();
+                // A mesh mobject draws through the mesh pass only; its path
+                // carries the model transform, not geometry to tessellate.
+                if let Some(payload) = entry.mobject.mesh_payload() {
+                    meshes.push(MeshItem {
+                        mesh: payload.mesh,
+                        transform: payload.transform,
+                        material: payload.material,
+                        instances: payload.instances,
+                        height: payload.height,
+                        source: member,
+                        generation: data.generation,
+                    });
+                    continue;
+                }
                 if data.path.subpaths.iter().all(|s| s.curves.is_empty()) {
                     continue;
                 }
@@ -832,7 +854,7 @@ impl SceneState {
         // Stable sort by z-index; ties keep the visited (insertion/pre-order)
         // order.
         items.sort_by_key(|it| it.z_index);
-        DisplayList(items)
+        DisplayList::with_meshes(items, meshes)
     }
 
     // --- Layout (manim's `arrange` / `arrange_in_grid`) ---

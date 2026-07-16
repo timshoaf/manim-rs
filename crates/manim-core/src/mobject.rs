@@ -147,6 +147,18 @@ pub trait Mobject: 'static {
     fn as_any(&self) -> &dyn Any;
     /// Upcasts to `&mut dyn Any` for downcasting to the concrete type.
     fn as_any_mut(&mut self) -> &mut dyn Any;
+
+    /// This mobject's triangle-mesh geometry, if it draws through the mesh pass
+    /// rather than the 2D vector pass — `None` for every ordinary mobject.
+    ///
+    /// [`SceneState::display_list`](crate::scene_state::SceneState::display_list)
+    /// turns a returned payload into a [`MeshItem`](crate::display::MeshItem) and
+    /// emits **no** [`DrawItem`](crate::display::DrawItem) for the mobject.
+    /// Implement it by pairing [`MeshMobject`](crate::mesh::MeshMobject) with
+    /// `impl_mobject!($t, mesh)` rather than by hand.
+    fn mesh_payload(&self) -> Option<crate::mesh::MeshPayload> {
+        None
+    }
 }
 
 impl Clone for Box<dyn Mobject> {
@@ -214,9 +226,51 @@ impl dyn Mobject {
 /// let s = MyShape { data: MobjectData::default() };
 /// assert_eq!(s.data().z_index, 0);
 /// ```
+///
+/// # Mesh mobjects
+///
+/// The `mesh` arm additionally wires [`Mobject::mesh_payload`] up to the type's
+/// [`MeshMobject`](crate::mesh::MeshMobject) impl, putting it on the display
+/// list's mesh channel instead of the 2D vector pass:
+///
+/// ```
+/// use manim_core::impl_mobject;
+/// use manim_core::mesh::{MeshMaterial, MeshMobject, MeshPayload, TriMesh};
+/// use manim_core::mobject::{Mobject, MobjectData};
+/// use glam::Mat4;
+/// use std::sync::Arc;
+///
+/// #[derive(Clone)]
+/// struct MyMesh {
+///     data: MobjectData,
+///     geometry: Arc<TriMesh>,
+/// }
+/// impl_mobject!(MyMesh, mesh);
+///
+/// impl MeshMobject for MyMesh {
+///     fn payload(&self) -> MeshPayload {
+///         MeshPayload::new(Arc::clone(&self.geometry), Mat4::IDENTITY, MeshMaterial::default())
+///     }
+/// }
+///
+/// let m = MyMesh { data: MobjectData::default(), geometry: Arc::new(TriMesh::grid(2, 2)) };
+/// assert!(m.mesh_payload().is_some());
+/// ```
 #[macro_export]
 macro_rules! impl_mobject {
     ($t:ty) => {
+        $crate::impl_mobject!(@base $t);
+    };
+    ($t:ty, mesh) => {
+        $crate::impl_mobject!(@base $t,
+            fn mesh_payload(&self) -> ::std::option::Option<$crate::mesh::MeshPayload> {
+                ::std::option::Option::Some(
+                    <Self as $crate::mesh::MeshMobject>::payload(self),
+                )
+            }
+        );
+    };
+    (@base $t:ty $(, $extra:item)*) => {
         impl $crate::mobject::Mobject for $t {
             fn data(&self) -> &$crate::mobject::MobjectData {
                 &self.data
@@ -233,6 +287,7 @@ macro_rules! impl_mobject {
             fn as_any_mut(&mut self) -> &mut dyn ::std::any::Any {
                 self
             }
+            $($extra)*
         }
     };
 }

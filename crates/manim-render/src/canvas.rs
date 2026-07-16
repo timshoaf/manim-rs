@@ -30,7 +30,10 @@ use web_sys::HtmlCanvasElement;
 
 use crate::camera::Camera2D;
 use crate::layout::letterbox;
-use crate::renderer::{record_draw, Pipeline, RenderError, SAMPLE_COUNT};
+use crate::mesh_pipeline::{
+    create_depth_view, MeshBufferCache, MeshGlobals, MeshPipeline, SceneLight,
+};
+use crate::renderer::{record_draw_over, Pipeline, RenderError, SAMPLE_COUNT};
 use crate::tessellate::TessellationCache;
 
 /// Installs [`console_error_panic_hook`] so Rust panics surface in the browser
@@ -63,6 +66,15 @@ pub struct CanvasSurface {
     border_uniform: wgpu::Buffer,
     border_bind_group: wgpu::BindGroup,
     msaa_view: wgpu::TextureView,
+    /// The depth-tested mesh pass. Everything here stays idle — the depth
+    /// texture is allocated but never attached — until a display list actually
+    /// carries meshes.
+    mesh_pipeline: MeshPipeline,
+    mesh_cache: MeshBufferCache,
+    depth_view: wgpu::TextureView,
+    mesh_globals: wgpu::Buffer,
+    mesh_globals_bind_group: wgpu::BindGroup,
+    light: SceneLight,
     cache: TessellationCache,
     camera: Camera2D,
     aspect: f32,
@@ -139,6 +151,11 @@ impl CanvasSurface {
             make_camera_bind_group(&device, &pipeline, "canvas border");
         let msaa_view = make_msaa(&device, format, width, height);
 
+        let mesh_pipeline = MeshPipeline::new(&device, format, SAMPLE_COUNT);
+        let (mesh_globals, mesh_globals_bind_group) =
+            mesh_pipeline.make_globals(&device, "canvas mesh globals");
+        let depth_view = create_depth_view(&device, width, height, SAMPLE_COUNT);
+
         Ok(Self {
             surface,
             device,
@@ -152,6 +169,12 @@ impl CanvasSurface {
             border_uniform,
             border_bind_group,
             msaa_view,
+            mesh_pipeline,
+            mesh_cache: MeshBufferCache::new(),
+            depth_view,
+            mesh_globals,
+            mesh_globals_bind_group,
+            light: SceneLight::default(),
             cache: TessellationCache::new(),
             camera: Camera2D::from(config),
             aspect: config.frame_width / config.frame_height,
@@ -160,7 +183,8 @@ impl CanvasSurface {
         })
     }
 
-    /// Reconfigures the surface (and MSAA target) for a new canvas size.
+    /// Reconfigures the surface (and the MSAA + depth targets) for a new canvas
+    /// size.
     pub fn resize(&mut self, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
@@ -169,11 +193,22 @@ impl CanvasSurface {
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
         self.msaa_view = make_msaa(&self.device, self.surface_config.format, width, height);
+        self.depth_view = create_depth_view(&self.device, width, height, SAMPLE_COUNT);
     }
 
     /// Mutable access to the camera (pan/zoom/roll between frames).
     pub fn camera_mut(&mut self) -> &mut Camera2D {
         &mut self.camera
+    }
+
+    /// The directional light the mesh pass shades with.
+    pub fn light(&self) -> SceneLight {
+        self.light
+    }
+
+    /// Sets the directional light the mesh pass shades with.
+    pub fn set_light(&mut self, light: SceneLight) {
+        self.light = light;
     }
 
     /// Converts a pointer position in element (client) pixels to scene
@@ -203,6 +238,10 @@ impl CanvasSurface {
     /// Tessellates and draws `list` into the canvas, letterboxed with
     /// background-color bars.
     ///
+    /// A list carrying [`meshes`](DisplayList::meshes) runs the depth-tested
+    /// mesh pass first and composites the vector content over it; a list without
+    /// them draws exactly as it always has.
+    ///
     /// # Errors
     ///
     /// [`RenderError::Readback`] if the swapchain texture cannot be acquired for
@@ -210,6 +249,21 @@ impl CanvasSurface {
     /// reconfigured and skipped).
     pub fn render(&mut self, list: &DisplayList) -> Result<(), RenderError> {
         let mesh = self.cache.tessellate(list);
+        let mesh_frame = if list.meshes().is_empty() {
+            crate::mesh_pipeline::MeshFrame::default()
+        } else {
+            self.queue.write_buffer(
+                &self.mesh_globals,
+                0,
+                bytemuck::bytes_of(&MeshGlobals::new(&self.camera, self.light)),
+            );
+            self.mesh_cache.prepare(
+                &self.device,
+                &self.mesh_pipeline,
+                list.meshes(),
+                &self.camera,
+            )
+        };
 
         let view_proj = self.camera.view_proj().to_cols_array_2d();
         self.queue
@@ -235,6 +289,49 @@ impl CanvasSurface {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("canvas encoder"),
             });
+
+        // The mesh pass clears color + depth over the whole surface, then the
+        // vector pass loads its result instead of clearing. Skipped entirely
+        // when there are no meshes, so a 2-D frame is unchanged.
+        let drew_meshes = !mesh_frame.is_empty();
+        if drew_meshes {
+            let bg = self.background.premultiplied();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("canvas mesh pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: bg[0] as f64,
+                            g: bg[1] as f64,
+                            b: bg[2] as f64,
+                            a: bg[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if vp.w > 0.0 && vp.h > 0.0 {
+                pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+            }
+            mesh_frame.record(
+                &mut pass,
+                &self.mesh_pipeline,
+                &self.mesh_globals_bind_group,
+            );
+        }
+
         if let Some(zw) = self.zoom_window {
             // A magnifying inset: second pass with a zoom camera + border.
             let inset =
@@ -280,9 +377,10 @@ impl CanvasSurface {
                 inset,
                 out_w,
                 out_h,
+                drew_meshes,
             );
         } else {
-            record_draw(
+            record_draw_over(
                 &self.device,
                 &mut encoder,
                 &self.pipeline.pipeline,
@@ -292,6 +390,7 @@ impl CanvasSurface {
                 &mesh,
                 self.background,
                 Some(vp),
+                drew_meshes,
             );
         }
         self.queue.submit(Some(encoder.finish()));

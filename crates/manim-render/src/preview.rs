@@ -264,6 +264,7 @@ impl PreviewApp {
                 inset,
                 out_w,
                 out_h,
+                false,
             );
         } else {
             crate::renderer::record_draw(

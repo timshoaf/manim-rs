@@ -1,20 +1,24 @@
 //! The display-list contract between `manim-core` and a renderer.
 //!
 //! A [`DisplayList`] is a flat, z-ordered list of [`DrawItem`]s — resolved world
-//! -space paths with resolved fill/stroke paint. It is the *only* thing a
+//! -space paths with resolved fill/stroke paint — plus a parallel channel of
+//! [`MeshItem`]s for the depth-tested mesh pass. It is the *only* thing a
 //! renderer needs from the core, which keeps both sides independently testable:
 //! core tests assert on display lists, renderer golden-tests feed hand-built
-//! ones. See `docs/design/01-architecture.md`.
+//! ones. See `docs/design/01-architecture.md` and
+//! `docs/design/12-mesh-pipeline.md`.
 //!
 //! Build one with
 //! [`SceneState::display_list`](crate::scene_state::SceneState::display_list).
 
 use std::sync::Arc;
 
+use glam::Mat4;
 use manim_color::Color;
 use manim_math::path::Path;
 use manim_math::Point;
 
+use crate::mesh::{HeightPayload, Instance, MeshMaterial, TriMesh};
 use crate::mobject::AnyId;
 
 /// Raw RGBA8 pixel data for an [`ImagePaint`], row-major, 4 bytes per pixel.
@@ -204,21 +208,123 @@ pub struct DrawItem {
     pub generation: u64,
 }
 
-/// A flat, z-ordered list of [`DrawItem`]s: the core→render contract.
+/// One depth-tested triangle mesh to draw: geometry, placement, and appearance.
+///
+/// This is the mesh-pass counterpart of [`DrawItem`], carried on
+/// [`DisplayList`]'s separate [`meshes`](DisplayList::meshes) channel and drawn
+/// *before* it — see `docs/design/12-mesh-pipeline.md`. `source` and
+/// `generation` identify the mobject and its geometry revision, so a renderer
+/// caches GPU buffers keyed on `(source, generation)` exactly as it caches
+/// tessellation for a `DrawItem`.
+///
+/// The geometry sits behind an [`Arc`], so cloning a display list — which the
+/// timeline does per frame — never clones vertex data.
+///
+/// ```
+/// use manim_core::mesh::Mesh;
+/// use manim_core::scene_state::SceneState;
+/// let mut scene = SceneState::new();
+/// let ball = scene.add(Mesh::sphere());
+/// let dl = scene.display_list();
+/// let item = &dl.meshes()[0];
+/// assert_eq!(item.source, ball.erase());
+/// assert!(!item.is_translucent());
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshItem {
+    /// The shared geometry, in mobject-local space.
+    pub mesh: Arc<TriMesh>,
+    /// The local → world model matrix.
+    pub transform: Mat4,
+    /// The resolved surface appearance.
+    pub material: MeshMaterial,
+    /// Per-instance transforms/colors, drawn in one instanced call; `None` for
+    /// a single draw.
+    pub instances: Option<Arc<[Instance]>>,
+    /// Grid dimensions plus height data for vertex-shader displacement, or
+    /// `None` for undisplaced geometry.
+    pub height: Option<HeightPayload>,
+    /// The mobject this item came from.
+    pub source: AnyId,
+    /// The source mobject's geometry generation (GPU buffer cache key).
+    pub generation: u64,
+}
+
+impl MeshItem {
+    /// Whether this item belongs in the renderer's translucent queue: its
+    /// material is translucent, or any per-vertex color is.
+    ///
+    /// Opaque items depth-write and need no sorting; translucent ones draw after
+    /// them, depth-test read-only, sorted back-to-front.
+    ///
+    /// ```
+    /// use manim_core::mesh::{Mesh, MeshMaterial};
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_color::BLUE;
+    /// let mut scene = SceneState::new();
+    /// scene.add(Mesh::sphere().with_material(MeshMaterial::new(BLUE).with_opacity(0.5)));
+    /// assert!(scene.display_list().meshes()[0].is_translucent());
+    /// ```
+    pub fn is_translucent(&self) -> bool {
+        self.material.is_translucent()
+            || self
+                .mesh
+                .colors
+                .as_ref()
+                .is_some_and(|cs| cs.iter().any(|c| c.opacity() < 1.0))
+            || self
+                .instances
+                .as_ref()
+                .is_some_and(|xs| xs.iter().any(|i| i.color.opacity() < 1.0))
+    }
+}
+
+/// The core→render contract: a flat, z-ordered list of [`DrawItem`]s plus a
+/// parallel channel of [`MeshItem`]s.
+///
+/// The two channels are separate render paths, not one sorted list: a renderer
+/// draws the meshes first (depth-tested, per-pixel shaded), then the draw items
+/// over them (painter's algorithm, no depth). 2D vector content is annotation and
+/// belongs on top — CE's `add_fixed_in_frame_mobjects` semantics. See
+/// `docs/design/12-mesh-pipeline.md` §2.
+///
+/// The mesh channel is additive: a scene with no meshes produces exactly the
+/// display list it did before meshes existed. [`len`](Self::len) and
+/// [`is_empty`](Self::is_empty) count **draw items only**, for that reason; use
+/// [`meshes`](Self::meshes) for the other channel.
 ///
 /// ```
 /// use manim_core::geometry::Circle;
+/// use manim_core::mesh::Mesh;
 /// use manim_core::scene_state::SceneState;
 /// let mut scene = SceneState::new();
 /// scene.add(Circle::new());
+/// scene.add(Mesh::sphere());
 /// let dl = scene.display_list();
-/// assert_eq!(dl.len(), 1);
+/// assert_eq!(dl.len(), 1); // the circle
+/// assert_eq!(dl.meshes().len(), 1); // the sphere
 /// ```
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct DisplayList(pub Vec<DrawItem>);
+pub struct DisplayList(pub Vec<DrawItem>, pub Vec<MeshItem>);
 
 impl DisplayList {
-    /// The number of draw items.
+    /// A display list of draw items only.
+    ///
+    /// ```
+    /// use manim_core::display::DisplayList;
+    /// assert!(DisplayList::new(Vec::new()).is_empty());
+    /// ```
+    pub fn new(items: Vec<DrawItem>) -> Self {
+        Self(items, Vec::new())
+    }
+
+    /// A display list of both channels.
+    pub fn with_meshes(items: Vec<DrawItem>, meshes: Vec<MeshItem>) -> Self {
+        Self(items, meshes)
+    }
+
+    /// The number of draw items (the mesh channel is counted by
+    /// [`meshes`](Self::meshes)).
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -231,6 +337,16 @@ impl DisplayList {
     /// Iterates over the draw items in draw order.
     pub fn iter(&self) -> std::slice::Iter<'_, DrawItem> {
         self.0.iter()
+    }
+
+    /// The mesh items, drawn before the draw items.
+    pub fn meshes(&self) -> &[MeshItem] {
+        &self.1
+    }
+
+    /// Mutable access to the mesh items.
+    pub fn meshes_mut(&mut self) -> &mut Vec<MeshItem> {
+        &mut self.1
     }
 }
 

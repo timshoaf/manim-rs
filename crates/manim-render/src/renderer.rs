@@ -38,6 +38,7 @@ use manim_core::display::DisplayList;
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera2D;
+use crate::mesh_pipeline::{MeshBufferCache, MeshFrame, MeshGlobals, MeshPipeline, SceneLight};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::tessellate::TessellationCache;
 use crate::tessellate::{FrameMesh, Vertex};
@@ -226,6 +227,12 @@ impl GpuContext {
     /// [`new_async`](Self::new_async).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new_headless() -> Result<Self, RenderError> {
+        // Concurrent adapter/device creation hangs or crashes on some drivers
+        // (observed on NVIDIA when parallel test binaries race context
+        // creation), so native blocking creation is serialized process-wide.
+        // Recovers from a poisoned lock: a panicked creator doesn't hold state.
+        static CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = CREATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         pollster::block_on(Self::new_async())
     }
 
@@ -402,6 +409,38 @@ pub(crate) fn record_draw(
     background: Color,
     viewport: Option<crate::layout::Viewport>,
 ) {
+    record_draw_over(
+        device,
+        encoder,
+        pipeline,
+        msaa_view,
+        resolve_view,
+        bind_group,
+        mesh,
+        background,
+        viewport,
+        false,
+    );
+}
+
+/// [`record_draw`], plus the option to composite *over* what the MSAA target
+/// already holds instead of clearing it.
+///
+/// `load` is what lets the vector pass draw on top of a mesh pass that has
+/// already cleared the target and filled it with depth-tested geometry.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn record_draw_over(
+    device: &wgpu::Device,
+    encoder: &mut wgpu::CommandEncoder,
+    pipeline: &wgpu::RenderPipeline,
+    msaa_view: &wgpu::TextureView,
+    resolve_view: &wgpu::TextureView,
+    bind_group: &wgpu::BindGroup,
+    mesh: &FrameMesh,
+    background: Color,
+    viewport: Option<crate::layout::Viewport>,
+    load: bool,
+) {
     let bg = background.premultiplied();
     let buffers = (!mesh.indices.is_empty()).then(|| {
         let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -417,18 +456,23 @@ pub(crate) fn record_draw(
         (vb, ib)
     });
 
+    let load_op = if load {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(wgpu::Color {
+            r: bg[0] as f64,
+            g: bg[1] as f64,
+            b: bg[2] as f64,
+            a: bg[3] as f64,
+        })
+    };
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("manim-render pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: msaa_view,
             resolve_target: Some(resolve_view),
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: bg[0] as f64,
-                    g: bg[1] as f64,
-                    b: bg[2] as f64,
-                    a: bg[3] as f64,
-                }),
+                load: load_op,
                 store: wgpu::StoreOp::Store,
             },
         })],
@@ -477,6 +521,7 @@ pub(crate) fn record_draw_zoomed(
     inset: crate::layout::Viewport,
     out_w: u32,
     out_h: u32,
+    load: bool,
 ) {
     let bg = background.premultiplied();
     let make = |m: &FrameMesh| {
@@ -502,18 +547,23 @@ pub(crate) fn record_draw_zoomed(
     let sw = (inset.w.round() as u32).min(out_w.saturating_sub(sx));
     let sh = (inset.h.round() as u32).min(out_h.saturating_sub(sy));
 
+    let load_op = if load {
+        wgpu::LoadOp::Load
+    } else {
+        wgpu::LoadOp::Clear(wgpu::Color {
+            r: bg[0] as f64,
+            g: bg[1] as f64,
+            b: bg[2] as f64,
+            a: bg[3] as f64,
+        })
+    };
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some("manim-render zoom pass"),
         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
             view: msaa_view,
             resolve_target: Some(resolve_view),
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: bg[0] as f64,
-                    g: bg[1] as f64,
-                    b: bg[2] as f64,
-                    a: bg[3] as f64,
-                }),
+                load: load_op,
                 store: wgpu::StoreOp::Store,
             },
         })],
@@ -772,6 +822,19 @@ pub struct TextureTarget {
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
     image_pipeline: ImagePipeline,
+    /// The depth-tested mesh pass: pipelines, GPU buffer cache, depth
+    /// attachment, and the light it shades with. Untouched — not even bound —
+    /// by a frame whose display list has no meshes.
+    mesh_pipeline: MeshPipeline,
+    mesh_cache: MeshBufferCache,
+    depth_view: wgpu::TextureView,
+    light: SceneLight,
+    /// The mesh pass's `@group(0)` uniform, for the main camera and (for a zoom
+    /// window) the magnifying camera.
+    mesh_globals_buffer: wgpu::Buffer,
+    mesh_globals_bind_group: wgpu::BindGroup,
+    mesh_zoom_globals_buffer: wgpu::Buffer,
+    mesh_zoom_globals_bind_group: wgpu::BindGroup,
     texture_cache: std::collections::HashMap<manim_core::mobject::AnyId, CachedTexture>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -899,11 +962,27 @@ impl TextureTarget {
 
         let image_pipeline = ImagePipeline::new(device, &pipeline.bind_group_layout, TARGET_FORMAT);
 
+        let mesh_pipeline = MeshPipeline::new(device, TARGET_FORMAT, SAMPLE_COUNT);
+        let (mesh_globals_buffer, mesh_globals_bind_group) =
+            mesh_pipeline.make_globals(device, "manim-render mesh globals");
+        let (mesh_zoom_globals_buffer, mesh_zoom_globals_bind_group) =
+            mesh_pipeline.make_globals(device, "manim-render mesh zoom globals");
+        let depth_view =
+            crate::mesh_pipeline::create_depth_view(device, width, height, SAMPLE_COUNT);
+
         Self {
             device: device.clone(),
             queue: queue.clone(),
             pipeline: pipeline.pipeline.clone(),
             image_pipeline,
+            mesh_pipeline,
+            mesh_cache: MeshBufferCache::new(),
+            depth_view,
+            light: SceneLight::default(),
+            mesh_globals_buffer,
+            mesh_globals_bind_group,
+            mesh_zoom_globals_buffer,
+            mesh_zoom_globals_bind_group,
             texture_cache: std::collections::HashMap::new(),
             uniform_buffer,
             bind_group,
@@ -1004,9 +1083,26 @@ impl TextureTarget {
         (self.width, self.height)
     }
 
+    /// The scene light the mesh pass shades with.
+    pub fn light(&self) -> SceneLight {
+        self.light
+    }
+
+    /// Sets the scene light the mesh pass shades with. Has no effect on the 2-D
+    /// vector pass, which carries its color per vertex.
+    pub fn set_light(&mut self, light: SceneLight) {
+        self.light = light;
+    }
+
     /// Renders a z-ordered list of `FrameOp`s (vector batches interleaved with
     /// textured image quads) under `camera` over `background`, returning the
     /// pixels.
+    ///
+    /// `meshes` is the display list's separate mesh channel, drawn *first* in a
+    /// depth-tested pass beneath the vector content (see
+    /// `docs/design/12-mesh-pipeline.md`). Pass an empty slice for a pure 2-D
+    /// frame: the mesh pass is then skipped entirely and the output is
+    /// byte-identical to the pre-mesh renderer.
     ///
     /// # Errors
     ///
@@ -1014,6 +1110,7 @@ impl TextureTarget {
     pub fn render_ops(
         &mut self,
         ops: &[crate::tessellate::FrameOp],
+        meshes: &[manim_core::display::MeshItem],
         camera: &Camera2D,
         background: Color,
     ) -> Result<RgbaImage, RenderError> {
@@ -1035,13 +1132,96 @@ impl TextureTarget {
         }
         self.texture_cache.retain(|id, _| present.contains(id));
 
+        let mesh_frame = self.prepare_meshes(meshes, camera);
         let gpu_ops = self.build_gpu_ops(ops);
         let mut encoder = self.begin_ops_encoder();
+        let drew_meshes = self.record_mesh_pass(
+            &mut encoder,
+            &mesh_frame,
+            background,
+            &self.mesh_globals_bind_group,
+            None,
+        );
         {
-            let mut pass = self.begin_ops_pass(&mut encoder, background);
+            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes);
             self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
         }
         self.copy_and_read(encoder)
+    }
+
+    /// Uploads what the mesh channel needs and splits its queues under `camera`.
+    /// Returns an empty frame — and touches nothing — for a mesh-less list.
+    fn prepare_meshes(
+        &mut self,
+        meshes: &[manim_core::display::MeshItem],
+        camera: &Camera2D,
+    ) -> MeshFrame {
+        if meshes.is_empty() {
+            return MeshFrame::default();
+        }
+        self.queue.write_buffer(
+            &self.mesh_globals_buffer,
+            0,
+            bytemuck::bytes_of(&MeshGlobals::new(camera, self.light)),
+        );
+        self.mesh_cache
+            .prepare(&self.device, &self.mesh_pipeline, meshes, camera)
+    }
+
+    /// Records the mesh pass — clearing color *and* depth, drawing the opaque
+    /// queue then the translucent one — and reports whether it ran.
+    ///
+    /// A `false` return means the caller's vector pass must clear the color
+    /// target itself, exactly as it always did; a `true` return means the mesh
+    /// pass already cleared it and the vector pass must `Load`. The pass leaves
+    /// its result in the MSAA texture without resolving: the vector pass that
+    /// follows loads that texture and resolves once, at the end.
+    fn record_mesh_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &MeshFrame,
+        background: Color,
+        globals: &wgpu::BindGroup,
+        viewport: Option<crate::layout::Viewport>,
+    ) -> bool {
+        if frame.is_empty() {
+            return false;
+        }
+        let bg = background.premultiplied();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("manim-render mesh pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.msaa_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: bg[0] as f64,
+                        g: bg[1] as f64,
+                        b: bg[2] as f64,
+                        a: bg[3] as f64,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        if let Some(vp) = viewport {
+            if vp.w <= 0.0 || vp.h <= 0.0 {
+                return false;
+            }
+            pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+        }
+        frame.record(&mut pass, &self.mesh_pipeline, globals);
+        true
     }
 
     /// Renders `ops` with the `main` camera full-frame, then a second time with
@@ -1052,6 +1232,9 @@ impl TextureTarget {
     /// identical scene magnified. The border is drawn in NDC with an identity
     /// matrix (via the shared HUD uniform).
     ///
+    /// `meshes` runs the same sequence: a full-frame mesh pass under `main`,
+    /// then a scissored one under `zoom`, both beneath their vector content.
+    ///
     /// # Errors
     ///
     /// As [`render`](Self::render).
@@ -1059,6 +1242,7 @@ impl TextureTarget {
     pub fn render_ops_zoomed(
         &mut self,
         ops: &[crate::tessellate::FrameOp],
+        meshes: &[manim_core::display::MeshItem],
         main: &Camera2D,
         zoom: &Camera2D,
         inset: crate::layout::Viewport,
@@ -1096,6 +1280,14 @@ impl TextureTarget {
         }
         self.texture_cache.retain(|id, _| present.contains(id));
 
+        let mesh_frame = self.prepare_meshes(meshes, main);
+        if !mesh_frame.is_empty() {
+            self.queue.write_buffer(
+                &self.mesh_zoom_globals_buffer,
+                0,
+                bytemuck::bytes_of(&MeshGlobals::new(zoom, self.light)),
+            );
+        }
         let gpu_ops = self.build_gpu_ops(ops);
         let border = border_mesh_ndc(inset, self.width, self.height, border_px, border_color);
         let border_gpu = self.build_gpu_ops(&[FrameOp::Vector(border)]);
@@ -1107,20 +1299,79 @@ impl TextureTarget {
         let sh = (inset.h.round() as u32).min(self.height.saturating_sub(sy));
 
         let mut encoder = self.begin_ops_encoder();
-        {
-            let mut pass = self.begin_ops_pass(&mut encoder, background);
-            // Main pass, full frame.
+        if mesh_frame.is_empty() {
+            // The original, mesh-free path, verbatim: one pass for the main
+            // draw, the magnified inset, and the border. Every zoom golden
+            // guards these exact commands.
+            let mut pass = self.begin_ops_pass(&mut encoder, background, false);
             self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
-            // Zoom pass, confined to the inset.
             if sw > 0 && sh > 0 {
                 pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
                 pass.set_scissor_rect(sx, sy, sw, sh);
                 self.record_ops(&mut pass, &gpu_ops, &self.zoom_bind_group);
-                // Reset to full frame for the border.
                 pass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
                 pass.set_scissor_rect(0, 0, self.width, self.height);
                 self.record_ops(&mut pass, &border_gpu, &self.hud_bind_group);
             }
+            drop(pass);
+            return self.copy_and_read(encoder);
+        }
+
+        // With meshes the vector pass has to split, because the inset's mesh
+        // pass must land between the main vector draw and the magnified one.
+        self.record_mesh_pass(
+            &mut encoder,
+            &mesh_frame,
+            background,
+            &self.mesh_globals_bind_group,
+            None,
+        );
+        {
+            let mut pass = self.begin_ops_pass(&mut encoder, background, true);
+            self.record_ops(&mut pass, &gpu_ops, &self.bind_group);
+        }
+        if sw > 0 && sh > 0 {
+            // The inset re-runs the same sequence, scissored and magnified. It
+            // needs its own mesh pass: the depth buffer must be re-cleared for
+            // the zoom camera's geometry, and the color target must not be.
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("manim-render mesh zoom pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.msaa_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &self.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(1.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
+                pass.set_scissor_rect(sx, sy, sw, sh);
+                mesh_frame.record(
+                    &mut pass,
+                    &self.mesh_pipeline,
+                    &self.mesh_zoom_globals_bind_group,
+                );
+            }
+            let mut pass = self.begin_ops_pass(&mut encoder, background, true);
+            pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
+            pass.set_scissor_rect(sx, sy, sw, sh);
+            self.record_ops(&mut pass, &gpu_ops, &self.zoom_bind_group);
+            // Reset to full frame for the border.
+            pass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, self.width, self.height);
+            self.record_ops(&mut pass, &border_gpu, &self.hud_bind_group);
         }
         self.copy_and_read(encoder)
     }
@@ -1132,6 +1383,9 @@ impl TextureTarget {
     /// The two camera uniforms (`view_proj` and `ortho_view_proj`) let HUD items
     /// stay flat and unmoving while the world orbits.
     ///
+    /// `meshes` draws first, in its own depth-tested pass: the full frame order
+    /// is mesh → vector world → HUD.
+    ///
     /// # Errors
     ///
     /// As [`render`](Self::render).
@@ -1139,6 +1393,7 @@ impl TextureTarget {
         &mut self,
         world: &[crate::tessellate::FrameOp],
         hud: &[crate::tessellate::FrameOp],
+        meshes: &[manim_core::display::MeshItem],
         camera: &Camera2D,
         background: Color,
     ) -> Result<RgbaImage, RenderError> {
@@ -1169,11 +1424,19 @@ impl TextureTarget {
         }
         self.texture_cache.retain(|id, _| present.contains(id));
 
+        let mesh_frame = self.prepare_meshes(meshes, camera);
         let world_gpu = self.build_gpu_ops(world);
         let hud_gpu = self.build_gpu_ops(hud);
         let mut encoder = self.begin_ops_encoder();
+        let drew_meshes = self.record_mesh_pass(
+            &mut encoder,
+            &mesh_frame,
+            background,
+            &self.mesh_globals_bind_group,
+            None,
+        );
         {
-            let mut pass = self.begin_ops_pass(&mut encoder, background);
+            let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes);
             self.record_ops(&mut pass, &world_gpu, &self.bind_group);
             self.record_ops(&mut pass, &hud_gpu, &self.hud_bind_group);
         }
@@ -1188,25 +1451,37 @@ impl TextureTarget {
             })
     }
 
-    /// Begins the clear-and-draw pass into the MSAA target.
+    /// Begins the vector draw pass into the MSAA target, resolving to the color
+    /// target.
+    ///
+    /// `load` preserves what is already in the MSAA texture instead of clearing
+    /// to `background` — that is how the vector pass composites *over* a mesh
+    /// pass that already cleared and drew. The pass carries no depth attachment
+    /// either way: 2-D content is annotation and always paints on top.
     fn begin_ops_pass<'e>(
         &self,
         encoder: &'e mut wgpu::CommandEncoder,
         background: Color,
+        load: bool,
     ) -> wgpu::RenderPass<'e> {
         let bg = background.premultiplied();
+        let load_op = if load {
+            wgpu::LoadOp::Load
+        } else {
+            wgpu::LoadOp::Clear(wgpu::Color {
+                r: bg[0] as f64,
+                g: bg[1] as f64,
+                b: bg[2] as f64,
+                a: bg[3] as f64,
+            })
+        };
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("manim-render ops pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &self.msaa_view,
                 resolve_target: Some(&self.color_view),
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: bg[0] as f64,
-                        g: bg[1] as f64,
-                        b: bg[2] as f64,
-                        a: bg[3] as f64,
-                    }),
+                    load: load_op,
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -1485,6 +1760,28 @@ impl OffscreenRenderer {
         &mut self.camera
     }
 
+    /// The directional light the mesh pass shades with.
+    pub fn light(&self) -> SceneLight {
+        self.target.light()
+    }
+
+    /// Sets the directional light the mesh pass shades with; 2-D vector content
+    /// is unaffected.
+    ///
+    /// ```no_run
+    /// use manim_core::config::Config;
+    /// use manim_render::mesh_pipeline::SceneLight;
+    /// use manim_render::renderer::OffscreenRenderer;
+    /// let mut r = OffscreenRenderer::new(&Config::low()).unwrap();
+    /// // Dim the key light's ambient fill by half.
+    /// let mut light = r.light();
+    /// light.ambient = 0.5;
+    /// r.set_light(light);
+    /// ```
+    pub fn set_light(&mut self, light: SceneLight) {
+        self.target.set_light(light);
+    }
+
     /// Tessellates and renders `list` to an [`RgbaImage`] with the current
     /// camera and background.
     ///
@@ -1500,12 +1797,14 @@ impl OffscreenRenderer {
             return self.target.render_ops_layered(
                 &frame.world,
                 &frame.hud,
+                list.meshes(),
                 &self.camera,
                 self.background,
             );
         }
         let ops = self.cache.tessellate_ops(list);
-        self.target.render_ops(&ops, &self.camera, self.background)
+        self.target
+            .render_ops(&ops, list.meshes(), &self.camera, self.background)
     }
 
     /// Renders a [`Frame`](manim_core::scene::Frame), following its camera.
@@ -1537,6 +1836,7 @@ impl OffscreenRenderer {
             return self.target.render_ops_layered(
                 &layered.world,
                 &layered.hud,
+                frame.display_list.meshes(),
                 &self.camera,
                 self.background,
             );
@@ -1562,6 +1862,7 @@ impl OffscreenRenderer {
             };
             return self.target.render_ops_zoomed(
                 &ops,
+                frame.display_list.meshes(),
                 &self.camera,
                 &zoom_cam,
                 inset,
@@ -1570,7 +1871,12 @@ impl OffscreenRenderer {
                 self.background,
             );
         }
-        self.target.render_ops(&ops, &self.camera, self.background)
+        self.target.render_ops(
+            &ops,
+            frame.display_list.meshes(),
+            &self.camera,
+            self.background,
+        )
     }
 
     /// Renders `list` and writes it to `path` as a PNG.

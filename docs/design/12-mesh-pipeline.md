@@ -117,9 +117,15 @@ frames to today (guarded by existing goldens).
   its own pass, so existing pipelines don't even need a depth-stencil state.
 - **Vertex layout** (interleaved, 48 B): `position: vec3, normal: vec3,
   color: vec4 (premultiplied linear), uv: vec2`.
-- **Uniforms** (one bind group): `view_proj: mat4` — *reusing
-  `Camera2D::view_proj()`*, which already builds `perspective · look_at`
-  from `ThreeDParams { phi, theta, gamma, focal_distance }` — plus
+- **Uniforms** (one bind group): `view_proj: mat4` — via
+  `Camera2D::mesh_view_proj()`. Under a 3D camera this is identical to
+  `view_proj()` (`perspective · look_at` from `ThreeDParams { phi, theta,
+  gamma, focal_distance }`). Under a **2D** camera the plain orthographic
+  matrix passes world `z` through untouched — fine for the depth-less vector
+  pass, but with a depth attachment anything off `z = 0` falls outside
+  `[0, 1]` NDC and clips away entirely; `mesh_view_proj` therefore maps
+  `z ∈ ±16` → depth `[1, 0]` while leaving x/y bit-identical to the vector
+  pass, so meshes render (and align) under 2D cameras too — plus
   `camera_pos: vec3`, `light_dir: vec3`, `ambient: f32`. The scene light is a
   single directional light defaulting to CE's over-the-shoulder key light;
   configurable on `Config`/scene later without shader changes.

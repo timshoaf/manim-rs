@@ -13,6 +13,18 @@ use manim_core::camera::ThreeDParams;
 use manim_core::config::Config;
 use manim_math::{Point, ORIGIN};
 
+/// How far out along `+z` a 2-D (orthographic) camera's notional eye sits, for
+/// the shading terms that need a view direction. It matches
+/// [`ThreeDParams`]'s default focal distance, so a mesh shaded under a 2-D
+/// camera looks like the same mesh at `phi = 0` in 3-D.
+const DEFAULT_ORTHO_EYE_DISTANCE: f32 = 16.0;
+
+/// The half-depth, in scene units, that a 2-D camera's mesh pass keeps: world
+/// `z` outside `±16` is clipped. It matches
+/// [`DEFAULT_ORTHO_EYE_DISTANCE`], so a mesh visible under the 2-D camera is
+/// exactly one that would be in front of the equivalent 3-D camera at `phi = 0`.
+pub const ORTHO_DEPTH_RANGE: f32 = DEFAULT_ORTHO_EYE_DISTANCE;
+
 /// A render camera over a slice of scene space (2-D ortho or 3-D perspective).
 ///
 /// ```
@@ -76,9 +88,58 @@ impl Camera2D {
         }
     }
 
+    /// The view-projection the **mesh pass** uses: identical to
+    /// [`view_proj`](Self::view_proj) in 3-D, but in 2-D it also maps depth into
+    /// the `[0, 1]` NDC z range wgpu clips against.
+    ///
+    /// [`ortho_view_proj`](Self::ortho_view_proj) passes world `z` through
+    /// untouched, which is exactly right for the vector pass — it has no depth
+    /// attachment, so `z` only ever fed the (unused) depth output. The moment a
+    /// mesh is drawn with a real depth buffer, though, anything off the `z = 0`
+    /// plane falls outside `[0, 1]` and is clipped away entirely. This maps
+    /// `z ∈ [-`[`ORTHO_DEPTH_RANGE`]`, +`[`ORTHO_DEPTH_RANGE`]`]` onto
+    /// `[1, 0]` (nearer is smaller, matching the `LessEqual` depth test) and
+    /// leaves x/y identical, so meshes and vector content still line up exactly.
+    ///
+    /// ```
+    /// use manim_render::camera::Camera2D;
+    /// use manim_math::{ORIGIN, Point};
+    ///
+    /// let cam = Camera2D {
+    ///     frame_center: ORIGIN,
+    ///     frame_width: 8.0,
+    ///     frame_height: 8.0,
+    ///     rotation: 0.0,
+    ///     three_d: None,
+    /// };
+    /// let m = cam.mesh_view_proj();
+    /// // x/y map exactly as the 2-D camera always did.
+    /// let c = m.project_point3(Point::new(4.0, 4.0, 0.0));
+    /// assert!((c.x - 1.0).abs() < 1e-6 && (c.y - 1.0).abs() < 1e-6);
+    /// // The z = 0 plane sits mid-depth, and nearer geometry gets a smaller z.
+    /// assert!((c.z - 0.5).abs() < 1e-6);
+    /// assert!(m.project_point3(Point::new(0.0, 0.0, 2.0)).z < 0.5);
+    /// ```
+    pub fn mesh_view_proj(&self) -> Mat4 {
+        match self.three_d {
+            Some(p) => self.perspective_proj(&p) * self.view_matrix(),
+            None => {
+                // Nearer (larger world z) must give a smaller NDC z, hence the
+                // negative scale; the +0.5 recenters the range on the z=0 plane.
+                let depth = Mat4::from_translation(Vec3::new(0.0, 0.0, 0.5))
+                    * Mat4::from_scale(Vec3::new(1.0, 1.0, -0.5 / ORTHO_DEPTH_RANGE));
+                depth * self.ortho_view_proj()
+            }
+        }
+    }
+
     /// The orthographic view-projection, mapping the frame rectangle onto
     /// `[-1, 1]²` NDC (y-up). Used for 2-D content and for `fixed_in_frame` HUD
     /// overlays under a 3-D camera.
+    ///
+    /// Depth is passed through unchanged — see
+    /// [`mesh_view_proj`](Self::mesh_view_proj) for why the mesh pass needs a
+    /// different matrix.
     pub fn ortho_view_proj(&self) -> Mat4 {
         let scale = Mat4::from_scale(Vec3::new(
             2.0 / self.frame_width,
@@ -100,6 +161,41 @@ impl Camera2D {
                 Mat4::look_at_rh(eye, self.frame_center, self.up(&p))
             }
             None => Mat4::from_translation(-self.frame_center),
+        }
+    }
+
+    /// The camera eye in world space — where the viewer is.
+    ///
+    /// The mesh pass needs this for its specular half-vector and for the
+    /// two-sided normal flip (see [`mesh_pipeline`](crate::mesh_pipeline)). In
+    /// 3-D it is the orbit position; in 2-D there is no eye, so this reports the
+    /// point the orthographic camera looks *from* — one focal distance out along
+    /// `+z`, which gives a sensible view direction for shading a mesh under a
+    /// flat camera.
+    ///
+    /// ```
+    /// use manim_core::camera::ThreeDParams;
+    /// use manim_render::camera::Camera2D;
+    /// use manim_math::ORIGIN;
+    ///
+    /// let mut cam = Camera2D {
+    ///     frame_center: ORIGIN,
+    ///     frame_width: 8.0,
+    ///     frame_height: 8.0,
+    ///     rotation: 0.0,
+    ///     three_d: None,
+    /// };
+    /// // 2-D: straight out along +z.
+    /// assert!(cam.eye_position().z > 0.0);
+    /// // 3-D: on the orbit sphere, one focal distance from the frame center.
+    /// let p = ThreeDParams::default();
+    /// cam.three_d = Some(p);
+    /// assert!((cam.eye_position().length() - p.focal_distance).abs() < 1e-4);
+    /// ```
+    pub fn eye_position(&self) -> Vec3 {
+        match self.three_d {
+            Some(p) => self.eye(&p),
+            None => self.frame_center + Vec3::Z * DEFAULT_ORTHO_EYE_DISTANCE,
         }
     }
 
@@ -239,6 +335,77 @@ mod tests {
         let py = cam.view_proj().project_point3(Point::new(0.0, 1.0, 0.0));
         assert!(px.x > 0.0, "px.x = {}", px.x);
         assert!(py.y > 0.0, "py.y = {}", py.y);
+    }
+
+    #[test]
+    fn mesh_view_proj_keeps_2d_geometry_inside_the_depth_range() {
+        // The regression this matrix exists for: with the plain ortho matrix a
+        // mesh at z = 2 lands at NDC z = 2 and is clipped away entirely once the
+        // mesh pass attaches a depth buffer.
+        let cam = cam_2d(Point::ZERO, 8.0, 8.0, 0.0);
+        assert_eq!(
+            cam.ortho_view_proj()
+                .project_point3(Point::new(0.0, 0.0, 2.0))
+                .z,
+            2.0
+        );
+
+        let m = cam.mesh_view_proj();
+        for z in [-ORTHO_DEPTH_RANGE, -2.0, 0.0, 2.0, ORTHO_DEPTH_RANGE] {
+            let ndc = m.project_point3(Point::new(0.0, 0.0, z));
+            assert!(
+                (0.0..=1.0).contains(&ndc.z),
+                "world z {z} → NDC z {} is outside the clip range",
+                ndc.z
+            );
+        }
+        // Nearer geometry (larger world z) must come out with a smaller NDC z,
+        // so the LessEqual depth test keeps it.
+        let near = m.project_point3(Point::new(0.0, 0.0, 2.0)).z;
+        let far = m.project_point3(Point::new(0.0, 0.0, -2.0)).z;
+        assert!(near < far, "near {near} should test closer than far {far}");
+    }
+
+    #[test]
+    fn mesh_view_proj_matches_view_proj_in_3d() {
+        // In 3-D the perspective matrix already produces a [0, 1] NDC z, so the
+        // mesh pass and the vector pass share one matrix exactly.
+        let mut cam = cam_2d(Point::ZERO, 8.0, 8.0, 0.0);
+        cam.three_d = Some(ThreeDParams::default());
+        assert_eq!(cam.mesh_view_proj(), cam.view_proj());
+    }
+
+    #[test]
+    fn mesh_view_proj_leaves_xy_untouched_in_2d() {
+        // Meshes and vector content must land on the same pixels.
+        let cam = cam_2d(Point::new(1.0, 2.0, 0.0), 8.0, 4.0, 0.3);
+        let mesh = cam.mesh_view_proj();
+        let vector = cam.view_proj();
+        for p in [
+            Point::new(3.0, 1.0, 0.0),
+            Point::new(-2.0, 4.0, 1.5),
+            Point::new(0.0, 0.0, -3.0),
+        ] {
+            let a = mesh.project_point3(p);
+            let b = vector.project_point3(p);
+            assert!((a.x - b.x).abs() < 1e-6, "x: {} vs {}", a.x, b.x);
+            assert!((a.y - b.y).abs() < 1e-6, "y: {} vs {}", a.y, b.y);
+        }
+    }
+
+    #[test]
+    fn eye_position_is_the_orbit_point_in_3d() {
+        let mut cam = cam_2d(Point::new(1.0, 0.0, 0.0), 8.0, 8.0, 0.0);
+        assert_eq!(
+            cam.eye_position(),
+            Point::new(1.0, 0.0, DEFAULT_ORTHO_EYE_DISTANCE)
+        );
+
+        let p = ThreeDParams::default();
+        cam.three_d = Some(p);
+        let eye = cam.eye_position();
+        // On the orbit sphere, one focal distance from the frame center.
+        assert!((eye.distance(cam.frame_center) - p.focal_distance).abs() < 1e-3);
     }
 
     #[test]

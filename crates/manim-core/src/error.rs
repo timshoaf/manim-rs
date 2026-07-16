@@ -29,6 +29,16 @@ pub enum CoreError {
     #[error("scene construction failed: {0}")]
     Construct(String),
 
+    /// Two meshes could not be combined because their topology differs, or a
+    /// per-vertex buffer did not match its mesh's vertex count.
+    ///
+    /// Returned by [`TriMesh::lerp`](crate::mesh::TriMesh::lerp) and the
+    /// [`HeightField`](crate::mesh::HeightField) constructors, which reject a
+    /// mismatch rather than produce geometry a renderer would read out of
+    /// bounds.
+    #[error("mesh topology mismatch: {0}")]
+    MeshTopology(String),
+
     /// A text/typesetting operation failed (e.g. manim-text's `MathError`).
     ///
     /// The originating error is preserved as the [`source`](std::error::Error::source),

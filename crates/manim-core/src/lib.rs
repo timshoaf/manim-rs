@@ -33,6 +33,7 @@
 //!   handles ([`MobjectId`] / [`AnyId`]), and [`BoundingBox`].
 //! - [`scene_state`] — the [`SceneState`] arena and family-aware transforms.
 //! - [`display`] — the [`DisplayList`] core→render contract.
+//! - [`mesh`] — depth-tested triangle meshes ([`Mesh`], [`Surface3D`]).
 //! - [`geometry`] — the concrete shape catalog (Circle, Square, Line, Arrow, …).
 //! - [`config`] — scene [`Config`].
 
@@ -47,6 +48,7 @@ pub mod error;
 pub mod geometry;
 pub mod graphing;
 pub mod image_mobject;
+pub mod mesh;
 pub mod mobject;
 pub mod network;
 pub mod scene;
@@ -61,8 +63,9 @@ pub mod vector_space;
 pub use animation::{AnimConfig, Animation, IntoAnimations};
 pub use camera::{Camera2D, CameraFrame};
 pub use config::Config;
-pub use display::{DisplayList, DrawItem, Fill, Stroke};
+pub use display::{DisplayList, DrawItem, Fill, MeshItem, Stroke};
 pub use error::{CoreError, Result};
+pub use mesh::{Mesh, MeshMaterial, Shading, Surface3D, TriMesh};
 pub use mobject::{AnyId, BoundingBox, Buildable, Mobject, MobjectData, MobjectExt, MobjectId};
 pub use scene::{Frame, Scene, SceneBuilder};
 pub use scene_state::{SceneState, UpdaterCtx};
