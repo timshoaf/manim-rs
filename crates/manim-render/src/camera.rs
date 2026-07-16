@@ -21,7 +21,7 @@ const DEFAULT_ORTHO_EYE_DISTANCE: f32 = 16.0;
 
 /// The half-depth, in scene units, that a 2-D camera's mesh pass keeps: world
 /// `z` outside `±16` is clipped. It matches
-/// [`DEFAULT_ORTHO_EYE_DISTANCE`], so a mesh visible under the 2-D camera is
+/// `DEFAULT_ORTHO_EYE_DISTANCE`, so a mesh visible under the 2-D camera is
 /// exactly one that would be in front of the equivalent 3-D camera at `phi = 0`.
 pub const ORTHO_DEPTH_RANGE: f32 = DEFAULT_ORTHO_EYE_DISTANCE;
 
