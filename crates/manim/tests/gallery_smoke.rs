@@ -39,6 +39,13 @@ include_example!(bar_chart_race, "../examples/bar_chart_race.rs");
 include_example!(matrix_table, "../examples/matrix_table.rs");
 include_example!(implicit_and_field, "../examples/implicit_and_field.rs");
 include_example!(graph_layouts, "../examples/graph_layouts.rs");
+include_example!(mesh_surface_rotate, "../examples/mesh_surface_rotate.rs");
+include_example!(mesh_molecule, "../examples/mesh_molecule.rs");
+include_example!(
+    mesh_heightfield_wave,
+    "../examples/mesh_heightfield_wave.rs"
+);
+include_example!(mesh_morph, "../examples/mesh_morph.rs");
 #[cfg(feature = "code")]
 include_example!(code_highlight, "../examples/code_highlight.rs");
 
@@ -54,6 +61,27 @@ fn assert_constructs(name: &str, builder: &dyn SceneBuilder) {
     assert!(
         !scene.state().display_list().0.is_empty(),
         "{name}: expected a non-empty display list"
+    );
+}
+
+/// Builds a *mesh* example, asserting a positive duration and at least
+/// `n_meshes` items on the display list's mesh channel.
+///
+/// The 2D assertion above does not apply to these: a mesh mobject emits a
+/// `MeshItem` and never a `DrawItem`, so a purely-mesh scene's `DrawItem` list is
+/// legitimately empty (that is the property that keeps no-mesh scenes
+/// byte-identical — see `docs/design/12-mesh-pipeline.md`).
+fn assert_mesh_constructs(name: &str, builder: &dyn SceneBuilder, n_meshes: usize) {
+    let scene = Scene::build(builder, Config::low())
+        .unwrap_or_else(|e| panic!("{name} failed to construct: {e:?}"));
+    assert!(
+        scene.total_duration() > 0.0,
+        "{name}: expected a positive timeline duration"
+    );
+    let meshes = scene.state().display_list().meshes().len();
+    assert_eq!(
+        meshes, n_meshes,
+        "{name}: expected {n_meshes} mesh item(s) on the display list, got {meshes}"
     );
 }
 
@@ -146,6 +174,38 @@ fn implicit_and_field_constructs() {
 #[test]
 fn graph_layouts_constructs() {
     assert_constructs("graph_layouts", &graph_layouts::GraphLayouts);
+}
+
+#[test]
+fn mesh_surface_rotate_constructs() {
+    // One Surface3D.
+    assert_mesh_constructs(
+        "mesh_surface_rotate",
+        &mesh_surface_rotate::MeshSurfaceRotate,
+        1,
+    );
+}
+
+#[test]
+fn mesh_molecule_constructs() {
+    // Instanced atoms + instanced bonds + the translucent bubble.
+    assert_mesh_constructs("mesh_molecule", &mesh_molecule::MeshMolecule, 3);
+}
+
+#[test]
+fn mesh_heightfield_wave_constructs() {
+    // One HeightField.
+    assert_mesh_constructs(
+        "mesh_heightfield_wave",
+        &mesh_heightfield_wave::MeshHeightfieldWave,
+        1,
+    );
+}
+
+#[test]
+fn mesh_morph_constructs() {
+    // One Surface3D, morphed through the sheet → cylinder → torus chain.
+    assert_mesh_constructs("mesh_morph", &mesh_morph::MeshMorph, 1);
 }
 
 #[cfg(feature = "code")]

@@ -90,9 +90,14 @@ impl Clone for Entry {
 /// assert!((scene[circle].bounding_box().width() - 2.0).abs() < 1e-4);
 /// let _ = square;
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct SceneState {
     arena: SlotMap<DefaultKey, Entry>,
+    /// This arena's process-unique stamp; see [`SceneState::arena`].
+    ///
+    /// Deliberately **preserved by `Clone`**: timeline snapshots are clones, and
+    /// a seek must keep hitting the renderer's caches.
+    arena_id: u64,
     /// Top-level mobjects (no parent), in insertion order.
     roots: Vec<DefaultKey>,
     /// Saved mobject snapshots for `save_state` / `Restore`.
@@ -106,6 +111,32 @@ pub struct SceneState {
     camera: crate::camera::Camera2D,
 }
 
+/// Hands out [`SceneState::arena`] stamps.
+///
+/// Starts at 1 so no scene ever collides with
+/// [`ANONYMOUS_ARENA`](crate::display::ANONYMOUS_ARENA). Mirrors the global
+/// generation counter in [`mobject`](crate::mobject).
+static ARENA: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl Default for SceneState {
+    /// An empty scene with a fresh [`arena`](Self::arena) stamp.
+    ///
+    /// Hand-written rather than derived: a derived `Default` would zero the
+    /// stamp, so every scene would claim to be the same arena — the exact
+    /// collision the stamp exists to prevent.
+    fn default() -> Self {
+        Self {
+            arena: SlotMap::new(),
+            arena_id: ARENA.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            roots: Vec::new(),
+            saved_states: HashMap::new(),
+            updaters: Vec::new(),
+            targets: HashMap::new(),
+            camera: crate::camera::Camera2D::default(),
+        }
+    }
+}
+
 impl SceneState {
     /// An empty scene.
     ///
@@ -116,6 +147,40 @@ impl SceneState {
     /// ```
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// This scene's process-unique arena stamp, carried by every
+    /// [`DisplayList`] it builds.
+    ///
+    /// A mobject's `(source, generation)` is unique only *inside* one scene: ids
+    /// are slot-map keys that restart per arena, and a fresh mobject's generation
+    /// is `0` until something mutates it. So two independently-created scenes
+    /// hand their first mobject **identical** identity — and a renderer that
+    /// cached on `(source, generation)` alone would serve one scene's geometry
+    /// while drawing the other. The stamp is what disambiguates them.
+    ///
+    /// It is assigned once per [`new`](Self::new) and **preserved by `Clone`**.
+    /// That split is deliberate and load-bearing in both directions:
+    ///
+    /// - Timeline snapshots are clones ([`Scene::play`](crate::scene::Scene::play)
+    ///   snapshots by cloning, and seeking clones the snapshot back out), so a
+    ///   scene's every frame shares one stamp and keeps hitting the renderer's
+    ///   caches. A fresh stamp per clone would miss on every frame of playback.
+    /// - Two separately-built scenes differ, so they cache independently.
+    ///
+    /// A clone that then *diverges* is safe too: any mutation bumps the mobject's
+    /// generation from a process-global counter, so the two copies' items stop
+    /// sharing a key the moment their geometry actually differs.
+    ///
+    /// ```
+    /// use manim_core::scene_state::SceneState;
+    /// let a = SceneState::new();
+    /// let b = SceneState::new();
+    /// assert_ne!(a.arena(), b.arena()); // independent scenes
+    /// assert_eq!(a.arena(), a.clone().arena()); // snapshots
+    /// ```
+    pub fn arena(&self) -> u64 {
+        self.arena_id
     }
 
     /// Adds a mobject as a top-level (root) node, returning a typed handle.
@@ -854,7 +919,7 @@ impl SceneState {
         // Stable sort by z-index; ties keep the visited (insertion/pre-order)
         // order.
         items.sort_by_key(|it| it.z_index);
-        DisplayList::with_meshes(items, meshes)
+        DisplayList::with_meshes(items, meshes).in_arena(self.arena_id)
     }
 
     // --- Layout (manim's `arrange` / `arrange_in_grid`) ---
@@ -1045,6 +1110,88 @@ mod tests {
     use crate::geometry::{Circle, Square, VGroup};
     use crate::mobject::MobjectExt;
     use manim_math::{RIGHT, UP};
+
+    /// The collision the arena stamp exists to prevent: two independently-built
+    /// scenes give their first mobject *identical* `(source, generation)`.
+    #[test]
+    fn independent_scenes_reuse_ids_and_generations() {
+        let mut a = SceneState::new();
+        let mut b = SceneState::new();
+        a.add(Circle::new());
+        b.add(Square::new()); // a different shape, even
+        let (da, db) = (a.display_list(), b.display_list());
+        assert_eq!(da.0[0].source, db.0[0].source);
+        assert_eq!(da.0[0].generation, db.0[0].generation);
+        // …which is exactly why the list must also say which arena it came from.
+        assert_ne!(da.arena(), db.arena());
+    }
+
+    #[test]
+    fn every_new_scene_gets_a_distinct_nonzero_arena() {
+        let stamps: Vec<u64> = (0..8).map(|_| SceneState::new().arena()).collect();
+        let unique: std::collections::HashSet<_> = stamps.iter().collect();
+        assert_eq!(unique.len(), stamps.len(), "stamps must not repeat");
+        // Zero is reserved for hand-built lists.
+        assert!(stamps.iter().all(|s| *s != crate::display::ANONYMOUS_ARENA));
+    }
+
+    /// Snapshots are clones, and a seek must keep hitting the renderer's caches
+    /// — so a clone must *keep* its stamp. This is the half of the contract that
+    /// a "fresh stamp per clone" implementation would silently break.
+    #[test]
+    fn clones_and_their_display_lists_keep_the_arena() {
+        let mut scene = SceneState::new();
+        scene.add(Circle::new());
+        let snapshot = scene.clone();
+        assert_eq!(snapshot.arena(), scene.arena());
+        assert_eq!(
+            snapshot.display_list().arena(),
+            scene.display_list().arena()
+        );
+        // And it survives a second generation of cloning (seek clones the
+        // snapshot back out of the timeline).
+        assert_eq!(snapshot.clone().arena(), scene.arena());
+    }
+
+    /// A clone that diverges is still safe: mutation draws a fresh generation
+    /// from the process-global counter, so the two copies stop sharing a key the
+    /// moment their geometry actually differs.
+    #[test]
+    fn diverging_clones_are_told_apart_by_generation() {
+        let mut scene = SceneState::new();
+        let c = scene.add(Circle::new());
+        let mut other = scene.clone();
+        scene.get_mut(c).shift(RIGHT);
+        other.get_mut(c).shift(UP);
+
+        let (a, b) = (scene.display_list(), other.display_list());
+        assert_eq!(a.arena(), b.arena()); // same arena …
+        assert_eq!(a.0[0].source, b.0[0].source); // … same id …
+        assert_ne!(a.0[0].generation, b.0[0].generation); // … different geometry.
+    }
+
+    #[test]
+    fn a_scenes_display_lists_are_stable_across_calls() {
+        // Cache hits depend on this: nothing about the stamp may drift per call.
+        let mut scene = SceneState::new();
+        scene.add(Circle::new());
+        assert_eq!(scene.display_list().arena(), scene.display_list().arena());
+    }
+
+    #[test]
+    fn hand_built_lists_are_anonymous() {
+        use crate::display::{DisplayList, ANONYMOUS_ARENA};
+        assert_eq!(DisplayList::new(Vec::new()).arena(), ANONYMOUS_ARENA);
+        assert_eq!(
+            DisplayList::with_meshes(Vec::new(), Vec::new()).arena(),
+            ANONYMOUS_ARENA
+        );
+        assert_eq!(DisplayList::default().arena(), ANONYMOUS_ARENA);
+        // …and can be attributed to a scene on purpose.
+        let scene = SceneState::new();
+        let attributed = DisplayList::new(Vec::new()).in_arena(scene.arena());
+        assert_eq!(attributed.arena(), scene.arena());
+    }
 
     #[test]
     fn display_list_carries_fill_gradient() {

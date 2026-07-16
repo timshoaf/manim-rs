@@ -4,8 +4,15 @@ Target: manim CE v0.19 public API. Status: ⬜ planned · 🟨 partial · ✅ do
 This file is the source of truth for the Linear backlog; update as work lands.
 
 Milestones **M0–M5 are complete**; **M6 (3D)** is functional end to end —
-geometry, perspective camera, depth sort, and blessed goldens (FE-107/108).
-Statuses below reflect `0.1.0-dev`.
+geometry, perspective camera, depth sort, and blessed goldens (FE-107/108) — and
+is now joined by a second, depth-tested **mesh pipeline** (FE-123…129,
+`docs/design/12-mesh-pipeline.md`) offering real per-pixel occlusion and shading,
+GPU instancing, and heightfield displacement. Both 3D paths ship; neither
+replaces the other. Statuses below reflect `0.1.0-dev`.
+
+Note on scope: this file tracks parity with CE's public API. The mesh pipeline is
+largely *beyond* that surface — it has no CE counterpart to be at parity with —
+so it appears here only where it changes a CE-facing story.
 
 ## mobject
 
@@ -58,12 +65,38 @@ ParametricFunction ✅, FunctionGraph ✅, BarChart ✅.
 Gaps: some auto-layouts (FE-105) 🟨. plot_implicit_curve / ImplicitFunction ✅.
 
 ### three_d (M6) ✅ (rendered, goldens blessed)
-ThreeDVMobject 🟨 (faces-as-children model), Surface ✅, Sphere ✅, Dot3D ✅,
-Cube ✅, Prism ✅, Cone ✅, Cylinder ✅, Line3D ✅, Arrow3D ✅, Torus ✅,
-`ThreeDAxes` ✅, `rotate_about_axis` ✅. Geometry is camera-independent and
-unit-tested headlessly; 3D rendering landed (perspective orbit camera, camera-
-space depth sort, plane-fitted tessellation; sphere/cube/axes-surface/torus
-goldens). `set_fill_by_value` (per-face value color) ⬜.
+
+**Two 3D paths ship, and both are supported** — see `docs/migration-guide.md`
+for which to reach for, and `docs/design/12-mesh-pipeline.md` for the second.
+
+*Path 1 — project-and-sort (CE-shaped, the parity surface).* The CE catalog maps
+1:1 and is unchanged by the mesh work: ThreeDVMobject 🟨 (faces-as-children
+model), Surface ✅, Sphere ✅, Dot3D ✅, Cube ✅, Prism ✅, Cone ✅,
+Cylinder ✅, Line3D ✅, Arrow3D ✅, Torus ✅, `ThreeDAxes` ✅,
+`rotate_about_axis` ✅. Geometry is camera-independent and unit-tested
+headlessly; rendering is a perspective orbit camera + camera-space depth **sort**
+with plane-fitted tessellation (sphere/cube/axes-surface/torus goldens). This is
+CE's model, including its limits: whole items sort per frame, so interpenetrating
+geometry cannot occlude correctly and there is no per-pixel shading.
+
+*Path 2 — depth-tested meshes (beyond CE, FE-123…129).* `mesh::{Mesh, Surface3D,
+InstancedMesh, HeightField}` ✅ carry real indexed geometry through a second,
+depth-**tested** render pass with per-pixel Blinn-Phong shading, a sorted
+translucent queue, and GPU instancing. Real occlusion of interpenetrating
+geometry ✅; `MorphMesh` / `MorphSurface` ✅ (parameter-space tweening — CE has
+no equivalent). No CE counterpart exists for these, so they are *not* parity
+items:
+- **Instancing** — one base mesh at many transforms; 10k spheres ≈ 0.8 ms/frame,
+  2 draw calls. CE would need 10k mobjects.
+- **Heightfield displacement** — vertex-shader displacement from an `R32Float`
+  texture; a per-frame-evolving field costs one `nu × nv × 4 B` upload and zero
+  CPU re-meshing. Neither CE nor ManimGL has an equivalent.
+
+*`set_fill_by_value`* (per-face value color) ⬜ on the CE `Surface`. Note the
+mesh path reaches the same *effect* by other means today: `Surface3D` takes
+per-vertex colors (and a checkerboard, for CE `Surface` parity), so value-colored
+surfaces are expressible there — but the CE-compatible `set_fill_by_value`
+spelling on `threed::Surface` is still unimplemented.
 
 ### others (M5) ✅
 Matrix ✅, DecimalMatrix ✅, IntegerMatrix ✅, MobjectMatrix ✅,
@@ -100,8 +133,19 @@ Multi-camera zoomed display — ⬜ (ZoomedScene, FE-120).
   curve-preserving via `flo_curves` (pure-Rust path arithmetic), keeping Bézier
   arcs; the Greiner–Hormann polyline clip remains a documented fallback for
   degenerate inputs.
-- **3D rendering** waits on FE-107 (camera/projection/depth-sort); the geometry is
-  already headless-testable.
+- **3D rendering**: ✅ resolved. FE-107 landed the CE-shaped project-and-sort path
+  (camera/projection/depth-sort); FE-123…129 added the depth-tested mesh
+  pipeline alongside it (`docs/design/12-mesh-pipeline.md`). Both ship; the
+  geometry of both is headless-testable.
+- **Vector strokes occluded *by* meshes**: ⬜ deliberate. The 2D vector pass draws
+  over the mesh pass with no depth test — 2D content is annotation (CE's
+  `add_fixed_in_frame_mobjects` semantics). Mixed scenes needing strokes *inside*
+  the 3D scene use the project-and-sort path; a `z_test` opt-in on `DrawItem` is
+  recorded future work.
+- **Self-intersecting translucent meshes**: ⬜ known limit. The translucent queue
+  sorts per *item* (per instance for instanced meshes), which cannot resolve a
+  translucent surface intersecting itself. Weighted-blended OIT is the recorded
+  upgrade path.
 - OpenGL-renderer-specific API (CE's experimental opengl namespace): n/a — our
   renderer IS the GPU renderer.
 - `manim cfg` / plugin system: replaced by Cargo features & Rust traits.

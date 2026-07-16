@@ -216,12 +216,17 @@ anywhere in the mesh path. wasm CI check extends to the mesh module.
   427×240 offscreen incl. readback, release, RTX 4090/Vulkan — unchanged
   after the heightfield work.
 
-Known footgun (pre-existing, also hits `TessellationCache`): `AnyId` is
-unique per *arena*, not globally — two fresh `SceneState`s give their first
-mobject identical `(source, generation)` keys, so rendering multiple scenes
-through one renderer can silently reuse cache entries across scenes. Tests
-comparing two renders must mutate one scene. A real fix (arena stamp in the
-cache key) is tracked under FE-129.
+Cache identity: renderer caches (tessellation, mesh buffers, image
+textures) key on `(arena, source, generation)`. A `DisplayList` carries its
+`SceneState`'s process-unique arena stamp because `source` is a per-arena
+slot-map key and a fresh mobject's generation is 0 — two independently
+built scenes would otherwise give their first mobject identical identity
+and silently share cache entries through a shared renderer. The stamp is
+assigned per `SceneState::new` and **preserved by `Clone`**, so timeline
+snapshots (which are clones) keep hitting the cache while independent
+scenes stay separate; diverging clones are still disambiguated by the
+process-global generation counter. Hand-built lists use the reserved
+anonymous arena `0`.
 
 ## 10. Non-goals
 

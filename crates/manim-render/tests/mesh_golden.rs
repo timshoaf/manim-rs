@@ -10,14 +10,6 @@
 //!
 //! The counterpart guarantee lives in `golden.rs`: every scene there has an
 //! empty mesh channel, never runs this pass, and must stay byte-identical.
-//!
-//! # A trap worth knowing
-//!
-//! [`AnyId`](manim_core::mobject::AnyId) is unique per *arena*, not globally, so
-//! two fresh `SceneState`s hand their first mobject the same `(source,
-//! generation)` key. Rendering both through one renderer makes the second silently
-//! reuse the first's cache entry. Any test comparing two renders must therefore
-//! mutate **one** scene (which bumps the generation) rather than build two.
 
 #![cfg(not(target_arch = "wasm32"))]
 
@@ -339,13 +331,84 @@ fn heightfield_standing_wave() {
     assert_golden("mesh_heightfield_wave", &img);
 }
 
+/// Two independently-built scenes, rendered through one renderer, must not share
+/// GPU buffers — even though their first mobjects have identical
+/// `(source, generation)`. The [`DisplayList::arena`] stamp is what separates
+/// them.
+///
+/// This is a regression test for a real bug: before the stamp existed, this
+/// exact shape produced two byte-identical frames, because the second scene was
+/// silently served the first scene's uploaded geometry.
+#[test]
+fn independent_scenes_do_not_share_gpu_buffers() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    orbit_camera(&mut renderer);
+
+    // Two separate scenes whose height fields differ only in their heights —
+    // no builder call touches either one, so their ids and generations collide.
+    let mut flat_scene = SceneState::new();
+    flat_scene.add(HeightField::from_fn(32, 32, (4.0, 4.0), |_, _| 0.0));
+    let mut wavy_scene = SceneState::new();
+    wavy_scene.add(HeightField::from_fn(32, 32, (4.0, 4.0), |x, y| {
+        (x + y).sin()
+    }));
+
+    let (flat_dl, wavy_dl) = (flat_scene.display_list(), wavy_scene.display_list());
+    // Precondition: the identities really do collide.
+    assert_eq!(flat_dl.meshes()[0].source, wavy_dl.meshes()[0].source);
+    assert_eq!(
+        flat_dl.meshes()[0].generation,
+        wavy_dl.meshes()[0].generation
+    );
+    assert_ne!(flat_dl.arena(), wavy_dl.arena());
+
+    let flat = renderer.render_display_list(&flat_dl).unwrap();
+    let wavy = renderer.render_display_list(&wavy_dl).unwrap();
+    let differing = manim_render::golden::pixel_diff_fraction(&flat, &wavy, 3);
+    assert!(
+        differing > 0.02,
+        "the two scenes rendered {:.3}% different — the second was served the \
+         first scene's cached buffers",
+        differing * 100.0
+    );
+}
+
+/// A snapshot replay must keep hitting the mesh cache: seeking clones the
+/// snapshot, and a clone keeps its arena stamp, so unchanged geometry must not
+/// re-upload.
+#[test]
+fn snapshot_replays_do_not_reupload() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    orbit_camera(&mut renderer);
+    let mut scene = SceneState::new();
+    scene.add(Mesh::sphere().with_material(MeshMaterial::new(TEAL)));
+    renderer.render_display_list(&scene.display_list()).unwrap();
+    let after_first = renderer.mesh_cache().geometry_uploads();
+
+    // Replay the same state through clones, as `Timeline::state_at` does.
+    for _ in 0..6 {
+        renderer
+            .render_display_list(&scene.clone().display_list())
+            .unwrap();
+    }
+    assert_eq!(
+        renderer.mesh_cache().geometry_uploads(),
+        after_first,
+        "replaying a snapshot re-uploaded geometry"
+    );
+    assert_eq!(
+        renderer.mesh_cache().len(),
+        1,
+        "and must not grow the cache"
+    );
+}
+
 /// M4: displacement is real geometry, not a shading trick — a displaced field
 /// must not look like the flat grid it was uploaded as.
-///
-/// Both frames come from **one** scene mutated in place. Two separate
-/// `SceneState`s would not work: `AnyId` is unique per arena, not globally, so a
-/// fresh scene's first mobject reuses the same `(source, generation)` key and
-/// would silently hit the previous scene's cache entry.
 #[test]
 fn heightfield_displacement_changes_the_image() {
     let Some(mut renderer) = try_renderer() else {

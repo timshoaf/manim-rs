@@ -1,10 +1,10 @@
 //! Browser canvas rendering (`wasm32` + `web` feature).
 //!
 //! [`CanvasSurface`] wraps a wgpu surface created from an
-//! [`HtmlCanvasElement`](web_sys::HtmlCanvasElement) and draws a
+//! [`HtmlCanvasElement`] and draws a
 //! [`DisplayList`] into it, letterboxed to the scene's aspect. It is the wasm
 //! analogue of the native offscreen/preview renderers: same tessellation and
-//! [`Pipeline`](crate::renderer::Pipeline), a surface target instead of a
+//! [`Pipeline`], a surface target instead of a
 //! texture or window.
 //!
 //! Construction is async ([`GpuContext`](crate::renderer::GpuContext) can't
@@ -263,6 +263,7 @@ impl CanvasSurface {
                 &self.device,
                 &self.queue,
                 &self.mesh_pipeline,
+                list.arena(),
                 list.meshes(),
                 &self.camera,
             )
@@ -403,7 +404,7 @@ impl CanvasSurface {
 
     /// Renders a [`Frame`], following its camera (center/zoom/rotation) and
     /// background — the web analogue of
-    /// [`OffscreenRenderer::render_frame`](crate::renderer::OffscreenRenderer::render_frame).
+    /// `OffscreenRenderer::render_frame` (native).
     ///
     /// Adopts the frame's camera and background and adapts the tessellation
     /// tolerance to the zoom, then draws. Use this to follow an animated camera

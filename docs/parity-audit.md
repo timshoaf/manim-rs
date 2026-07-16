@@ -90,8 +90,26 @@ Severity: **core** (blocks common workflows) · **common** (frequently used) ·
 | Line3D, Arrow3D | present | ✅ | common |
 | ThreeDAxes | `threed::ThreeDAxes` | ✅ | common |
 | ThreeDVMobject | face-group model | 🟨 | niche |
-| Surface `set_fill_by_value` | — | ⬜ | niche |
+| Surface `set_fill_by_value` | — (see note) | ⬜ | niche |
 | Text3D | — | ⬜ | niche |
+| *(no CE counterpart)* | `mesh::{Mesh, Surface3D, InstancedMesh, HeightField}` | — | — |
+
+Two notes, added after the mesh pipeline landed (FE-123…129):
+
+1. **The CE-shaped types above are unchanged.** `threed::Surface` and friends
+   still project bezier faces to 2D and depth-*sort* them per frame. The mesh
+   pipeline is a *second* path (`manim_core::mesh`, see
+   [design/12-mesh-pipeline.md](design/12-mesh-pipeline.md)) that depth-*tests*
+   real triangle geometry per pixel. Nothing in this table was migrated onto it,
+   and no CE spelling changed.
+2. **`set_fill_by_value` is still honestly ⬜.** The mesh path can express
+   value-colored surfaces (`Surface3D` takes per-vertex colors), but the
+   CE-compatible method on `threed::Surface` does not exist. A CE user porting
+   code that calls it must still change it.
+
+The mesh types themselves are deliberately **out of scope for this audit**: they
+have no CE counterpart, so they can be neither at nor away from parity. They are
+tracked as capability, not compatibility, in the parity map's `three_d` section.
 
 ### mobject.graphing (coordinate_systems / functions / number_line)
 

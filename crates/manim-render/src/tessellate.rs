@@ -8,10 +8,11 @@
 //!
 //! Tessellation is the renderer's hot path during animation, so a
 //! [`TessellationCache`] memoizes each mobject's mesh keyed on its
-//! `(source, generation)`: a mobject whose geometry has not changed reuses last
-//! frame's triangles instead of re-tessellating. The combined per-frame result
-//! is a [`FrameMesh`] whose items are concatenated back-to-front by `z_index`
-//! (painter's algorithm — there is no depth buffer).
+//! `(`[`arena`](manim_core::display::DisplayList::arena)`, source, generation)`:
+//! a mobject whose geometry has not changed reuses last frame's triangles
+//! instead of re-tessellating. The combined per-frame result is a [`FrameMesh`]
+//! whose items are concatenated back-to-front by `z_index` (painter's algorithm
+//! — there is no depth buffer).
 //!
 //! ```
 //! use manim_core::geometry::Circle;
@@ -222,7 +223,13 @@ fn paint_hash(item: &DrawItem) -> u64 {
     h.finish()
 }
 
-/// Memoizes per-mobject tessellation, keyed on `(source, generation, zoom
+/// A tessellation cache key: which scene arena, and which mobject within it.
+///
+/// See [`DisplayList::arena`](manim_core::display::DisplayList::arena) for why
+/// the mobject id alone is not enough.
+type CacheKey = (u64, AnyId);
+
+/// Memoizes per-mobject tessellation, keyed on `(arena, source, generation, zoom
 /// bucket, paint hash)`.
 ///
 /// Re-tessellation happens only when a mobject's `generation` (geometry)
@@ -231,6 +238,13 @@ fn paint_hash(item: &DrawItem) -> u64 {
 /// vertices, and paint edits don't bump `generation`). Entries for mobjects that
 /// vanish from the display list are evicted. [`hits`] and [`misses`] count cache
 /// outcomes for tests and diagnostics.
+///
+/// The [`arena`](manim_core::display::DisplayList::arena) half of the key is what
+/// keeps two scenes apart: `source` is a slot-map key that restarts per scene and
+/// a fresh mobject's `generation` is `0`, so two independently-built scenes hand
+/// their first mobject identical identity. Without the arena stamp, rendering one
+/// scene and then another through the same cache would silently reuse the first
+/// scene's triangles.
 ///
 /// [`hits`]: TessellationCache::hits
 /// [`misses`]: TessellationCache::misses
@@ -251,7 +265,7 @@ fn paint_hash(item: &DrawItem) -> u64 {
 /// assert_eq!(cache.misses(), 1);
 /// ```
 pub struct TessellationCache {
-    entries: HashMap<AnyId, CacheEntry>,
+    entries: HashMap<CacheKey, CacheEntry>,
     /// Tolerance at the reference zoom (bucket 0).
     base_tolerance: f32,
     /// Effective tolerance for the current zoom bucket.
@@ -375,7 +389,7 @@ impl TessellationCache {
 
         let mut frame = FrameMesh::default();
         for (_, item) in order {
-            if let Some(entry) = self.entries.get(&item.source) {
+            if let Some(entry) = self.entries.get(&(list.arena(), item.source)) {
                 frame.append(&entry.mesh);
             }
         }
@@ -387,13 +401,14 @@ impl TessellationCache {
     /// ones. Shared by [`tessellate`](Self::tessellate) and
     /// [`tessellate_ops`](Self::tessellate_ops).
     fn refresh(&mut self, list: &DisplayList) {
-        let mut present: Vec<AnyId> = Vec::with_capacity(list.len());
+        let arena = list.arena();
+        let mut present: Vec<CacheKey> = Vec::with_capacity(list.len());
         for item in list {
-            present.push(item.source);
+            present.push((arena, item.source));
             let paint = paint_hash(item);
             let stale = self
                 .entries
-                .get(&item.source)
+                .get(&(arena, item.source))
                 .map(|e| {
                     e.generation != item.generation
                         || e.bucket != self.zoom_bucket
@@ -404,7 +419,7 @@ impl TessellationCache {
                 self.misses += 1;
                 let mesh = tessellate_item(item, self.tolerance);
                 self.entries.insert(
-                    item.source,
+                    (arena, item.source),
                     CacheEntry {
                         generation: item.generation,
                         bucket: self.zoom_bucket,
@@ -416,7 +431,7 @@ impl TessellationCache {
                 self.hits += 1;
             }
         }
-        self.entries.retain(|id, _| present.contains(id));
+        self.entries.retain(|key, _| present.contains(key));
     }
 
     /// Builds an ordered list of [`FrameOp`]s in painter's order, batching
@@ -442,7 +457,7 @@ impl TessellationCache {
 
         let mut order: Vec<(usize, &DrawItem)> = list.iter().enumerate().collect();
         order.sort_by_key(|(i, it)| (it.z_index, *i));
-        self.build_ops(order.into_iter().map(|(_, it)| it))
+        self.build_ops(list.arena(), order.into_iter().map(|(_, it)| it))
     }
 
     /// Builds ops for a 3-D camera: world content depth-sorted by per-item mean
@@ -498,8 +513,8 @@ impl TessellationCache {
         hud.sort_by_key(|(z, i, _)| (*z, *i));
 
         LayeredFrame {
-            world: self.build_ops(world.iter().map(|(_, _, it)| *it)),
-            hud: self.build_ops(hud.iter().map(|(_, _, it)| *it)),
+            world: self.build_ops(list.arena(), world.iter().map(|(_, _, it)| *it)),
+            hud: self.build_ops(list.arena(), hud.iter().map(|(_, _, it)| *it)),
         }
     }
 
@@ -507,7 +522,7 @@ impl TessellationCache {
     /// coalesce into one mesh; each image item breaks the batch and emits its own
     /// [`ImageQuad`]. Shared by [`tessellate_ops`](Self::tessellate_ops) and
     /// [`tessellate_ops_layered`](Self::tessellate_ops_layered).
-    fn build_ops<'a>(&self, items: impl Iterator<Item = &'a DrawItem>) -> Vec<FrameOp> {
+    fn build_ops<'a>(&self, arena: u64, items: impl Iterator<Item = &'a DrawItem>) -> Vec<FrameOp> {
         let mut ops: Vec<FrameOp> = Vec::new();
         let mut batch = MeshData::default();
         for item in items {
@@ -518,7 +533,7 @@ impl TessellationCache {
                 if let Some(quad) = image_quad(item, paint.clone()) {
                     ops.push(FrameOp::Image(quad));
                 }
-            } else if let Some(entry) = self.entries.get(&item.source) {
+            } else if let Some(entry) = self.entries.get(&(arena, item.source)) {
                 batch.append(&entry.mesh);
             }
         }
@@ -870,7 +885,7 @@ mod tests {
     use super::*;
     use manim_color::{BLUE, RED, WHITE};
     use manim_core::display::{Fill, Stroke};
-    use manim_core::geometry::{Circle, Line, Square};
+    use manim_core::geometry::{Circle, Line, Square, Triangle};
     use manim_core::mobject::Buildable;
     use manim_core::scene_state::SceneState;
     use manim_math::RIGHT;
@@ -893,6 +908,64 @@ mod tests {
         assert!(mesh.vertices.len() > 2);
         assert!(mesh.indices.len() >= 3);
         assert_eq!(mesh.indices.len() % 3, 0);
+    }
+
+    /// The tessellation half of the arena footgun: two scenes whose first
+    /// mobject shares `(source, generation)` must not share triangles.
+    ///
+    /// `Square` and `Triangle` specifically: both are unmutated (so their
+    /// generations are still `0` — any builder call would bump one and paper over
+    /// the collision) *and* they carry the identical default white stroke, so the
+    /// paint hash matches too. That leaves the arena stamp as the only thing
+    /// telling the two entries apart, which is precisely what this pins. A
+    /// `Circle` would not do: its default stroke is red, so the paint hash alone
+    /// would separate them and the test would pass even with the stamp defeated.
+    #[test]
+    fn independent_scenes_do_not_share_cache_entries() {
+        let mut a = SceneState::new();
+        a.add(Square::new());
+        let mut b = SceneState::new();
+        b.add(Triangle::new());
+        let (da, db) = (a.display_list(), b.display_list());
+
+        // Preconditions: every other part of the key really does collide.
+        assert_eq!(da.0[0].source, db.0[0].source);
+        assert_eq!(da.0[0].generation, db.0[0].generation);
+        assert_eq!(paint_hash(&da.0[0]), paint_hash(&db.0[0]));
+        assert_ne!(da.arena(), db.arena());
+
+        let mut cache = TessellationCache::new();
+        let square = cache.tessellate(&da);
+        let triangle = cache.tessellate(&db);
+        // Both cold: the triangle must not have been served the square's mesh.
+        assert_eq!(cache.misses(), 2);
+        assert_eq!(cache.hits(), 0);
+        assert_ne!(
+            square.vertices.len(),
+            triangle.vertices.len(),
+            "the second scene was served the first scene's triangles"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_clone_still_hits_the_cache() {
+        // Seeking replays cloned snapshots; they must keep hitting.
+        let mut scene = SceneState::new();
+        scene.add(Circle::new());
+        let mut cache = TessellationCache::new();
+        cache.tessellate(&scene.display_list());
+        assert_eq!(cache.misses(), 1);
+
+        for _ in 0..4 {
+            cache.tessellate(&scene.clone().display_list());
+        }
+        assert_eq!(
+            cache.misses(),
+            1,
+            "a snapshot replay must not re-tessellate"
+        );
+        assert_eq!(cache.hits(), 4);
+        assert_eq!(cache.len(), 1, "and must not grow the cache");
     }
 
     #[test]

@@ -33,6 +33,14 @@ pub use manim_math as math;
 pub use manim_render as render;
 pub use manim_text as text;
 
+/// The linear-algebra types the mesh API speaks in, re-exported so scene authors
+/// need not depend on `glam` directly.
+///
+/// [`prelude`] pulls [`Vec3`](glam::Vec3) and [`Mat4`](glam::Mat4) out of here:
+/// mesh geometry is `Vec3`-valued and an
+/// [`Instance`](manim_core::mesh::Instance) transform is a `Mat4`.
+pub use glam;
+
 pub use manim_core::animations;
 pub use manim_core::error::{CoreError, Result};
 
@@ -155,6 +163,17 @@ pub fn preview(builder: &dyn SceneBuilder, config: Config) -> std::result::Resul
 ///     let _ = std::any::type_name::<Title>();
 ///     let _ = std::any::type_name::<MarkupText>();
 ///     let _ = std::any::type_name::<TransformMatchingTex>();
+///     // The depth-tested mesh path.
+///     let _ = std::any::type_name::<Mesh>();
+///     let _ = std::any::type_name::<Surface3D>();
+///     let _ = std::any::type_name::<InstancedMesh>();
+///     let _ = std::any::type_name::<HeightField>();
+///     let _ = std::any::type_name::<TriMesh>();
+///     let _ = std::any::type_name::<MeshMaterial>();
+///     let _ = std::any::type_name::<Shading>();
+///     let _ = std::any::type_name::<Instance>();
+///     let _ = std::any::type_name::<MorphMesh>();
+///     let _ = std::any::type_name::<MorphSurface>();
 /// }
 /// // The label helpers are extension traits (they add `.plot_label(..)` etc.);
 /// // they resolve as bounds through the prelude too.
@@ -172,6 +191,20 @@ pub mod prelude {
         Uncreate, UpdateFromFunc, ValueTracker,
     };
     pub use manim_core::prelude::*;
+
+    /// The linear algebra the mesh API speaks in: geometry is `Vec3`-valued and
+    /// an [`Instance`] transform is a `Mat4`. (`Point` is an alias of `Vec3`.)
+    pub use glam::{Mat4, Vec3};
+    /// The depth-tested mesh path (`docs/design/12-mesh-pipeline.md`) — a
+    /// *second* path alongside the project-and-sort `threed` mobjects
+    /// (`Surface`, `Cube`, …), which stay in the prelude and keep working. See
+    /// the migration guide for which to reach for. `MeshPayload`/`MeshMobject`
+    /// are for authors implementing their own mesh mobject; reach those via
+    /// `manim::core::mesh`.
+    pub use manim_core::mesh::{
+        HeightField, Instance, InstancedMesh, Mesh, MeshMaterial, MorphMesh, MorphSurface, Shading,
+        Surface3D, TriMesh,
+    };
 
     // Text, TeX, numbers, matrices, tables, labels, and label-aware animations.
     // Tuning constants (font sizes, buffs) and low-level helpers (match_glyphs,

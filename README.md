@@ -4,10 +4,13 @@ A ground-up reimplementation of [Manim Community Edition](https://docs.manim.com
 in Rust, rendering with WebGPU (`wgpu`) — declarative, real-time, and embeddable
 in web apps via Dioxus.
 
-> **Status: milestones M0–M5 and the M7 web player are done.** Math & color
+> **Status: milestones M0–M7 are done.** Math & color
 > (M0), mobjects & geometry (M1), the animation engine (M2), the offscreen +
 > realtime wgpu renderer (M3), text/TeX via cosmic-text & typst (M4), coordinate
-> systems & plotting, vector fields, graphs, SVG/image import (M5), and the
+> systems & plotting, vector fields, graphs, SVG/image import (M5), 3D — both the
+> CE-shaped project-and-sort path and a depth-tested
+> [mesh pipeline](docs/design/12-mesh-pipeline.md) with instancing, transparency,
+> and heightfield displacement (M6) — and the
 > Dioxus `ManimPlayer` component (M7) are all functional. **950+ tests** pass
 > (unit + property + doctests + golden-image), with goldens rendered headlessly
 > on a software/GPU adapter and diffed against checked-in PNGs.
@@ -25,6 +28,12 @@ in web apps via Dioxus.
   rendering, and a runnable doc example on every public item
   (`missing_docs` is a hard error workspace-wide).
 - **Dioxus components** — `ManimPlayer` renders scenes inside wasm apps.
+- **Beyond CE where the GPU allows** — a depth-tested
+  [3D mesh pipeline](docs/design/12-mesh-pipeline.md) alongside the CE-shaped
+  project-and-sort path: real per-pixel occlusion and Blinn-Phong shading, GPU
+  instancing (**10k spheres at 0.8 ms/frame**, 2 draw calls), vertex-shader
+  heightfield displacement, and parameter-space surface morphing. WebGL2-clean —
+  no compute shaders, no storage buffers.
 
 ## Quickstart
 
@@ -76,6 +85,12 @@ cargo run -p manim --example hello_math          # headline + Euler's identity (
 | `brace_annotation` | `Brace`s annotating a segment |
 | `gradient_text` | Gradient-filled text |
 | `transform_matching_tex` | Glyph-matching transform between two TeX expressions |
+| `three_d_surface` | A checkerboard saddle on `ThreeDAxes` under a turntable camera |
+| `three_d_cube` | A solid cube tumbling about a world axis (depth-sorted faces) |
+| `mesh_surface_rotate` | **Mesh pipeline**: a shaded, depth-tested `Surface3D` under an orbiting camera |
+| `mesh_molecule` | **Mesh pipeline**: 294 instanced atoms + bonds (2 draw calls) with a translucent molecular surface |
+| `mesh_heightfield_wave` | **Mesh pipeline**: a `HeightField` wave animated by an updater — one texture upload per frame, no CPU re-meshing |
+| `mesh_morph` | **Mesh pipeline**: a sheet → cylinder → torus homeomorphism via `MorphSurface` |
 | `preview` | Realtime winit preview window (needs `--features preview`) |
 
 ## Embed in a Dioxus web app

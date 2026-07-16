@@ -1,19 +1,19 @@
 //! The wgpu backend: GPU context, render pipeline, offscreen texture target.
 //!
-//! The rendering path is deliberately small. [`GpuContext::new_headless`] brings
+//! The rendering path is deliberately small. `GpuContext::new_headless` brings
 //! up an adapter/device with no window (software adapters like llvmpipe work).
 //! A single [pipeline](Pipeline) draws premultiplied-alpha triangles through a
 //! trivial shader into a 4× MSAA texture, resolved to an
 //! [`Rgba8UnormSrgb`](wgpu::TextureFormat::Rgba8UnormSrgb) [`TextureTarget`] and
-//! read back to an [`image::RgbaImage`]. [`OffscreenRenderer`] ties it together:
-//! give it a [`Config`] and a [`DisplayList`], get a PNG.
+//! read back to an [`image::RgbaImage`]. `OffscreenRenderer` ties it together:
+//! give it a `Config` and a `DisplayList`, get a PNG.
 //!
 //! The draw path renders into any [`wgpu::TextureView`]
 //! ([`Pipeline::draw`]), so a windowed `SurfaceTarget` can be added later
 //! without touching the pipeline (tracked as FE-95).
 //!
 //! wasm targets cannot block on the device; a future async constructor will
-//! mirror [`GpuContext::new_headless`] for them.
+//! mirror `GpuContext::new_headless` for them.
 //!
 //! ```no_run
 //! use manim_core::config::Config;
@@ -143,7 +143,7 @@ impl From<&Camera2D> for CameraUniform {
 
 /// A headless (windowless) wgpu context: instance, adapter, device, queue.
 ///
-/// Construct one with [`GpuContext::new_headless`]; it drives every offscreen
+/// Construct one with `GpuContext::new_headless`; it drives every offscreen
 /// render. The device is created with downlevel default limits so software and
 /// GL-backend adapters (llvmpipe/lavapipe) qualify.
 ///
@@ -168,7 +168,7 @@ impl GpuContext {
     /// high-performance adapter but accepting any (including software).
     ///
     /// This is the portable constructor: native code reaches it through the
-    /// blocking [`new_headless`](Self::new_headless), and wasm callers `.await`
+    /// blocking `new_headless`, and wasm callers `.await`
     /// it (there is no blocking on the web's single thread).
     ///
     /// # Errors
@@ -802,11 +802,12 @@ enum GpuOp {
         ib: wgpu::Buffer,
         count: u32,
     },
-    /// A textured quad (two triangles), keyed to a cached texture by `source`.
+    /// A textured quad (two triangles), keyed to a cached texture by
+    /// `(arena, source)`.
     Image {
         vb: wgpu::Buffer,
         ib: wgpu::Buffer,
-        source: manim_core::mobject::AnyId,
+        texture: (u64, manim_core::mobject::AnyId),
     },
 }
 
@@ -835,7 +836,10 @@ pub struct TextureTarget {
     mesh_globals_bind_group: wgpu::BindGroup,
     mesh_zoom_globals_buffer: wgpu::Buffer,
     mesh_zoom_globals_bind_group: wgpu::BindGroup,
-    texture_cache: std::collections::HashMap<manim_core::mobject::AnyId, CachedTexture>,
+    /// Uploaded image textures, keyed on `(arena, source)` for the same reason
+    /// the tessellation and mesh caches are — a bare mobject id collides across
+    /// independently-built scenes.
+    texture_cache: std::collections::HashMap<(u64, manim_core::mobject::AnyId), CachedTexture>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// A second camera uniform holding the orthographic matrix, used to draw
@@ -1003,8 +1007,8 @@ impl TextureTarget {
 
     /// Ensures the texture for image quad `q` is uploaded and cached (keyed by
     /// source generation), then returns its texture bind group.
-    fn ensure_texture(&mut self, q: &crate::tessellate::ImageQuad) {
-        if let Some(c) = self.texture_cache.get(&q.source) {
+    fn ensure_texture(&mut self, arena: u64, q: &crate::tessellate::ImageQuad) {
+        if let Some(c) = self.texture_cache.get(&(arena, q.source)) {
             if c.generation == q.generation {
                 return;
             }
@@ -1070,7 +1074,7 @@ impl TextureTarget {
             ],
         });
         self.texture_cache.insert(
-            q.source,
+            (arena, q.source),
             CachedTexture {
                 generation: q.generation,
                 bind_group,
@@ -1116,6 +1120,7 @@ impl TextureTarget {
     pub fn render_ops(
         &mut self,
         ops: &[crate::tessellate::FrameOp],
+        arena: u64,
         meshes: &[manim_core::display::MeshItem],
         camera: &Camera2D,
         background: Color,
@@ -1132,14 +1137,14 @@ impl TextureTarget {
         let mut present = Vec::new();
         for op in ops {
             if let FrameOp::Image(q) = op {
-                self.ensure_texture(q);
-                present.push(q.source);
+                self.ensure_texture(arena, q);
+                present.push((arena, q.source));
             }
         }
-        self.texture_cache.retain(|id, _| present.contains(id));
+        self.texture_cache.retain(|key, _| present.contains(key));
 
-        let mesh_frame = self.prepare_meshes(meshes, camera);
-        let gpu_ops = self.build_gpu_ops(ops);
+        let mesh_frame = self.prepare_meshes(arena, meshes, camera);
+        let gpu_ops = self.build_gpu_ops(arena, ops);
         let mut encoder = self.begin_ops_encoder();
         let drew_meshes = self.record_mesh_pass(
             &mut encoder,
@@ -1159,6 +1164,7 @@ impl TextureTarget {
     /// Returns an empty frame — and touches nothing — for a mesh-less list.
     fn prepare_meshes(
         &mut self,
+        arena: u64,
         meshes: &[manim_core::display::MeshItem],
         camera: &Camera2D,
     ) -> MeshFrame {
@@ -1177,6 +1183,7 @@ impl TextureTarget {
             &self.device,
             &self.queue,
             &self.mesh_pipeline,
+            arena,
             meshes,
             camera,
         )
@@ -1256,6 +1263,7 @@ impl TextureTarget {
     pub fn render_ops_zoomed(
         &mut self,
         ops: &[crate::tessellate::FrameOp],
+        arena: u64,
         meshes: &[manim_core::display::MeshItem],
         main: &Camera2D,
         zoom: &Camera2D,
@@ -1288,13 +1296,13 @@ impl TextureTarget {
         let mut present = Vec::new();
         for op in ops {
             if let FrameOp::Image(q) = op {
-                self.ensure_texture(q);
-                present.push(q.source);
+                self.ensure_texture(arena, q);
+                present.push((arena, q.source));
             }
         }
-        self.texture_cache.retain(|id, _| present.contains(id));
+        self.texture_cache.retain(|key, _| present.contains(key));
 
-        let mesh_frame = self.prepare_meshes(meshes, main);
+        let mesh_frame = self.prepare_meshes(arena, meshes, main);
         if !mesh_frame.is_empty() {
             self.queue.write_buffer(
                 &self.mesh_zoom_globals_buffer,
@@ -1302,9 +1310,9 @@ impl TextureTarget {
                 bytemuck::bytes_of(&MeshGlobals::new(zoom, self.light)),
             );
         }
-        let gpu_ops = self.build_gpu_ops(ops);
+        let gpu_ops = self.build_gpu_ops(arena, ops);
         let border = border_mesh_ndc(inset, self.width, self.height, border_px, border_color);
-        let border_gpu = self.build_gpu_ops(&[FrameOp::Vector(border)]);
+        let border_gpu = self.build_gpu_ops(arena, &[FrameOp::Vector(border)]);
 
         // Scissor rectangle in attachment pixels, clamped to bounds.
         let sx = inset.x.max(0.0).round() as u32;
@@ -1407,6 +1415,7 @@ impl TextureTarget {
         &mut self,
         world: &[crate::tessellate::FrameOp],
         hud: &[crate::tessellate::FrameOp],
+        arena: u64,
         meshes: &[manim_core::display::MeshItem],
         camera: &Camera2D,
         background: Color,
@@ -1432,15 +1441,15 @@ impl TextureTarget {
         let mut present = Vec::new();
         for op in world.iter().chain(hud.iter()) {
             if let FrameOp::Image(q) = op {
-                self.ensure_texture(q);
-                present.push(q.source);
+                self.ensure_texture(arena, q);
+                present.push((arena, q.source));
             }
         }
-        self.texture_cache.retain(|id, _| present.contains(id));
+        self.texture_cache.retain(|key, _| present.contains(key));
 
-        let mesh_frame = self.prepare_meshes(meshes, camera);
-        let world_gpu = self.build_gpu_ops(world);
-        let hud_gpu = self.build_gpu_ops(hud);
+        let mesh_frame = self.prepare_meshes(arena, meshes, camera);
+        let world_gpu = self.build_gpu_ops(arena, world);
+        let hud_gpu = self.build_gpu_ops(arena, hud);
         let mut encoder = self.begin_ops_encoder();
         let drew_meshes = self.record_mesh_pass(
             &mut encoder,
@@ -1507,7 +1516,7 @@ impl TextureTarget {
 
     /// Pre-builds GPU vertex/index buffers for each op (they must outlive the
     /// render pass). Empty vector batches are skipped.
-    fn build_gpu_ops(&self, ops: &[crate::tessellate::FrameOp]) -> Vec<GpuOp> {
+    fn build_gpu_ops(&self, arena: u64, ops: &[crate::tessellate::FrameOp]) -> Vec<GpuOp> {
         use crate::tessellate::FrameOp;
         let mut gpu_ops = Vec::new();
         for op in ops {
@@ -1557,7 +1566,7 @@ impl TextureTarget {
                                 contents: bytemuck::cast_slice(&idx),
                                 usage: wgpu::BufferUsages::INDEX,
                             }),
-                        source: q.source,
+                        texture: (arena, q.source),
                     });
                 }
             }
@@ -1583,8 +1592,8 @@ impl TextureTarget {
                     pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..*count, 0, 0..1);
                 }
-                GpuOp::Image { vb, ib, source } => {
-                    if let Some(tex) = self.texture_cache.get(source) {
+                GpuOp::Image { vb, ib, texture } => {
+                    if let Some(tex) = self.texture_cache.get(texture) {
                         pass.set_pipeline(&self.image_pipeline.pipeline);
                         pass.set_bind_group(0, camera_bg, &[]);
                         pass.set_bind_group(1, &tex.bind_group, &[]);
@@ -1817,14 +1826,20 @@ impl OffscreenRenderer {
             return self.target.render_ops_layered(
                 &frame.world,
                 &frame.hud,
+                list.arena(),
                 list.meshes(),
                 &self.camera,
                 self.background,
             );
         }
         let ops = self.cache.tessellate_ops(list);
-        self.target
-            .render_ops(&ops, list.meshes(), &self.camera, self.background)
+        self.target.render_ops(
+            &ops,
+            list.arena(),
+            list.meshes(),
+            &self.camera,
+            self.background,
+        )
     }
 
     /// Renders a [`Frame`](manim_core::scene::Frame), following its camera.
@@ -1856,6 +1871,7 @@ impl OffscreenRenderer {
             return self.target.render_ops_layered(
                 &layered.world,
                 &layered.hud,
+                frame.display_list.arena(),
                 frame.display_list.meshes(),
                 &self.camera,
                 self.background,
@@ -1882,6 +1898,7 @@ impl OffscreenRenderer {
             };
             return self.target.render_ops_zoomed(
                 &ops,
+                frame.display_list.arena(),
                 frame.display_list.meshes(),
                 &self.camera,
                 &zoom_cam,
@@ -1893,6 +1910,7 @@ impl OffscreenRenderer {
         }
         self.target.render_ops(
             &ops,
+            frame.display_list.arena(),
             frame.display_list.meshes(),
             &self.camera,
             self.background,

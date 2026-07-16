@@ -14,3 +14,7 @@ publish = false
 dioxus = { version = "0.6", features = ["web"] }
 manim-dioxus = { path = "../../crates/manim-dioxus" }
 manim-core = { path = "../../crates/manim-core" }
+# The mesh scene: geometry is glam-typed, and the palette beyond the prelude's
+# basic colors lives in manim-color. Versions must match the workspace's.
+manim-color = { path = "../../crates/manim-color" }
+glam = "0.30"

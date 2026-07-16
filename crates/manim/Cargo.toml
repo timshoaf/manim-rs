@@ -12,6 +12,10 @@ keywords = ["manim", "animation", "wgpu", "visualization", "math"]
 categories = ["graphics", "rendering", "mathematics", "visualization"]
 
 [dependencies]
+# Re-exported: the mesh API is glam-typed (Vec3 geometry, Mat4 instance
+# transforms), so scene authors reach those types through `manim::glam`/prelude
+# rather than taking their own (version-coupled) glam dependency.
+glam = { workspace = true }
 manim-math = { workspace = true }
 manim-color = { workspace = true }
 manim-core = { workspace = true }

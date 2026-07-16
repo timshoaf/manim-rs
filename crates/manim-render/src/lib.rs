@@ -19,9 +19,8 @@
 //!   meshes never touches it. See `docs/design/12-mesh-pipeline.md`.
 //! - [`renderer`] — the wgpu [`GpuContext`],
 //!   [`Pipeline`], offscreen
-//!   [`TextureTarget`], and the high-level
-//!   [`OffscreenRenderer`].
-//! - [`export`] — `VideoExporter`: MP4 (via `ffmpeg`) and PNG-sequence output
+//!   [`TextureTarget`], and the high-level `OffscreenRenderer` *(native only)*.
+//! - `export` — `VideoExporter`: MP4 (via `ffmpeg`) and PNG-sequence output
 //!   *(native only)*.
 //! - [`layout`] — letterbox math for fitting a fixed-aspect frame in a window.
 //! - `preview` *(feature `preview`, native only)* — the winit `RealtimePlayer`

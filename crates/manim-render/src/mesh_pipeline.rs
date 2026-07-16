@@ -1031,7 +1031,14 @@ struct GpuMesh {
     height: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
-/// Memoizes each mesh mobject's GPU buffers, keyed on `(source, generation)`.
+/// A mesh GPU-buffer cache key: which scene arena, and which mobject within it.
+///
+/// See [`DisplayList::arena`](manim_core::display::DisplayList::arena) for why
+/// the mobject id alone is not enough.
+type MeshCacheKey = (u64, AnyId);
+
+/// Memoizes each mesh mobject's GPU buffers, keyed on `(arena, source,
+/// generation)`.
 ///
 /// This is [`TessellationCache`](crate::tessellate::TessellationCache)'s
 /// counterpart for the mesh pass, with the same eviction policy: a mobject whose
@@ -1039,9 +1046,15 @@ struct GpuMesh {
 /// that vanish from the display list are dropped. Static geometry therefore
 /// uploads exactly once — the per-frame CPU cost of a still 10k-atom molecule is
 /// zero.
+///
+/// The `arena` half of the key comes from
+/// [`DisplayList::arena`](manim_core::display::DisplayList::arena) and keeps two
+/// independently-built scenes from sharing entries: a mobject's `source` is a
+/// slot-map key that restarts per scene, and a fresh mobject's `generation` is
+/// `0`, so two scenes' first mobjects are otherwise indistinguishable.
 #[derive(Default)]
 pub struct MeshBufferCache {
-    entries: HashMap<AnyId, GpuMesh>,
+    entries: HashMap<MeshCacheKey, GpuMesh>,
     hits: u64,
     misses: u64,
     geometry_uploads: u64,
@@ -1113,13 +1126,19 @@ impl MeshBufferCache {
 
     /// Brings every item's GPU resources up to date, uploading only what
     /// actually changed, then evicts mobjects absent from `meshes`.
-    fn refresh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, meshes: &[MeshItem]) {
-        let mut present: Vec<AnyId> = Vec::with_capacity(meshes.len());
+    fn refresh(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        arena: u64,
+        meshes: &[MeshItem],
+    ) {
+        let mut present: Vec<MeshCacheKey> = Vec::with_capacity(meshes.len());
         for item in meshes {
-            present.push(item.source);
+            present.push((arena, item.source));
             // Taking the entry out sidesteps borrowing `self.entries` across the
             // rebuild; it goes straight back in either branch.
-            let old = self.entries.remove(&item.source);
+            let old = self.entries.remove(&(arena, item.source));
             let plan = old
                 .as_ref()
                 .map(|e| e.keys.plan_against(item))
@@ -1128,15 +1147,15 @@ impl MeshBufferCache {
             if plan.is_noop() {
                 self.hits += 1;
                 if let Some(e) = old {
-                    self.entries.insert(item.source, e);
+                    self.entries.insert((arena, item.source), e);
                 }
                 continue;
             }
             self.misses += 1;
             let entry = self.rebuild(device, queue, item, old, plan);
-            self.entries.insert(item.source, entry);
+            self.entries.insert((arena, item.source), entry);
         }
-        self.entries.retain(|id, _| present.contains(id));
+        self.entries.retain(|key, _| present.contains(key));
     }
 
     /// Rebuilds one item's entry, reusing whatever `old` still holds that `plan`
@@ -1364,6 +1383,7 @@ impl MeshBufferCache {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         pipeline: &MeshPipeline,
+        arena: u64,
         meshes: &[MeshItem],
         camera: &Camera2D,
     ) -> MeshFrame {
@@ -1371,7 +1391,7 @@ impl MeshBufferCache {
             self.entries.clear();
             return MeshFrame::default();
         }
-        self.refresh(device, queue, meshes);
+        self.refresh(device, queue, arena, meshes);
         let queues = MeshQueues::split(meshes, &camera.view_matrix());
 
         let make_item_bind_group = |item: &MeshItem, height: Option<&wgpu::TextureView>| {
@@ -1401,7 +1421,7 @@ impl MeshBufferCache {
         let mut frame = MeshFrame::default();
         for &i in &queues.opaque {
             let item = &meshes[i];
-            let Some(entry) = self.entries.get(&item.source) else {
+            let Some(entry) = self.entries.get(&(arena, item.source)) else {
                 continue;
             };
             if entry.n_indices == 0 {
@@ -1418,7 +1438,7 @@ impl MeshBufferCache {
         }
         for draw in &queues.translucent {
             let item = &meshes[draw.item];
-            let Some(entry) = self.entries.get(&item.source) else {
+            let Some(entry) = self.entries.get(&(arena, item.source)) else {
                 continue;
             };
             if entry.n_indices == 0 {

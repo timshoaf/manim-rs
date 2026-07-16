@@ -179,8 +179,10 @@ pub struct Stroke {
 
 /// One drawable primitive: a world-space path plus resolved paint.
 ///
-/// `source` and `generation` identify the mobject and its geometry revision, so
-/// a renderer can cache tessellation keyed on `(source, generation)`.
+/// `source` and `generation` identify the mobject and its geometry revision
+/// *within one scene*, so a renderer caches tessellation keyed on
+/// `(`[`DisplayList::arena`]`, source, generation)` — the arena stamp is what
+/// keeps two independently-created scenes apart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DrawItem {
     /// The world-space geometry to draw.
@@ -213,8 +215,9 @@ pub struct DrawItem {
 /// This is the mesh-pass counterpart of [`DrawItem`], carried on
 /// [`DisplayList`]'s separate [`meshes`](DisplayList::meshes) channel and drawn
 /// *before* it — see `docs/design/12-mesh-pipeline.md`. `source` and
-/// `generation` identify the mobject and its geometry revision, so a renderer
-/// caches GPU buffers keyed on `(source, generation)` exactly as it caches
+/// `generation` identify the mobject and its geometry revision within its scene,
+/// so a renderer caches GPU buffers keyed on
+/// `(`[`DisplayList::arena`]`, source, generation)` exactly as it caches
 /// tessellation for a `DrawItem`.
 ///
 /// The geometry sits behind an [`Arc`], so cloning a display list — which the
@@ -279,6 +282,17 @@ impl MeshItem {
     }
 }
 
+/// The [`arena`](DisplayList::arena) stamp of a list that did not come from a
+/// [`SceneState`](crate::scene_state::SceneState) — one built by hand, as
+/// renderer tests do.
+///
+/// Every real scene's stamp is non-zero, so an anonymous list can never be
+/// mistaken for a scene's. Anonymous lists do all share this one stamp, which is
+/// only sound because their [`source`](DrawItem::source) ids come from somewhere
+/// else to begin with; build lists through a `SceneState` if you need two of them
+/// to be cached independently.
+pub const ANONYMOUS_ARENA: u64 = 0;
+
 /// The core→render contract: a flat, z-ordered list of [`DrawItem`]s plus a
 /// parallel channel of [`MeshItem`]s.
 ///
@@ -304,23 +318,68 @@ impl MeshItem {
 /// assert_eq!(dl.len(), 1); // the circle
 /// assert_eq!(dl.meshes().len(), 1); // the sphere
 /// ```
+///
+/// # Cache identity
+///
+/// The third field is the [`arena`](Self::arena) stamp of the
+/// [`SceneState`](crate::scene_state::SceneState) that produced the list. An
+/// item's `(source, generation)` is only unique *within* one scene — a fresh
+/// scene's first mobject always lands at the same arena key with generation `0`
+/// — so a renderer must key its caches on `(arena, source, generation)` to avoid
+/// serving one scene's buffers to another. See
+/// [`SceneState::arena`](crate::scene_state::SceneState::arena).
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct DisplayList(pub Vec<DrawItem>, pub Vec<MeshItem>);
+pub struct DisplayList(pub Vec<DrawItem>, pub Vec<MeshItem>, pub u64);
 
 impl DisplayList {
-    /// A display list of draw items only.
+    /// A display list of draw items only, not attributed to any scene
+    /// ([`ANONYMOUS_ARENA`]).
     ///
     /// ```
-    /// use manim_core::display::DisplayList;
-    /// assert!(DisplayList::new(Vec::new()).is_empty());
+    /// use manim_core::display::{DisplayList, ANONYMOUS_ARENA};
+    /// let dl = DisplayList::new(Vec::new());
+    /// assert!(dl.is_empty());
+    /// assert_eq!(dl.arena(), ANONYMOUS_ARENA);
     /// ```
     pub fn new(items: Vec<DrawItem>) -> Self {
-        Self(items, Vec::new())
+        Self(items, Vec::new(), ANONYMOUS_ARENA)
     }
 
-    /// A display list of both channels.
+    /// A display list of both channels, not attributed to any scene
+    /// ([`ANONYMOUS_ARENA`]).
     pub fn with_meshes(items: Vec<DrawItem>, meshes: Vec<MeshItem>) -> Self {
-        Self(items, meshes)
+        Self(items, meshes, ANONYMOUS_ARENA)
+    }
+
+    /// Attributes this list to the scene arena `arena` (builder).
+    ///
+    /// [`SceneState::display_list`](crate::scene_state::SceneState::display_list)
+    /// applies this; call it yourself only when hand-building a list that must
+    /// cache as if it came from a particular scene.
+    pub fn in_arena(mut self, arena: u64) -> Self {
+        self.2 = arena;
+        self
+    }
+
+    /// The stamp of the scene arena this list's items belong to, or
+    /// [`ANONYMOUS_ARENA`] for a hand-built list.
+    ///
+    /// A renderer cache key must include this: `(source, generation)` alone
+    /// collides across independently-created scenes.
+    ///
+    /// ```
+    /// use manim_core::scene_state::SceneState;
+    /// use manim_core::geometry::Circle;
+    /// let (mut a, mut b) = (SceneState::new(), SceneState::new());
+    /// a.add(Circle::new());
+    /// b.add(Circle::new());
+    /// // Same arena key, same generation — told apart only by the arena stamp.
+    /// assert_eq!(a.display_list().0[0].source, b.display_list().0[0].source);
+    /// assert_eq!(a.display_list().0[0].generation, b.display_list().0[0].generation);
+    /// assert_ne!(a.display_list().arena(), b.display_list().arena());
+    /// ```
+    pub fn arena(&self) -> u64 {
+        self.2
     }
 
     /// The number of draw items (the mesh channel is counted by

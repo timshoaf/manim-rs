@@ -145,6 +145,79 @@ calls:
 
 ---
 
+## Two 3D paths: `threed` vs `mesh`
+
+**If you are porting CE 3D code, nothing here is required reading — your code
+keeps working unchanged.** This section is about a capability CE does not have.
+
+`manim_rust` ships *two* 3D render paths, and both are supported:
+
+| | `threed::{Surface, Sphere, Cube, …}` | `mesh::{Surface3D, Mesh, InstancedMesh, HeightField}` |
+|---|---|---|
+| Model | CE's: project bezier faces to 2D, depth-**sort** whole items per frame | depth-**test** real triangle geometry per pixel |
+| Ported CE code | ✅ this is what your CE code maps onto | needs a rewrite |
+| Interpenetrating geometry | ✗ sorts per item — cannot occlude correctly | ✅ exact, per pixel |
+| Shading | flat fills per face | ✅ per-pixel Blinn-Phong (`MeshMaterial`) |
+| Vector strokes/labels over it | ✅ same pass, sorts together | drawn over it (annotation semantics) |
+| Cost of many objects | one mobject each, CPU-tessellated per frame | ✅ instancing: 10k spheres ≈ 0.8 ms/frame, 2 draw calls |
+| Per-frame-evolving surface | CPU re-mesh every frame | ✅ `HeightField`: one texture upload, no re-meshing |
+
+### Which to choose
+
+**Stay on `threed` (the CE path)** when:
+- you are porting CE code and it already looks right — there is no deprecation
+  and no migration deadline;
+- your scene mixes 3D with vector strokes that must sort *among* the 3D content
+  (wireframe parameter curves on a surface, 3D arrows crossing a plot). The mesh
+  pass does not depth-test against vector content — 2D content draws *over* it by
+  design, matching CE's `add_fixed_in_frame_mobjects` semantics;
+- the shapes are simple and non-interpenetrating (a lone orbiting sphere, an axes
+  box) — the sort is exact there, and it is the simpler path.
+
+**Reach for `mesh`** when the sort visibly breaks or the CPU cannot keep up:
+- **geometry interpenetrates or self-occludes** — a closed torus hiding its own
+  far half, two crossing surfaces. This is the sort's hard limit, not a tuning
+  issue;
+- **you want real shading** — `MeshMaterial` gives per-pixel Blinn-Phong with
+  `Shading::{Flat, Smooth}`;
+- **there are hundreds-plus of a repeated thing** — `InstancedMesh::spheres` /
+  `::cylinders` (molecules, particle clouds, lattices);
+- **the surface changes every frame** — `HeightField` displaces a static grid in
+  the vertex shader (wave equations, live scalar fields), and `MorphSurface`
+  tweens between parameterizations in parameter space (homeomorphisms) without a
+  correspondence problem.
+
+### Porting sketch
+
+There is no automatic translation; the mesh types are their own API. The nearest
+mapping:
+
+| CE / `threed` | `mesh` equivalent |
+|---|---|
+| `Surface(f, u_range=[a,b], v_range=[c,d])` | `Surface3D::new(f, (a, b), (c, d))` — closure returns `Vec3` |
+| `.set_resolution(nu, nv)` | `.with_resolution(nu, nv)` |
+| `.set_fill(color, opacity)` | `.with_material(MeshMaterial::new(color).with_opacity(o))` |
+| checkerboard fill | `.with_checkerboard(Some([a, b]))` |
+| `Sphere()` | `Mesh::sphere()` |
+| N × `Sphere()` | one `InstancedMesh::spheres(&centers, r)` |
+| `add_to(scene)` | `scene.add(…)` — mesh mobjects are single, not groups |
+
+Two gotchas worth knowing:
+
+- **Styling does not apply to meshes.** `set_fill` / `set_stroke` are no-ops, and
+  so are style-driven animations like `FadeIn` — a mesh's appearance is its
+  `MeshMaterial`. Reveal a surface with `MorphSurface` (or by animating material
+  opacity) instead.
+- **Transforms, updaters, and `.animate()` all work normally** — `shift`,
+  `rotate`, `Rotating`, `move_to`, `save_state`/`Restore` need no special
+  handling.
+
+Worked examples: `mesh_surface_rotate`, `mesh_molecule`, `mesh_heightfield_wave`,
+and `mesh_morph` in `crates/manim/examples/`. Design rationale:
+[design/12-mesh-pipeline.md](design/12-mesh-pipeline.md).
+
+---
+
 ## Naming deltas
 
 Mechanical renames, mostly forced by Rust conventions (`new` constructors,
@@ -207,12 +280,11 @@ These are not ports — they are places where Rust idioms give a better result.
 See the [parity map](design/10-parity-map.md) for the authoritative status. As of
 `0.1.0-dev`, the notable gaps a CE user will hit:
 
-- **Boolean smoothness.** `Union`/`Difference`/`Intersection`/`Exclusion`/`Cutout`
-  work but return *polyline* approximations (flattened), not Béziers — CE keeps
-  smoothness via skia-pathops, which we have no equivalent for yet.
-- **3D rendering is in flight.** 3D *geometry* (`Surface`, `Sphere`, `Cube`,
-  `ThreeDAxes`, …) exists and is testable headlessly, but the 3D camera /
-  projection / depth-sorting renderer is still landing (FE-107).
+- **3D rendering is done, in two flavors.** The CE-shaped path (`Surface`,
+  `Sphere`, `Cube`, `ThreeDAxes`, … with a perspective camera and depth sort)
+  landed in FE-107/108, and a depth-tested mesh pipeline landed alongside it in
+  FE-123…129 — see [Two 3D paths](#two-3d-paths-threed-vs-mesh) above. The
+  remaining 3D gap a CE user hits is `set_fill_by_value` (below).
 - **Some text features.** Sub/superscript substring isolation, `Code`
   (syntax-highlighted) blocks, and monospace/`tt` runs are partial or pending.
 - **Extra layouts** for graphs (some CE auto-layouts) and **animated vector-field

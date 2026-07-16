@@ -7,8 +7,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use dioxus::prelude::*;
+use glam::{Mat4, Quat, Vec3};
+use manim_color::TEAL_D;
 use manim_core::animations::{Create, FadeOut, TransformInto};
 use manim_core::graphing::{Axes, NumberPlane};
+use manim_core::mesh::{Mesh, MeshMaterial, Surface3D};
 use manim_core::mobject::AnyId;
 use manim_core::prelude::*;
 use manim_core::vector_field::ArrowVectorField;
@@ -102,6 +105,66 @@ fn cursor_updater() -> LiveUpdater {
     })
 }
 
+/// A depth-tested mesh scene: a shaded saddle plus a translucent sphere sinking
+/// through it, under a turntable camera.
+///
+/// This is the browser end of the mesh pipeline (docs/design/12-mesh-pipeline.md):
+/// `<ManimPlayer>` needed no changes for it. The player precomputes
+/// `DisplayList`s — which carry the `meshes` channel alongside the 2-D draw
+/// items — and hands them to `CanvasSurface`, whose `render`/`render_frame`
+/// already run the depth-tested mesh pass before compositing vector content
+/// over it. The whole path is WebGL2-clean: no compute shaders, no storage
+/// buffers.
+#[derive(Clone, PartialEq)]
+struct MeshScene;
+impl SceneBuilder for MeshScene {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        scene.set_camera_orientation(65_f32.to_radians(), -55_f32.to_radians());
+
+        // A shaded saddle: real geometry, depth-tested and Blinn-Phong shaded.
+        scene.add(
+            Surface3D::new(
+                |u, v| Vec3::new(u as f32, v as f32, 0.4 * (u * u - v * v) as f32),
+                (-2.2, 2.2),
+                (-2.2, 2.2),
+            )
+            .with_resolution(40, 40)
+            .with_checkerboard(Some([BLUE, TEAL_D]))
+            .with_material(MeshMaterial::default().with_lighting(0.26, 0.74, 0.35)),
+        );
+
+        // A translucent sphere straddling the saddle — it must be occluded by the
+        // near lobe and show the far one through itself. That is exactly what the
+        // painter's-algorithm path cannot do.
+        let ball = scene.add(
+            Mesh::sphere()
+                .with_transform(Mat4::from_scale_rotation_translation(
+                    Vec3::splat(0.9),
+                    Quat::IDENTITY,
+                    Vec3::new(0.0, 0.0, 1.4),
+                ))
+                .with_material(MeshMaterial::new(RED).with_opacity(0.55)),
+        );
+
+        // Sink the ball through the surface while the camera orbits.
+        let steps = 60;
+        for i in 0..steps {
+            let z = 1.4 - 2.4 * (i as f32 / steps as f32);
+            scene
+                .state_mut()
+                .get_mut(ball)
+                .set_transform(Mat4::from_scale_rotation_translation(
+                    Vec3::splat(0.9),
+                    Quat::IDENTITY,
+                    Vec3::new(0.0, 0.0, z),
+                ));
+            scene.rotate_camera(TAU / steps as f32);
+            scene.wait(0.05);
+        }
+        Ok(())
+    }
+}
+
 /// A `ZoomedScene`: a tiny cluster of shapes magnified into a bordered inset.
 #[derive(Clone, PartialEq)]
 struct ZoomScene;
@@ -139,6 +202,7 @@ enum Which {
     Square,
     Plot,
     Field,
+    Mesh3D,
     Cursor,
     Zoom,
 }
@@ -159,6 +223,11 @@ const SCENES: &[(Which, &str, &str)] = &[
         Which::Field,
         "Vector field",
         "A rotational field f(x,y) = (−y, x), colored by magnitude.",
+    ),
+    (
+        Which::Mesh3D,
+        "3D mesh",
+        "Depth-tested meshes: a shaded saddle with a translucent sphere sinking through it.",
     ),
     (
         Which::Cursor,
@@ -215,6 +284,9 @@ fn app() -> Element {
                         },
                         Which::Field => rsx! {
                             ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "428px" }
+                        },
+                        Which::Mesh3D => rsx! {
+                            ManimPlayer { scene: MeshScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
                         },
                         Which::Cursor => rsx! {
                             ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
