@@ -33,6 +33,9 @@ manim-dioxus = { path = "crates/manim-dioxus" }
 dioxus = "0.6"
 glam = "0.30"
 usvg = "0.47"
+# Pure-Rust Bézier path arithmetic (Apache-2.0) — curve-preserving boolean ops
+# for `manim-core::boolean`. wasm-compatible (no C deps).
+flo_curves = "0.8"
 slotmap = "1.0"
 thiserror = "2.0"
 smallvec = "1.13"

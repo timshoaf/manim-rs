@@ -10,6 +10,8 @@
 //! cost of one cloned [`SceneState`] per segment (cheap at manim scale). See
 //! `docs/design/04-animation-system.md`.
 
+use std::path::PathBuf;
+
 use crate::animation::Animation;
 use crate::scene_state::{SceneState, UpdaterCtx};
 
@@ -45,6 +47,29 @@ pub struct Section {
     pub start: f32,
 }
 
+/// A scheduled sound (manim's `add_sound`): an audio file mixed into the exported
+/// video's audio track, starting at absolute time `start`.
+///
+/// Plain data — cues do not affect frames or seeking, only audio muxing at export
+/// time. The `path` only takes effect for native video export (there is no audio
+/// on the web), but the type compiles on every target.
+///
+/// ```
+/// use manim_core::timeline::SoundCue;
+/// let cue = SoundCue { path: "click.wav".into(), start: 1.5, gain: None };
+/// assert_eq!(cue.start, 1.5);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct SoundCue {
+    /// The audio file to play.
+    pub path: PathBuf,
+    /// Absolute start time in seconds (scene time when scheduled, plus offset).
+    pub start: f32,
+    /// Optional linear gain multiplier (`1.0` = unchanged); `None` leaves the
+    /// clip at its recorded level.
+    pub gain: Option<f32>,
+}
+
 /// An explicit, seekable schedule of animation segments.
 ///
 /// Built up by [`Scene`](crate::scene::Scene) during `construct`; consumed by
@@ -53,6 +78,7 @@ pub struct Section {
 pub struct Timeline {
     segments: Vec<Segment>,
     sections: Vec<Section>,
+    sound_cues: Vec<SoundCue>,
     cursor: f32,
 }
 
@@ -202,5 +228,47 @@ impl Timeline {
     /// ```
     pub fn sections(&self) -> &[Section] {
         &self.sections
+    }
+
+    /// Records a [`SoundCue`] for `path`, starting `offset` seconds from the
+    /// current end time (manim's `add_sound`; `offset` may be negative, clamped
+    /// to `0`). Does not change the timeline duration.
+    pub fn push_sound(&mut self, path: PathBuf, offset: f32) {
+        let start = (self.duration() + offset).max(0.0);
+        self.sound_cues.push(SoundCue {
+            path,
+            start,
+            gain: None,
+        });
+    }
+
+    /// The scheduled [`SoundCue`]s, in insertion order.
+    pub fn sound_cues(&self) -> &[SoundCue] {
+        &self.sound_cues
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scene_state::SceneState;
+
+    #[test]
+    fn sound_cues_record_at_scene_time_and_clamp() {
+        let mut tl = Timeline::new();
+        tl.push_wait(1.5, SceneState::new());
+        tl.push_sound("a.wav".into(), 0.0); // at the 1.5 s cursor
+        tl.push_wait(1.0, SceneState::new()); // duration now 2.5 s
+        tl.push_sound("b.wav".into(), 0.5); // 3.0 s
+        tl.push_sound("c.wav".into(), -10.0); // clamps to 0
+
+        let cues = tl.sound_cues();
+        assert_eq!(cues.len(), 3);
+        assert!((cues[0].start - 1.5).abs() < 1e-6);
+        assert!((cues[1].start - 3.0).abs() < 1e-6);
+        assert_eq!(cues[2].start, 0.0);
+        assert_eq!(cues[0].path, PathBuf::from("a.wav"));
+        // Cues don't extend the timeline.
+        assert!((tl.duration() - 2.5).abs() < 1e-6);
     }
 }

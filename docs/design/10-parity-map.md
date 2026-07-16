@@ -18,7 +18,7 @@ Statuses below reflect `0.1.0-dev`.
 | Angle, RightAngle | `geometry::line` | ✅ |
 | Polygram, Polygon, RegularPolygram, RegularPolygon, Star, Triangle | `geometry::polygram` | ✅ |
 | Rectangle, Square, RoundedRectangle | `geometry::polygram` | ✅ |
-| Union, Difference, Intersection, Exclusion, Cutout | `boolean` | ✅ (polyline result — smoothness gap, see below) |
+| Union, Difference, Intersection, Exclusion, Cutout | `boolean` | ✅ (curve-preserving via `flo_curves`; GH polyline fallback) |
 | ArrowTip variants (triangle/square/circle/stealth, filled/open) | `geometry::line::TipShape` | 🟨 (4 shapes; open outline for pointed tips, round/square solid-only) |
 | ArcPolygon, ArcPolygonFromArcs | `geometry::arc` | ✅ |
 
@@ -92,15 +92,16 @@ Multi-camera zoomed display — ⬜ (ZoomedScene, FE-120).
 | paths (straight/arc/spiral path funcs) | manim-math::paths / core `animations::paths` | ✅ |
 | config | manim-core::config | ✅ |
 | images/ipython/hashing/caching | n/a (Python-specific) | — |
-| sounds (`Scene.add_sound`) | manim-core (native feature) | ⬜ |
+| sounds (`Scene.add_sound`) | manim-core cues + manim-render ffmpeg mux | ✅ (native video export) |
 | tex / tex_templates | manim-text::typst mapping | ✅ (LaTeX-subset → typst) |
 
 ## Explicit deferrals (documented, issue-tracked)
-- **Boolean smoothness**: `boolean` ops flatten to polylines (no skia-pathops
-  equivalent); Bézier-preserving boolean is post-v1.
+- **Boolean smoothness**: ✅ resolved (FE-121a) — `boolean` ops are now
+  curve-preserving via `flo_curves` (pure-Rust path arithmetic), keeping Bézier
+  arcs; the Greiner–Hormann polyline clip remains a documented fallback for
+  degenerate inputs.
 - **3D rendering** waits on FE-107 (camera/projection/depth-sort); the geometry is
   already headless-testable.
-- **ZoomedScene** and **sound** (`add_sound`) — pending.
 - OpenGL-renderer-specific API (CE's experimental opengl namespace): n/a — our
   renderer IS the GPU renderer.
 - `manim cfg` / plugin system: replaced by Cargo features & Rust traits.

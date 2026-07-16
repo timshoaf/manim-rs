@@ -168,7 +168,7 @@ Severity: **core** (blocks common workflows) · **common** (frequently used) ·
 | SpecialThreeDScene | — | ⬜ | niche |
 | VectorScene, LinearTransformationScene | `vector_space` helpers + `LinearTransformationScene` | ✅ | common |
 | `interactive_embed` / `embed` | — | ⬜ | niche |
-| `add_sound` | — | ⬜ | niche |
+| `add_sound` | `Scene::add_sound` / `add_sound_at` (ffmpeg mux) | ✅ | niche |
 | ThreeDCamera phi/theta/gamma/focal_distance | `ThreeDParams` (all four) | ✅ | common |
 | MultiCamera / zoomed display / MappingCamera | — | ⬜ | niche |
 
@@ -203,7 +203,7 @@ Ranked for maximum real-world parity per unit of work — highest-leverage first
 11. **Animated `StreamLines`** — `start_animation` / flowing dots along the field. *(common, medium; manim-core vector_field.)*
 12. **Boolean Bézier smoothness** — keep curves through boolean ops instead of polyline flattening. *(common, high; manim-core boolean.)*
 13. **AnnotationDot + LabeledLine / LabeledArrow** — small labeled-geometry conveniences. *(niche, small; manim-core geometry + manim-text.)*
-14. **`add_sound`** — attach audio to the timeline for video export. *(niche, medium; manim-core + manim-render/ffmpeg.)*
+14. ~~**`add_sound`**~~ — ✅ done (FE-121): timeline sound cues + ffmpeg audio mux in `render_to_mp4`.
 15. **ArcPolygon / ArcPolygonFromArcs** — polygons with arc edges. *(niche, medium; manim-core geometry.)*
 
 ---

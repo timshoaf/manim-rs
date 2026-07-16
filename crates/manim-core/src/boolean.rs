@@ -2,33 +2,36 @@
 //! [`Union`], [`Difference`], [`Intersection`], [`Exclusion`], and [`Cutout`].
 //! Port of manim CE's `manim.mobject.geometry.boolean_ops`.
 //!
-//! # Approach (pragmatic v1)
+//! # Approach
 //!
-//! manim CE delegates to `skia-pathops`, which keeps Bézier smoothness. We have
-//! no such dependency, so each input outline is **flattened to a polygon** (its
-//! cubic subpaths recursively subdivided until flat to `1e-3` scene units) and
-//! the set operation is a **polygon clip** via the Greiner–Hormann algorithm.
-//! The result is therefore a polyline approximation — corners,
-//! not curves. For straight-edged inputs (rectangles, polygons) it is exact; for
-//! curved inputs it is a fine-grained polygon. This matches the parity intent
-//! (correct regions) while documenting the smoothness loss.
+//! manim CE delegates to `skia-pathops`, which keeps Bézier smoothness. We match
+//! that with [`flo_curves`](https://crates.io/crates/flo_curves) (pure-Rust,
+//! Apache-2.0, wasm-compatible): each input's cubic contours are handed to
+//! `flo_curves`' path arithmetic (`path_add` / `path_sub` / `path_intersect`)
+//! and the **curved** result is converted straight back to cubic subpaths. Two
+//! overlapping circles' union stays a handful of smooth arcs, not a fine polygon.
+//! All contours of an input participate, so holes composite correctly.
 //!
-//! Each input contributes a single contour: the subpath enclosing the largest
-//! area. Multi-contour inputs (holes) are not composited in v1 — the sole
-//! exception is [`Cutout`], which explicitly subtracts hole mobjects.
+//! Because `flo_curves` treats every edge as exterior (no winding rule), result
+//! contours are re-oriented by nesting depth (`orient_even_odd`) so holes wind
+//! opposite their surrounding ring — correct under both non-zero and even-odd
+//! fill.
 //!
-//! ## Robustness caveats
+//! ## Fallback: Greiner–Hormann polyline clip
 //!
-//! Greiner–Hormann assumes intersections are *transversal* — an edge of one
-//! polygon crossing the interior of an edge of the other. Degenerate incidences
-//! (a vertex lying exactly on the other polygon's edge, collinear overlapping
-//! edges, tangencies) break the entry/exit bookkeeping. We detect a
-//! near-degenerate crossing (an intersection parameter within `1e-7` of an edge
-//! endpoint) and retry after nudging the clip polygon by a tiny irrational-ratio
-//! offset; after a few retries we proceed anyway. This resolves the
-//! common axis-aligned cases (e.g. two squares sharing a vertex) but is not a
-//! general exact-predicate solution.
+//! For inputs that break the curve path (degeneracies that make `flo_curves`
+//! panic or return nothing where a result exists), we fall back to a
+//! **polygon clip** via the Greiner–Hormann algorithm: each outline is flattened
+//! to a polygon (cubics subdivided until flat to `1e-3` scene units) and clipped,
+//! yielding a polyline approximation (correct regions, faceted curves). GH
+//! assumes *transversal* intersections; near-degenerate crossings (a parameter
+//! within `1e-7` of an edge endpoint) trigger a perturb-and-retry that resolves
+//! common axis-aligned cases (two squares sharing a vertex) but is not a general
+//! exact-predicate solution. In practice the curve route handles these directly
+//! and the fallback rarely fires.
 
+use flo_curves::bezier::path::{path_add, path_intersect, path_sub, SimpleBezierPath};
+use flo_curves::Coord2;
 use manim_color::WHITE;
 use manim_math::bezier::CubicBezier;
 use manim_math::path::{Path, SubPath};
@@ -63,6 +66,160 @@ enum Op {
 type Poly = Vec<[f64; 2]>;
 
 // ---------------------------------------------------------------------------
+// Curve-preserving path arithmetic (primary route: flo_curves).
+// ---------------------------------------------------------------------------
+
+/// Fit accuracy (scene units) for `flo_curves` path arithmetic — well under the
+/// 0.01 deviation budget so preserved arcs stay faithful without over-splitting.
+const FIT_ACCURACY: f64 = 1e-3;
+
+fn to_coord(p: Point) -> Coord2 {
+    Coord2(p.x as f64, p.y as f64)
+}
+fn to_point(c: &Coord2) -> Point {
+    Point::new(c.0 as f32, c.1 as f32, 0.0)
+}
+
+/// Converts one subpath of cubics into a `flo_curves` path (start + hull triples).
+fn subpath_to_flo(sp: &SubPath) -> Option<SimpleBezierPath> {
+    if sp.curves.is_empty() {
+        return None;
+    }
+    let start = to_coord(sp.curves[0].p0);
+    let segs = sp
+        .curves
+        .iter()
+        .map(|c| (to_coord(c.p1), to_coord(c.p2), to_coord(c.p3)))
+        .collect();
+    Some((start, segs))
+}
+
+/// Every drawable contour of a mobject as flo paths (multi-contour aware, so
+/// holes survive — unlike the single-contour polyline route).
+fn mobject_to_flo(m: &dyn Mobject) -> Vec<SimpleBezierPath> {
+    m.data()
+        .path
+        .subpaths
+        .iter()
+        .filter_map(subpath_to_flo)
+        .collect()
+}
+
+/// Converts a flo result path back into our (always-closed) cubic subpath.
+fn flo_to_subpath((start, segs): &SimpleBezierPath) -> SubPath {
+    let mut prev = to_point(start);
+    let mut curves = Vec::with_capacity(segs.len());
+    for (c1, c2, end) in segs {
+        let e = to_point(end);
+        curves.push(CubicBezier::new(prev, to_point(c1), to_point(c2), e));
+        prev = e;
+    }
+    SubPath {
+        curves,
+        closed: true,
+    }
+}
+
+/// Runs one flo path-arithmetic op, catching panics from pathological input so
+/// the caller can fall back. Returns `None` only on panic — a legitimately empty
+/// result is `Some(vec![])`.
+fn flo_op(a: &[SimpleBezierPath], b: &[SimpleBezierPath], op: Op) -> Option<Vec<SimpleBezierPath>> {
+    let a = a.to_vec();
+    let b = b.to_vec();
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match op {
+        Op::Union => path_add::<SimpleBezierPath>(&a, &b, FIT_ACCURACY),
+        Op::Intersection => path_intersect::<SimpleBezierPath>(&a, &b, FIT_ACCURACY),
+        Op::Difference => path_sub::<SimpleBezierPath>(&a, &b, FIT_ACCURACY),
+    }))
+    .ok()
+}
+
+/// Result contours of `op`, preferring the curve-preserving flo route and
+/// falling back to the Greiner–Hormann polyline clip when flo panics or comes up
+/// empty on inputs the polyline route can still resolve.
+fn op_subpaths(a: &dyn Mobject, b: &dyn Mobject, op: Op) -> Vec<SubPath> {
+    let fa = mobject_to_flo(a);
+    let fb = mobject_to_flo(b);
+    if let Some(res) = flo_op(&fa, &fb, op) {
+        if !res.is_empty() {
+            return orient_even_odd(res.iter().map(flo_to_subpath).collect());
+        }
+    }
+    // Fallback (also correctly empty for genuinely empty results).
+    polys_to_subpaths(run(a, b, op))
+}
+
+/// Reverses a subpath's direction (flips its winding) by reversing the curve
+/// order and each cubic's control points.
+fn reverse_subpath(sp: &SubPath) -> SubPath {
+    let curves = sp
+        .curves
+        .iter()
+        .rev()
+        .map(|c| CubicBezier::new(c.p3, c.p2, c.p1, c.p0))
+        .collect();
+    SubPath {
+        curves,
+        closed: sp.closed,
+    }
+}
+
+/// A point just inside a contour (a vertex nudged toward the centroid), used for
+/// nesting tests without landing exactly on the boundary.
+fn interior_point(poly: &Poly) -> [f64; 2] {
+    let n = poly.len() as f64;
+    let cx = poly.iter().map(|p| p[0]).sum::<f64>() / n;
+    let cy = poly.iter().map(|p| p[1]).sum::<f64>() / n;
+    let v = poly[0];
+    [v[0] + 0.01 * (cx - v[0]), v[1] + 0.01 * (cy - v[1])]
+}
+
+/// `flo_curves` treats every edge as exterior and does not orient holes. Re-wind
+/// each result contour by its nesting depth (even = filled/CCW, odd = hole/CW) so
+/// holes render correctly under both non-zero and even-odd fill rules.
+fn orient_even_odd(subpaths: Vec<SubPath>) -> Vec<SubPath> {
+    if subpaths.len() <= 1 {
+        return subpaths;
+    }
+    let polys: Vec<Poly> = subpaths.iter().map(flatten_subpath).collect();
+    let reps: Vec<[f64; 2]> = polys.iter().map(interior_point).collect();
+    subpaths
+        .into_iter()
+        .enumerate()
+        .map(|(i, sp)| {
+            let depth = (0..polys.len())
+                .filter(|&j| j != i && point_in_poly(reps[i], &polys[j]))
+                .count();
+            let want_ccw = depth % 2 == 0;
+            let is_ccw = poly_area(&polys[i]) > 0.0;
+            if is_ccw == want_ccw {
+                sp
+            } else {
+                reverse_subpath(&sp)
+            }
+        })
+        .collect()
+}
+
+/// Closes GH polygon rings back into polyline subpaths (the fallback geometry).
+fn polys_to_subpaths(polys: Vec<Poly>) -> Vec<SubPath> {
+    polys
+        .into_iter()
+        .filter(|p| p.len() >= 3)
+        .map(|poly| {
+            let mut corners: Vec<Point> = poly
+                .iter()
+                .map(|p| Point::new(p[0] as f32, p[1] as f32, 0.0))
+                .collect();
+            corners.push(corners[0]);
+            let mut sp = SubPath::from_corners(&corners);
+            sp.closed = true;
+            sp
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Public mobjects.
 // ---------------------------------------------------------------------------
 
@@ -88,7 +245,7 @@ impl Union {
     /// style).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(a: &dyn Mobject, b: &dyn Mobject) -> VMobject {
-        build_result(a, run(a, b, Op::Union))
+        build_from_subpaths(a, op_subpaths(a, b, Op::Union))
     }
 }
 
@@ -113,7 +270,7 @@ impl Difference {
     /// Builds `a − b` as a filled [`VMobject`] (inherits `a`'s style).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(a: &dyn Mobject, b: &dyn Mobject) -> VMobject {
-        build_result(a, run(a, b, Op::Difference))
+        build_from_subpaths(a, op_subpaths(a, b, Op::Difference))
     }
 }
 
@@ -139,7 +296,7 @@ impl Intersection {
     /// `a`'s style).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(a: &dyn Mobject, b: &dyn Mobject) -> VMobject {
-        build_result(a, run(a, b, Op::Intersection))
+        build_from_subpaths(a, op_subpaths(a, b, Op::Intersection))
     }
 }
 
@@ -165,9 +322,9 @@ impl Exclusion {
     /// (inherits `a`'s style).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(a: &dyn Mobject, b: &dyn Mobject) -> VMobject {
-        let mut polys = run(a, b, Op::Difference);
-        polys.extend(run(b, a, Op::Difference));
-        build_result(a, polys)
+        let mut subpaths = op_subpaths(a, b, Op::Difference);
+        subpaths.extend(op_subpaths(b, a, Op::Difference));
+        build_from_subpaths(a, subpaths)
     }
 }
 
@@ -194,6 +351,24 @@ impl Cutout {
     /// [`VMobject`] (inherits `main`'s style).
     #[allow(clippy::new_ret_no_self)]
     pub fn new(main: &dyn Mobject, holes: &[&dyn Mobject]) -> VMobject {
+        // Curve-preserving route: fold flo `path_sub` over each hole.
+        let mut cur = mobject_to_flo(main);
+        let mut flo_ok = true;
+        for hole in holes {
+            match flo_op(&cur, &mobject_to_flo(*hole), Op::Difference) {
+                Some(next) => cur = next,
+                None => {
+                    flo_ok = false;
+                    break;
+                }
+            }
+        }
+        if flo_ok && !cur.is_empty() {
+            let subpaths = orient_even_odd(cur.iter().map(flo_to_subpath).collect());
+            return build_from_subpaths(main, subpaths);
+        }
+
+        // Fallback: Greiner–Hormann polyline cutout.
         let mut polys = vec![representative_poly(main)]
             .into_iter()
             .flatten()
@@ -209,7 +384,7 @@ impl Cutout {
             }
             polys = next;
         }
-        build_result(main, polys)
+        build_from_subpaths(main, polys_to_subpaths(polys))
     }
 }
 
@@ -697,23 +872,7 @@ fn point_line_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 
 /// Builds a filled [`VMobject`] from result polygons, inheriting `src`'s style
 /// (falling back to a white fill when `src` has none).
-fn build_result(src: &dyn Mobject, polys: Vec<Poly>) -> VMobject {
-    let subpaths = polys
-        .into_iter()
-        .filter_map(|poly| {
-            if poly.len() < 3 {
-                return None;
-            }
-            let mut corners: Vec<Point> = poly
-                .iter()
-                .map(|p| Point::new(p[0] as f32, p[1] as f32, 0.0))
-                .collect();
-            corners.push(corners[0]);
-            let mut sp = SubPath::from_corners(&corners);
-            sp.closed = true;
-            Some(sp)
-        })
-        .collect();
+fn build_from_subpaths(src: &dyn Mobject, subpaths: Vec<SubPath>) -> VMobject {
     let mut style = src.data().style.clone();
     if style.fill_color.is_none() && style.stroke_color.is_none() {
         style = Style::filled(WHITE);
@@ -724,9 +883,31 @@ fn build_result(src: &dyn Mobject, polys: Vec<Poly>) -> VMobject {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Square;
+    use crate::geometry::{Circle, Square};
     use crate::mobject::MobjectExt;
-    use manim_math::RIGHT;
+    use manim_math::{RIGHT, UP};
+
+    /// The turn angle (degrees) between consecutive curves' tangents at each ring
+    /// join of a closed subpath.
+    fn join_angles(sp: &SubPath) -> Vec<f64> {
+        let m = sp.curves.len();
+        (0..m)
+            .map(|i| {
+                let cin = &sp.curves[i];
+                let cout = &sp.curves[(i + 1) % m];
+                let ti = cin.p3 - cin.p2;
+                let to = cout.p1 - cout.p0;
+                let dot = (ti.x * to.x + ti.y * to.y) as f64;
+                let mag = ((ti.x * ti.x + ti.y * ti.y).sqrt() * (to.x * to.x + to.y * to.y).sqrt())
+                    as f64;
+                if mag > 1e-12 {
+                    (dot / mag).clamp(-1.0, 1.0).acos().to_degrees()
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    }
 
     /// Total absolute area of a set of result polygons.
     fn total_area(polys: &[Poly]) -> f64 {
@@ -740,6 +921,93 @@ mod tests {
             [cx + half, cy + half],
             [cx - half, cy + half],
         ]
+    }
+
+    #[test]
+    fn union_of_circles_is_curve_preserving_and_accurate() {
+        let a = Circle::new();
+        let mut b = Circle::new();
+        b.shift(RIGHT);
+        let u = Union::new(&a, &b);
+        let path = &u.data().path;
+
+        // Curve-preserving: a handful of cubic arcs, NOT the hundreds of tiny
+        // segments the old polyline flattening produced.
+        let n_curves: usize = path.subpaths.iter().map(|s| s.curves.len()).sum();
+        assert!(n_curves < 40, "expected few cubic arcs, got {n_curves}");
+
+        // Deviation from the analytic union boundary (unit circles at 0 / RIGHT):
+        // every boundary point lies on whichever circle it is outside the other of.
+        let mut max_dev = 0.0_f64;
+        for sp in &path.subpaths {
+            for c in &sp.curves {
+                for k in 0..=16 {
+                    let p = c.eval(k as f32 / 16.0);
+                    let da = ((p.x as f64).powi(2) + (p.y as f64).powi(2)).sqrt();
+                    let db = (((p.x as f64) - 1.0).powi(2) + (p.y as f64).powi(2)).sqrt();
+                    max_dev = max_dev.max((da - 1.0).abs().min((db - 1.0).abs()));
+                }
+            }
+        }
+        assert!(
+            max_dev < 0.01,
+            "union boundary deviates {max_dev} from the true arcs"
+        );
+    }
+
+    #[test]
+    fn union_of_circles_arcs_stay_smooth() {
+        let a = Circle::new();
+        let mut b = Circle::new();
+        b.shift(RIGHT);
+        let u = Union::new(&a, &b);
+        let sp = &u.data().path.subpaths[0];
+        let angles = join_angles(sp);
+        let m = angles.len();
+
+        // Two circles cross at exactly two points (legitimate kinks); every other
+        // join follows a single circle arc and must be tangent-continuous — no
+        // spurious corner where the arc should be smooth.
+        let corners = angles.iter().filter(|a| **a > 15.0).count();
+        let smooth = angles.iter().filter(|a| **a < 1.0).count();
+        assert!(
+            corners <= 2,
+            "expected ≤2 crossing corners, got {corners} ({angles:?})"
+        );
+        assert!(
+            smooth >= m / 2,
+            "arc joins should be mostly smooth, got {smooth}/{m} ({angles:?})"
+        );
+    }
+
+    #[test]
+    fn degenerate_shared_edge_union_area() {
+        // Two unit squares sharing the edge x=1 — collinear edges, a GH
+        // degeneracy. The curve route (or its GH fallback) must still be correct.
+        let a = Square::new(); // [-1,1]^2, area 4
+        let mut b = Square::new();
+        b.shift(2.0 * RIGHT); // [1,3]x[-1,1]
+        let u = Union::new(&a, &b);
+        let area = total_area(&path_to_polys(&u.data().path));
+        assert!(
+            (area - 8.0).abs() < 1e-1,
+            "shared-edge union area={area}, want 8"
+        );
+        assert!((u.bounding_box().width() - 4.0).abs() < 1e-1);
+    }
+
+    #[test]
+    fn degenerate_shared_vertex_union_area() {
+        // Two unit squares touching only at the corner (1,1) — vertex incidence.
+        let a = Square::new();
+        let mut b = Square::new();
+        b.shift(2.0 * RIGHT + 2.0 * UP);
+        let u = Union::new(&a, &b);
+        let area = total_area(&path_to_polys(&u.data().path));
+        assert!(
+            (area - 8.0).abs() < 2e-1,
+            "vertex-touch union area={area}, want 8"
+        );
     }
 
     #[test]

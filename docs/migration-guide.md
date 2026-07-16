@@ -215,7 +215,6 @@ See the [parity map](design/10-parity-map.md) for the authoritative status. As o
   projection / depth-sorting renderer is still landing (FE-107).
 - **Some text features.** Sub/superscript substring isolation, `Code`
   (syntax-highlighted) blocks, and monospace/`tt` runs are partial or pending.
-- **`ZoomedScene`** and **sound** (`add_sound`) are not implemented.
 - **Extra layouts** for graphs (some CE auto-layouts) and **animated vector-field
   flow** are partial.
 - **`set_fill_by_value`** on 3D surfaces (per-face value coloring) is deferred.

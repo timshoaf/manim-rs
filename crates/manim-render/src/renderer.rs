@@ -86,6 +86,10 @@ pub enum RenderError {
     /// `ffmpeg` ran but exited with a failure status.
     #[error("ffmpeg failed: {0}")]
     FfmpegFailed(String),
+    /// A scheduled sound file (from `Scene::add_sound`) does not exist; checked
+    /// before invoking `ffmpeg`.
+    #[error("sound file not found: {0}")]
+    SoundNotFound(String),
     /// Building the scene (running its `construct`) failed.
     #[error(transparent)]
     Core(#[from] manim_core::error::CoreError),

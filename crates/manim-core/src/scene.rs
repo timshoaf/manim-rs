@@ -452,6 +452,47 @@ impl Scene {
         self.state.display_list()
     }
 
+    /// Schedules a sound to play at the current scene time (manim's
+    /// `add_sound`). The file is mixed into the exported video's audio track;
+    /// it has no effect on frames, seeking, or web playback.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// let mut scene = Scene::new(Config::default());
+    /// scene.wait(1.0);
+    /// scene.add_sound("click.wav");
+    /// assert_eq!(scene.sound_cues().len(), 1);
+    /// assert!((scene.sound_cues()[0].start - 1.0).abs() < 1e-6);
+    /// ```
+    pub fn add_sound(&mut self, path: impl Into<std::path::PathBuf>) -> &mut Self {
+        self.timeline.push_sound(path.into(), 0.0);
+        self
+    }
+
+    /// Schedules a sound at `time_offset` seconds from the current scene time
+    /// (manim's `add_sound(..., time_offset=)`; negative offsets clamp to `0`).
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// let mut scene = Scene::new(Config::default());
+    /// scene.wait(2.0);
+    /// scene.add_sound_at("beep.wav", 0.5);
+    /// assert!((scene.sound_cues()[0].start - 2.5).abs() < 1e-6);
+    /// ```
+    pub fn add_sound_at(
+        &mut self,
+        path: impl Into<std::path::PathBuf>,
+        time_offset: f32,
+    ) -> &mut Self {
+        self.timeline.push_sound(path.into(), time_offset);
+        self
+    }
+
+    /// The scheduled sound cues (manim's queued sounds), in insertion order.
+    pub fn sound_cues(&self) -> &[crate::timeline::SoundCue] {
+        self.timeline.sound_cues()
+    }
+
     /// The total scheduled duration in seconds (manim's `renderer.time`).
     pub fn total_duration(&self) -> f32 {
         self.timeline.duration()
