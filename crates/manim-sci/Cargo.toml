@@ -35,5 +35,9 @@ required-features = ["render-examples"]
 name = "torus_curvature"
 required-features = ["render-examples"]
 
+[[example]]
+name = "dipole_field"
+required-features = ["render-examples"]
+
 [lints]
 workspace = true

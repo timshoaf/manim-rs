@@ -29,6 +29,8 @@ pub mod diffgeo;
 pub mod geodesics;
 pub mod isosurface;
 pub mod material_quad;
+pub mod vector_field_3d;
+pub mod volumetrics;
 
 use manim_core::prelude::Point;
 
