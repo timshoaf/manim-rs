@@ -1,0 +1,34 @@
+[package]
+name = "manim-chem"
+description = "Chemistry visualizers for manim_rust: XYZ/SDF/cube parsers, CPK element data, ball-and-stick / space-filling / wireframe molecules, crystal lattices, and orbital isosurfaces."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["manim", "chemistry", "molecule", "visualization", "crystallography"]
+categories = ["graphics", "science", "parsing"]
+
+[dependencies]
+manim-fields = { workspace = true }
+manim-sci = { workspace = true }
+manim-core = { workspace = true }
+manim-math = { workspace = true }
+glam = { workspace = true }
+manim-render = { workspace = true, optional = true }
+
+[features]
+## Enables the GPU-rendering examples (pulls in `manim-render`).
+render-examples = ["dep:manim-render"]
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[[example]]
+name = "caffeine"
+required-features = ["render-examples"]
+
+[lints]
+workspace = true
