@@ -15,7 +15,7 @@ use manim_core::mesh::{HeightField, Mesh, MeshMaterial, Surface3D};
 use manim_core::mobject::{AnyId, MobjectId};
 use manim_core::prelude::*;
 use manim_core::vector_field::ArrowVectorField;
-use manim_dioxus::{LiveUpdater, ManimPlayer};
+use manim_dioxus::{Figure, LiveUpdater, ManimGpuProvider, ManimPlayer};
 
 /// The canonical square → circle animation.
 #[derive(Clone, PartialEq)]
@@ -255,6 +255,157 @@ fn orbit_updater() -> LiveUpdater {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Textbook-page figures (FE-138): static, render-on-demand `<Figure>`s. Each is
+// a zero-/short-duration construction shown at its final frame; on a page a
+// dozen of them share one GPU device (via `ManimGpuProvider`) and idle at ~0
+// cost until scrolled into view.
+// ---------------------------------------------------------------------------
+
+/// Which analytic curve a [`CurveFig`] plots.
+#[derive(Clone, Copy, PartialEq)]
+enum Curve {
+    Sine,
+    Cosine,
+    Parabola,
+    Cubic,
+    Gaussian,
+    Damped,
+}
+
+/// A static figure: labeled axes with one plotted curve.
+#[derive(Clone, PartialEq)]
+struct CurveFig(Curve);
+impl SceneBuilder for CurveFig {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        let axes = Axes::new([-5.0, 5.0, 1.0], [-3.0, 3.0, 1.0]).with_stroke(WHITE, 2.0, 1.0);
+        let a = scene.add(axes);
+        let (f, color): (fn(f32) -> f32, Color) = match self.0 {
+            Curve::Sine => (|x| 2.0 * x.sin(), YELLOW),
+            Curve::Cosine => (|x| 2.0 * x.cos(), TEAL_D),
+            Curve::Parabola => (|x| 0.4 * x * x - 2.0, GREEN),
+            Curve::Cubic => (|x| 0.06 * x * x * x, RED),
+            Curve::Gaussian => (|x| 2.5 * (-(x * x) / 2.0).exp(), BLUE),
+            Curve::Damped => (|x| 2.4 * (-0.25 * x.abs()).exp() * (3.0 * x).sin(), PURPLE),
+        };
+        let curve = scene[a].plot(f, None).with_stroke(color, 3.5, 1.0);
+        scene.add(curve);
+        Ok(())
+    }
+}
+
+/// A static composition of the three primitive shapes.
+#[derive(Clone, PartialEq)]
+struct GeomFig;
+impl SceneBuilder for GeomFig {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        scene.add(
+            Circle::new()
+                .with_scale(1.7)
+                .with_stroke(WHITE, 3.0, 1.0)
+                .with_fill(BLUE, 0.22),
+        );
+        scene.add(
+            Square::new()
+                .with_scale(1.1)
+                .with_stroke(YELLOW, 3.0, 1.0)
+                .with_shift(1.5 * LEFT),
+        );
+        scene.add(
+            Triangle::new()
+                .with_scale(1.2)
+                .with_stroke(GREEN, 3.0, 1.0)
+                .with_shift(1.5 * RIGHT),
+        );
+        Ok(())
+    }
+}
+
+/// A static number-plane backdrop.
+#[derive(Clone, PartialEq)]
+struct PlaneFig;
+impl SceneBuilder for PlaneFig {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        scene.add(NumberPlane::new([-7.0, 7.0, 1.0], [-4.0, 4.0, 1.0]));
+        Ok(())
+    }
+}
+
+/// A static figure: concentric circles in a warm-to-cool ramp.
+#[derive(Clone, PartialEq)]
+struct NestedFig;
+impl SceneBuilder for NestedFig {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        let ramp = [RED, ORANGE, YELLOW, GREEN, BLUE, PURPLE];
+        for (i, c) in ramp.iter().enumerate() {
+            let r = 0.5 + i as f32 * 0.45;
+            scene.add(Circle::new().with_scale(r).with_stroke(*c, 3.0, 1.0));
+        }
+        Ok(())
+    }
+}
+
+/// The twelve textbook figures, in reading order: `(scene, caption)`. Boxed as
+/// trait objects so a single loop can lay them all out; each is `'static` and
+/// its own `SceneBuilder`.
+fn textbook_figures() -> Vec<(Element, &'static str)> {
+    // Each entry renders a `<Figure>` (static, lazy, shared-device) plus a
+    // caption. Figures are small (300px) so a dozen fit a scrollable column.
+    fn fig<S: SceneBuilder + Clone + PartialEq + 'static>(scene: S) -> Element {
+        rsx! {
+            Figure {
+                scene,
+                width: "100%",
+                height: "220px",
+            }
+        }
+    }
+    vec![
+        (fig(CurveFig(Curve::Sine)), "Fig 1. y = 2 sin x"),
+        (fig(CurveFig(Curve::Cosine)), "Fig 2. y = 2 cos x"),
+        (fig(CurveFig(Curve::Parabola)), "Fig 3. y = 0.4x² − 2"),
+        (fig(CurveFig(Curve::Cubic)), "Fig 4. y = 0.06x³"),
+        (fig(CurveFig(Curve::Gaussian)), "Fig 5. Gaussian e^(−x²/2)"),
+        (fig(CurveFig(Curve::Damped)), "Fig 6. Damped sinusoid"),
+        (fig(GeomFig), "Fig 7. Primitive shapes"),
+        (fig(NestedFig), "Fig 8. Concentric circles"),
+        (fig(PlaneFig), "Fig 9. The number plane"),
+        (fig(FieldScene), "Fig 10. Rotational field (−y, x)"),
+        (fig(ZoomScene), "Fig 11. Magnified inset"),
+        (fig(MeshScene), "Fig 12. Depth-tested saddle (final frame)"),
+    ]
+}
+
+/// The textbook-page route: a scrollable column of a dozen render-on-demand
+/// [`Figure`]s, all sharing one GPU device via [`ManimGpuProvider`].
+///
+/// This is the FE-138 acceptance surface. The single-device guarantee is
+/// structural: `ManimGpuProvider` requests exactly one `SharedGpu`, and every
+/// descendant `Figure` builds its canvas with `CanvasSurface::with_shared`
+/// against a clone of that one reference-counted device/queue — never its own
+/// `request_device`. The idle-cost guarantee is the `RenderSchedule` state
+/// machine (unit-tested in `manim-dioxus`): each figure draws once when it
+/// scrolls into view, then parks — an on-screen-but-idle page renders zero
+/// frames until something marks a figure dirty.
+#[component]
+fn TextbookPage() -> Element {
+    let figures = textbook_figures();
+    rsx! {
+        ManimGpuProvider {
+            div { style: "columns:2 320px;column-gap:1rem;",
+                for (fig , caption) in figures.into_iter() {
+                    div { style: "break-inside:avoid;margin:0 0 1rem;border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#000;",
+                        {fig}
+                        p { style: "margin:0;padding:8px 10px;color:#9aa;font-size:0.82rem;background:#181818;",
+                            "{caption}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Which scene the gallery is showing.
 #[derive(Clone, Copy, PartialEq)]
 enum Which {
@@ -306,8 +457,16 @@ const SCENES: &[(Which, &str, &str)] = &[
     ),
 ];
 
+/// Top-level view: the single-player gallery, or the multi-figure textbook page.
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    Gallery,
+    Textbook,
+}
+
 /// The gallery: a scene picker driving the selected `<ManimPlayer>`.
 fn app() -> Element {
+    let mut view = use_signal(|| View::Gallery);
     let mut which = use_signal(|| Which::Square);
     let sel = which();
     let caption = SCENES
@@ -319,52 +478,83 @@ fn app() -> Element {
     rsx! {
         div {
             style: "font-family:system-ui;background:#141414;color:#eee;min-height:100vh;padding:2rem 1.5rem;box-sizing:border-box;",
-            div { style: "max-width:760px;margin:0 auto;",
+            div { style: if matches!(view(), View::Textbook) { "max-width:1040px;margin:0 auto;" } else { "max-width:760px;margin:0 auto;" },
                 h1 { style: "margin:0 0 4px;font-size:1.6rem;", "manim_rust · Dioxus gallery" }
-                p { style: "margin:0 0 1.2rem;color:#9aa;",
-                    "manim scenes rendered to a live "
-                    code { style: "color:#7cd;", "<canvas>" }
-                    " through wgpu. Pick a scene:"
+                // Top-level view switch: single-player gallery vs the multi-figure
+                // textbook page (a dozen shared-device render-on-demand figures).
+                div { style: "display:flex;gap:8px;margin:0 0 1rem;",
+                    button {
+                        style: if matches!(view(), View::Gallery) {
+                            "padding:6px 14px;background:#7cd;color:#023;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
+                        } else {
+                            "padding:6px 14px;background:#222;color:#bcd;border:1px solid #345;border-radius:6px;cursor:pointer;"
+                        },
+                        onclick: move |_| view.set(View::Gallery),
+                        "Gallery"
+                    }
+                    button {
+                        style: if matches!(view(), View::Textbook) {
+                            "padding:6px 14px;background:#7cd;color:#023;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
+                        } else {
+                            "padding:6px 14px;background:#222;color:#bcd;border:1px solid #345;border-radius:6px;cursor:pointer;"
+                        },
+                        onclick: move |_| view.set(View::Textbook),
+                        "Textbook page"
+                    }
                 }
-                div { style: "display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem;",
-                    for (w , label , _) in SCENES.iter().copied() {
-                        button {
-                            style: if w == sel {
-                                "padding:7px 13px;background:#4b8;color:#062;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
-                            } else {
-                                "padding:7px 13px;background:#2a2a2a;color:#ddd;border:none;border-radius:6px;cursor:pointer;"
-                            },
-                            onclick: move |_| which.set(w),
-                            "{label}"
+                if matches!(view(), View::Textbook) {
+                    p { style: "margin:0 0 1.2rem;color:#9aa;",
+                        "A dozen render-on-demand "
+                        code { style: "color:#7cd;", "<Figure>" }
+                        "s sharing one GPU device (FE-138). Each draws once when scrolled into view, then idles at ~0 cost."
+                    }
+                    TextbookPage {}
+                } else {
+                    p { style: "margin:0 0 1.2rem;color:#9aa;",
+                        "manim scenes rendered to a live "
+                        code { style: "color:#7cd;", "<canvas>" }
+                        " through wgpu. Pick a scene:"
+                    }
+                    div { style: "display:flex;flex-wrap:wrap;gap:8px;margin-bottom:1rem;",
+                        for (w , label , _) in SCENES.iter().copied() {
+                            button {
+                                style: if w == sel {
+                                    "padding:7px 13px;background:#4b8;color:#062;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
+                                } else {
+                                    "padding:7px 13px;background:#2a2a2a;color:#ddd;border:none;border-radius:6px;cursor:pointer;"
+                                },
+                                onclick: move |_| which.set(w),
+                                "{label}"
+                            }
                         }
                     }
-                }
-                div { style: "border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#000;",
-                    match sel {
-                        Which::Square => rsx! {
-                            ManimPlayer { scene: SquareToCircle, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
-                        },
-                        Which::Plot => rsx! {
-                            ManimPlayer { scene: PlotScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
-                        },
-                        Which::Field => rsx! {
-                            ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "428px" }
-                        },
-                        Which::Mesh3D => rsx! {
-                            ManimPlayer { scene: MeshScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
-                        },
-                        Which::Orbit => rsx! {
-                            ManimPlayer { scene: LiveOrbitScene, live: orbit_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
-                        },
-                        Which::Cursor => rsx! {
-                            ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
-                        },
-                        Which::Zoom => rsx! {
-                            ManimPlayer { scene: ZoomScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
-                        },
+                    div { style: "border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#000;",
+                        match sel {
+                            Which::Square => rsx! {
+                                ManimPlayer { scene: SquareToCircle, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                            },
+                            Which::Plot => rsx! {
+                                ManimPlayer { scene: PlotScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                            },
+                            Which::Field => rsx! {
+                                ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "428px" }
+                            },
+                            Which::Mesh3D => rsx! {
+                                ManimPlayer { scene: MeshScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                            },
+                            Which::Orbit => rsx! {
+                                ManimPlayer { scene: LiveOrbitScene, live: orbit_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
+                            },
+                            Which::Cursor => rsx! {
+                                ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
+                            },
+                            Which::Zoom => rsx! {
+                                ManimPlayer { scene: ZoomScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                            },
+                        }
                     }
+                    p { style: "color:#9aa;margin:0.9rem 0 0;min-height:1.2em;", "{caption}" }
                 }
-                p { style: "color:#9aa;margin:0.9rem 0 0;min-height:1.2em;", "{caption}" }
                 p { style: "color:#666;margin-top:1.6rem;font-size:0.85rem;",
                     "Keyboard (focus the player): Space play/pause · ←/→ scrub · R restart. Build with "
                     code { style: "color:#888;", "dx serve" }

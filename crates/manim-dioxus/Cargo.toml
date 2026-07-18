@@ -26,7 +26,13 @@ dioxus = { workspace = true, features = ["web"] }
 manim-render = { workspace = true, features = ["web"] }
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = { workspace = true }
-web-sys = { workspace = true }
+js-sys = "0.3"
+# Feature additions union with the workspace `web-sys`; `IntersectionObserver`
+# powers the `Figure` lazy-mount (render only once scrolled into view).
+web-sys = { workspace = true, features = [
+    "IntersectionObserver",
+    "IntersectionObserverEntry",
+] }
 
 # NOTE: this crate intentionally does NOT inherit `[lints] workspace` — dioxus's
 # `#[component]` / `Props` derive macros generate public items that fight

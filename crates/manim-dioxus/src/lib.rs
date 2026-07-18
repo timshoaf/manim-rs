@@ -59,8 +59,10 @@
 #![allow(missing_docs)] // dioxus macro codegen; hand-written items are documented.
 
 pub mod player;
+pub mod schedule;
 
 pub use player::PlayerState;
+pub use schedule::RenderSchedule;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -132,6 +134,95 @@ impl std::fmt::Debug for LiveUpdater {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("LiveUpdater(..)")
     }
+}
+
+/// A page-level shared GPU device for [`Figure`]s and [`ManimPlayer`]s (FE-138).
+///
+/// Requesting a wgpu device is the expensive part of surface creation and
+/// browsers cap how many exist at once — a page with a dozen figures must not
+/// spin up a dozen devices. Wrap the subtree in a [`ManimGpuProvider`]; it
+/// requests **one** device asynchronously and hands it to every descendant
+/// [`Figure`]/[`ManimPlayer`], each of which then creates its canvas surface
+/// synchronously (via `CanvasSurface::with_shared`) against that single device.
+///
+/// The handle is cheap to clone. On native (non-wasm) targets it is an empty
+/// placeholder so the workspace still type-checks.
+#[derive(Clone)]
+pub struct ManimGpu {
+    #[cfg(target_arch = "wasm32")]
+    slot: Rc<RefCell<Option<manim_render::SharedGpu>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    _priv: (),
+}
+
+impl ManimGpu {
+    /// Starts requesting the shared device. On wasm this spawns the async
+    /// adapter/device request immediately; [`ready`](Self::ready) reports `None`
+    /// until it resolves, then the [`manim_render::SharedGpu`] every frame after.
+    #[cfg(target_arch = "wasm32")]
+    fn pending() -> Self {
+        let slot: Rc<RefCell<Option<manim_render::SharedGpu>>> = Rc::new(RefCell::new(None));
+        let sink = Rc::clone(&slot);
+        wasm_bindgen_futures::spawn_local(async move {
+            match manim_render::SharedGpu::new().await {
+                Ok(gpu) => *sink.borrow_mut() = Some(gpu),
+                Err(e) => web_sys::console::error_1(
+                    &format!("manim: shared gpu init failed: {e}").into(),
+                ),
+            }
+        });
+        Self { slot }
+    }
+
+    /// Native placeholder: no device is ever created.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pending() -> Self {
+        Self { _priv: () }
+    }
+
+    /// The shared device once it has finished initializing, else `None`.
+    ///
+    /// A consumer's render loop polls this each frame and, on the first `Some`,
+    /// builds its surface with `CanvasSurface::with_shared`.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn ready(&self) -> Option<manim_render::SharedGpu> {
+        self.slot.borrow().clone()
+    }
+}
+
+impl PartialEq for ManimGpu {
+    // All clones of one provider's handle are equal (they share the same slot),
+    // so a Figure taking `ManimGpu` as context never re-renders on gpu identity.
+    #[cfg(target_arch = "wasm32")]
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.slot, &other.slot)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+/// Provides one shared GPU device ([`ManimGpu`]) to its subtree.
+///
+/// Wrap a page of [`Figure`]s (or [`ManimPlayer`]s) in this once; every
+/// descendant that finds a [`ManimGpu`] in context creates its surface against
+/// the single shared device instead of requesting its own. Descendants without
+/// a provider fall back to a private per-canvas device, so the provider is an
+/// optimization, never a requirement.
+#[component]
+pub fn ManimGpuProvider(children: Element) -> Element {
+    let gpu = use_hook(ManimGpu::pending);
+    use_context_provider(|| gpu);
+    rsx! { {children} }
+}
+
+/// Reads the page's shared [`ManimGpu`] from context, if a [`ManimGpuProvider`]
+/// wraps this component. Returns `None` when there is no provider (the caller
+/// then creates its own device). Only the wasm render loops consult it.
+#[cfg(target_arch = "wasm32")]
+fn shared_gpu_from_context() -> Option<ManimGpu> {
+    try_consume_context::<ManimGpu>()
 }
 
 /// Raw pointer input in element (CSS) pixels, written by the DOM event handlers
@@ -390,6 +481,7 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
             first_frame,
             live: live.clone(),
             canvas_id: canvas_id.clone(),
+            shared: shared_gpu_from_context(),
         };
         use_effect(move || {
             wasm::spawn_player(boot.clone());
@@ -474,6 +566,248 @@ fn handle_key(ctrl: &mut SceneController, e: KeyboardEvent) {
         }
         _ => {}
     }
+}
+
+/// A handle that forces a [`Figure`] to redraw. Obtained inside a figure's
+/// subtree via [`use_figure_controller`].
+///
+/// A figure renders on demand — once on mount, then only when woken. After you
+/// change anything its scene depends on (a value the surrounding app owns),
+/// call [`mark_dirty`](Self::mark_dirty) to schedule exactly **one** redraw,
+/// restarting the frame loop even if it had parked. The controller wraps a pure
+/// [`RenderSchedule`]; all the wake logic is thin glue over it.
+#[derive(Clone)]
+pub struct FigureController {
+    /// The pure scheduler this controller drives.
+    schedule: Rc<RefCell<RenderSchedule>>,
+    /// Installed by the running frame loop: schedules a frame when the loop has
+    /// parked. `None` until the loop starts (before mount / intersection).
+    wake: WakeSlot,
+}
+
+/// A slot the frame loop fills with a "schedule another frame" closure; the
+/// controller calls it to restart a parked loop.
+type WakeSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
+
+impl FigureController {
+    /// Requests exactly one redraw, restarting the frame loop if it had idled.
+    pub fn mark_dirty(&self) {
+        self.schedule.borrow_mut().mark_dirty();
+        self.wake();
+    }
+
+    /// Marks a pointer interaction active/finished (continuous redraw while
+    /// active, then a settle window). Used by a live figure's DOM handlers.
+    pub fn set_pointer_active(&self, active: bool) {
+        self.schedule.borrow_mut().set_pointer_active(active);
+        self.wake();
+    }
+
+    /// The scheduler this controller drives.
+    pub fn schedule(&self) -> Rc<RefCell<RenderSchedule>> {
+        Rc::clone(&self.schedule)
+    }
+
+    /// Kicks the frame loop if it installed a wake hook (i.e. is running).
+    fn wake(&self) {
+        if let Some(w) = self.wake.borrow().as_ref() {
+            w();
+        }
+    }
+}
+
+impl PartialEq for FigureController {
+    // Two handles are equal iff they drive the same schedule.
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.schedule, &other.schedule)
+    }
+}
+
+impl std::fmt::Debug for FigureController {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FigureController(..)")
+    }
+}
+
+/// Reads the [`FigureController`] for the enclosing [`Figure`] from context.
+///
+/// # Panics
+///
+/// Panics if called outside a [`Figure`] subtree.
+pub fn use_figure_controller() -> FigureController {
+    use_context::<FigureController>()
+}
+
+/// A render-on-demand scientific figure: a scene drawn into a `<canvas>` that
+/// costs ~0 GPU time while idle.
+///
+/// Unlike [`ManimPlayer`] (which plays a timeline *every* frame), a `Figure`
+/// renders its scene **once** when it scrolls into view, then parks its frame
+/// loop until woken — by a pointer interaction (when `live` is set) or a
+/// [`FigureController::mark_dirty`] call. A textbook page can hold dozens of
+/// figures; only those on screen and actively interacting cost anything.
+///
+/// Wrap the page in a [`ManimGpuProvider`] so every figure shares one GPU device
+/// (FE-138) instead of each requesting its own.
+///
+/// Props:
+/// - `scene`: the [`SceneBuilder`] to draw (also `Clone + PartialEq`).
+/// - `config`: render [`Config`] (defaults to [`Config::low`]).
+/// - `time`: which moment of the scene to show, in seconds (default: the final
+///   frame — a figure is usually the *result* of a construction).
+/// - `live`: a [`LiveUpdater`] for cursor-driven figures (drag to explore); when
+///   set, pointer activity wakes the loop, which settles after release.
+/// - `width` / `height`: CSS sizing (default `"480px"` / `"320px"`).
+/// - `lazy`: defer the first render until the figure scrolls into view (default
+///   `true`); a placeholder shows until then.
+/// - `settle`: seconds to keep drawing after a pointer release (default
+///   [`DEFAULT_SETTLE_SECS`](schedule::DEFAULT_SETTLE_SECS)).
+#[allow(clippy::too_many_arguments)]
+#[component]
+pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
+    scene: S,
+    #[props(default)] config: Option<Config>,
+    #[props(default)] time: Option<f32>,
+    #[props(default)] live: Option<LiveUpdater>,
+    #[props(default)] width: Option<String>,
+    #[props(default)] height: Option<String>,
+    #[props(default = true)] lazy: bool,
+    #[props(default)] settle: Option<f32>,
+) -> Element {
+    let config = config.unwrap_or_else(Config::low);
+    let width = width.unwrap_or_else(|| "480px".to_string());
+    let height = height.unwrap_or_else(|| "320px".to_string());
+
+    // Build the scene + frames once (CPU-only). A static figure is usually a
+    // zero-duration construction, so this is a single frame.
+    let data: Rc<SceneData> = use_hook(|| Rc::new(build_scene_data(&scene, config.clone())));
+
+    // The render-on-demand controller, seeded with the settle window, published
+    // into context for `use_figure_controller` and read by the frame loop.
+    let controller = use_hook(|| {
+        let sched = match settle {
+            Some(secs) => RenderSchedule::new().with_settle(secs),
+            None => RenderSchedule::new(),
+        };
+        FigureController {
+            schedule: Rc::new(RefCell::new(sched)),
+            wake: Rc::new(RefCell::new(None)),
+        }
+    });
+    use_context_provider(|| controller.clone());
+
+    let raw_pointer: Rc<RefCell<RawPointer>> =
+        use_hook(|| Rc::new(RefCell::new(RawPointer::default())));
+    let first_frame = use_signal(|| false);
+    let canvas_id = use_hook(next_canvas_id);
+
+    // Boot the render-on-demand loop after mount (client + wasm only).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let boot = FigureBoot {
+            data: Rc::clone(&data),
+            controller: controller.clone(),
+            raw_pointer: Rc::clone(&raw_pointer),
+            first_frame,
+            live: live.clone(),
+            time,
+            lazy,
+            canvas_id: canvas_id.clone(),
+            shared: shared_gpu_from_context(),
+        };
+        use_effect(move || {
+            wasm::spawn_figure(boot.clone());
+        });
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (
+            &data,
+            &raw_pointer,
+            &first_frame,
+            &live,
+            time,
+            lazy,
+            &controller,
+        );
+    }
+
+    // Pointer handlers matter only for live figures: they wake the schedule so
+    // the loop re-renders while the cursor drives the scene. A static figure
+    // ignores the pointer (and never re-renders on hover).
+    let interactive = live.is_some();
+    let rp_move = Rc::clone(&raw_pointer);
+    let rp_down = Rc::clone(&raw_pointer);
+    let rp_up = Rc::clone(&raw_pointer);
+    let c_move = controller.clone();
+    let c_down = controller.clone();
+    let c_up = controller.clone();
+
+    let show_placeholder = !first_frame();
+    let style = format!("position:relative;width:{width};height:{height};");
+    rsx! {
+        div {
+            class: "manim-figure",
+            style: "{style}",
+            canvas {
+                id: "{canvas_id}",
+                width: "{config.pixel_width}",
+                height: "{config.pixel_height}",
+                style: "width:100%;height:100%;display:block;background:#000;touch-action:none;",
+                onpointermove: move |e| {
+                    if interactive {
+                        let c = e.element_coordinates();
+                        {
+                            let mut p = rp_move.borrow_mut();
+                            p.x = c.x as f32;
+                            p.y = c.y as f32;
+                        }
+                        c_move.mark_dirty();
+                    }
+                },
+                onpointerdown: move |e| {
+                    if interactive {
+                        let c = e.element_coordinates();
+                        {
+                            let mut p = rp_down.borrow_mut();
+                            p.x = c.x as f32;
+                            p.y = c.y as f32;
+                            p.pressed = true;
+                        }
+                        c_down.set_pointer_active(true);
+                    }
+                },
+                onpointerup: move |_| {
+                    if interactive {
+                        rp_up.borrow_mut().pressed = false;
+                        c_up.set_pointer_active(false);
+                    }
+                },
+            }
+            if show_placeholder {
+                div {
+                    class: "manim-figure-placeholder",
+                    style: "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#6b7280;font:14px system-ui,sans-serif;pointer-events:none;",
+                    "Loading figure…"
+                }
+            }
+        }
+    }
+}
+
+/// The bundle handed to the wasm figure render loop.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[derive(Clone)]
+struct FigureBoot {
+    data: Rc<SceneData>,
+    controller: FigureController,
+    raw_pointer: Rc<RefCell<RawPointer>>,
+    first_frame: Signal<bool>,
+    live: Option<LiveUpdater>,
+    time: Option<f32>,
+    lazy: bool,
+    canvas_id: String,
+    shared: Option<ManimGpu>,
 }
 
 /// The built-in controls bar: play/pause, a scrubber, a speed selector, an
@@ -568,11 +902,15 @@ struct PlayerBoot {
     first_frame: Signal<bool>,
     live: Option<LiveUpdater>,
     canvas_id: String,
+    /// The page's shared device, if a [`ManimGpuProvider`] is present. When set,
+    /// the surface is built with `CanvasSurface::with_shared` once the device is
+    /// ready; otherwise the loop requests a private per-canvas device.
+    shared: Option<ManimGpu>,
 }
 
 #[cfg(target_arch = "wasm32")]
 mod wasm {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use dioxus::prelude::Writable;
@@ -580,7 +918,7 @@ mod wasm {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
 
-    use super::{PlayerBoot, PointerState};
+    use super::{FigureBoot, PlayerBoot, PointerState, SceneData};
 
     /// Builds the canvas surface and starts the `requestAnimationFrame` loop.
     pub(super) fn spawn_player(boot: PlayerBoot) {
@@ -594,16 +932,27 @@ mod wasm {
                 mut first_frame,
                 live,
                 canvas_id,
+                shared,
             } = boot;
 
             let Some(canvas) = get_canvas(&canvas_id) else {
                 return;
             };
-            let surface = match CanvasSurface::new(canvas.clone(), &data.config).await {
-                Ok(s) => Rc::new(RefCell::new(s)),
-                Err(e) => {
-                    web_sys::console::error_1(&format!("manim: surface init failed: {e}").into());
-                    return;
+            // Without a shared device, request a private one eagerly (async).
+            // With one, defer surface creation to the loop and build it
+            // synchronously (`with_shared`) on the first frame the device is
+            // ready — no second `request_device`, no extra `await`.
+            let surface: Rc<RefCell<Option<CanvasSurface>>> = if shared.is_some() {
+                Rc::new(RefCell::new(None))
+            } else {
+                match CanvasSurface::new(canvas.clone(), &data.config).await {
+                    Ok(s) => Rc::new(RefCell::new(Some(s))),
+                    Err(e) => {
+                        web_sys::console::error_1(
+                            &format!("manim: surface init failed: {e}").into(),
+                        );
+                        return;
+                    }
                 }
             };
             // Live scenes mutate their own SceneState clone each frame.
@@ -628,13 +977,31 @@ mod wasm {
                     ((ts - s0) / 1000.0) as f32
                 };
 
+                // Lazily build the surface against the shared device on the
+                // first frame it is ready. Until then, keep polling.
+                if surface.borrow().is_none() {
+                    if let Some(gpu) = shared.as_ref().and_then(|g| g.ready()) {
+                        match CanvasSurface::with_shared(&gpu, canvas.clone(), &data.config) {
+                            Ok(s) => *surface.borrow_mut() = Some(s),
+                            Err(e) => web_sys::console::error_1(
+                                &format!("manim: shared surface init failed: {e}").into(),
+                            ),
+                        }
+                    }
+                    if surface.borrow().is_none() {
+                        request_frame(cb.borrow().as_ref().unwrap());
+                        return;
+                    }
+                }
+
                 // Convert the raw pointer (CSS px) to scene coordinates.
                 let ptr = {
                     let raw = *raw_pointer.borrow();
                     let (cw, ch) = (canvas.client_width() as f32, canvas.client_height() as f32);
                     let position = surface
                         .borrow()
-                        .client_to_scene(raw.x, raw.y, cw, ch)
+                        .as_ref()
+                        .and_then(|s| s.client_to_scene(raw.x, raw.y, cw, ch))
                         .unwrap_or_default();
                     PointerState {
                         position,
@@ -661,7 +1028,9 @@ mod wasm {
                         display_list: sc.display_list(),
                         camera: manim_core::camera::CameraFrame::from(sc.camera()),
                     };
-                    let _ = surface.borrow_mut().render_frame(&frame);
+                    if let Some(s) = surface.borrow_mut().as_mut() {
+                        let _ = s.render_frame(&frame);
+                    }
                 } else if let Some(list) = data.frames.get(idx) {
                     // Playback mode: draw the sampled frame, following its camera.
                     let frame = manim_core::scene::Frame {
@@ -669,7 +1038,9 @@ mod wasm {
                         display_list: list.clone(),
                         camera: data.cameras[idx],
                     };
-                    let _ = surface.borrow_mut().render_frame(&frame);
+                    if let Some(s) = surface.borrow_mut().as_mut() {
+                        let _ = s.render_frame(&frame);
+                    }
                 }
                 if !first_frame() {
                     first_frame.set(true);
@@ -683,6 +1054,218 @@ mod wasm {
                 }
                 let _ = playing;
                 request_frame(cb.borrow().as_ref().unwrap());
+            }) as Box<dyn FnMut(f64)>));
+            request_frame(cb2.borrow().as_ref().unwrap());
+        });
+    }
+
+    /// Boots a [`Figure`](super::Figure): if `lazy`, waits for the canvas to
+    /// scroll into view via an `IntersectionObserver`, then starts the loop;
+    /// otherwise starts it immediately.
+    pub(super) fn spawn_figure(boot: FigureBoot) {
+        if boot.lazy {
+            observe_then_start(boot);
+        } else {
+            start_figure_loop(boot);
+        }
+    }
+
+    /// Watches the figure's canvas and starts its render loop the first time it
+    /// intersects the viewport, then disconnects. Falls back to starting
+    /// immediately if `IntersectionObserver` is unavailable.
+    fn observe_then_start(boot: FigureBoot) {
+        let Some(canvas) = get_canvas(&boot.canvas_id) else {
+            return;
+        };
+        // One-shot cells: the callback takes the boot + observer exactly once.
+        let boot_cell = Rc::new(RefCell::new(Some(boot)));
+        let obs_cell: Rc<RefCell<Option<web_sys::IntersectionObserver>>> =
+            Rc::new(RefCell::new(None));
+        let boot_cb = Rc::clone(&boot_cell);
+        let obs_cb = Rc::clone(&obs_cell);
+        let cb = Closure::wrap(Box::new(
+            move |entries: js_sys::Array, _obs: web_sys::IntersectionObserver| {
+                let visible = entries.iter().any(|e| {
+                    e.dyn_into::<web_sys::IntersectionObserverEntry>()
+                        .map(|entry| entry.is_intersecting())
+                        .unwrap_or(false)
+                });
+                if visible {
+                    if let Some(o) = obs_cb.borrow_mut().take() {
+                        o.disconnect();
+                    }
+                    if let Some(b) = boot_cb.borrow_mut().take() {
+                        start_figure_loop(b);
+                    }
+                }
+            },
+        )
+            as Box<dyn FnMut(js_sys::Array, web_sys::IntersectionObserver)>);
+
+        match web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()) {
+            Ok(observer) => {
+                observer.observe(&canvas);
+                *obs_cell.borrow_mut() = Some(observer);
+                // Hand the closure to the browser for the observer's lifetime;
+                // it is a one-shot page-lived figure, so leaking it is fine.
+                cb.forget();
+            }
+            Err(_) => {
+                if let Some(b) = boot_cell.borrow_mut().take() {
+                    start_figure_loop(b);
+                }
+            }
+        }
+    }
+
+    /// The frame index to show for `time` (default: the final frame).
+    fn frame_index_for(data: &SceneData, time: Option<f32>) -> usize {
+        if data.frames.is_empty() {
+            return 0;
+        }
+        let last = data.frames.len() - 1;
+        match time {
+            Some(t) => {
+                let i = (t * data.fps as f32).round();
+                (i.max(0.0) as usize).min(last)
+            }
+            None => last,
+        }
+    }
+
+    /// The render-on-demand loop: draws only when the [`RenderSchedule`] asks,
+    /// and parks (stops scheduling frames) the moment it goes idle — so an
+    /// off-screen or settled figure costs nothing.
+    ///
+    /// [`RenderSchedule`]: super::RenderSchedule
+    fn start_figure_loop(boot: FigureBoot) {
+        wasm_bindgen_futures::spawn_local(async move {
+            let FigureBoot {
+                data,
+                controller,
+                raw_pointer,
+                mut first_frame,
+                live,
+                time,
+                canvas_id,
+                shared,
+                ..
+            } = boot;
+            let Some(canvas) = get_canvas(&canvas_id) else {
+                return;
+            };
+            let idx = frame_index_for(&data, time);
+
+            // Shared device → build the surface synchronously in-loop once ready;
+            // otherwise request a private device up front (async).
+            let surface: Rc<RefCell<Option<CanvasSurface>>> = if shared.is_some() {
+                Rc::new(RefCell::new(None))
+            } else {
+                match CanvasSurface::new(canvas.clone(), &data.config).await {
+                    Ok(s) => Rc::new(RefCell::new(Some(s))),
+                    Err(e) => {
+                        web_sys::console::error_1(
+                            &format!("manim: figure surface init failed: {e}").into(),
+                        );
+                        return;
+                    }
+                }
+            };
+            let live_state = Rc::new(RefCell::new(data.initial_state.clone()));
+            let schedule = controller.schedule();
+
+            type RafCell = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+            let cb: RafCell = Rc::new(RefCell::new(None));
+            let cb2 = Rc::clone(&cb);
+            let start = Rc::new(RefCell::new(None::<f64>));
+            // `parked` = the loop has stopped scheduling frames; the controller's
+            // wake hook restarts it (and only then) on a dirty/pointer event.
+            let parked = Rc::new(Cell::new(false));
+
+            {
+                let cb_wake = Rc::clone(&cb);
+                let parked_wake = Rc::clone(&parked);
+                let wake: Rc<dyn Fn()> = Rc::new(move || {
+                    if parked_wake.replace(false) {
+                        if let Some(c) = cb_wake.borrow().as_ref() {
+                            request_frame(c);
+                        }
+                    }
+                });
+                *controller.wake.borrow_mut() = Some(wake);
+            }
+
+            *cb2.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+                let elapsed = {
+                    let mut s = start.borrow_mut();
+                    let s0 = *s.get_or_insert(ts);
+                    ((ts - s0) / 1000.0) as f32
+                };
+
+                // Build the shared surface on the first frame the device is
+                // ready; until then keep polling (never parks).
+                if surface.borrow().is_none() {
+                    if let Some(gpu) = shared.as_ref().and_then(|g| g.ready()) {
+                        match CanvasSurface::with_shared(&gpu, canvas.clone(), &data.config) {
+                            Ok(s) => *surface.borrow_mut() = Some(s),
+                            Err(e) => web_sys::console::error_1(
+                                &format!("manim: figure shared surface failed: {e}").into(),
+                            ),
+                        }
+                    }
+                    if surface.borrow().is_none() {
+                        request_frame(cb.borrow().as_ref().unwrap());
+                        return;
+                    }
+                }
+
+                if schedule.borrow_mut().should_render(elapsed) {
+                    let ptr = {
+                        let raw = *raw_pointer.borrow();
+                        let (cw, ch) =
+                            (canvas.client_width() as f32, canvas.client_height() as f32);
+                        let position = surface
+                            .borrow()
+                            .as_ref()
+                            .and_then(|s| s.client_to_scene(raw.x, raw.y, cw, ch))
+                            .unwrap_or_default();
+                        PointerState {
+                            position,
+                            pressed: raw.pressed,
+                        }
+                    };
+                    if let Some(updater) = &live {
+                        let mut sc = live_state.borrow_mut();
+                        updater.0(&mut sc, &ptr, elapsed);
+                        let frame = manim_core::scene::Frame {
+                            t: 0.0,
+                            display_list: sc.display_list(),
+                            camera: manim_core::camera::CameraFrame::from(sc.camera()),
+                        };
+                        if let Some(s) = surface.borrow_mut().as_mut() {
+                            let _ = s.render_frame(&frame);
+                        }
+                    } else if let Some(list) = data.frames.get(idx) {
+                        let frame = manim_core::scene::Frame {
+                            t: 0.0,
+                            display_list: list.clone(),
+                            camera: data.cameras[idx],
+                        };
+                        if let Some(s) = surface.borrow_mut().as_mut() {
+                            let _ = s.render_frame(&frame);
+                        }
+                    }
+                    if !first_frame() {
+                        first_frame.set(true);
+                    }
+                }
+
+                // Keep the loop alive only while the schedule wants frames.
+                if schedule.borrow().wants_frame() {
+                    request_frame(cb.borrow().as_ref().unwrap());
+                } else {
+                    parked.set(true);
+                }
             }) as Box<dyn FnMut(f64)>));
             request_frame(cb2.borrow().as_ref().unwrap());
         });
@@ -702,5 +1285,145 @@ mod wasm {
         if let Some(win) = web_sys::window() {
             let _ = win.request_animation_frame(f.as_ref().unchecked_ref());
         }
+    }
+}
+
+#[cfg(test)]
+mod figure_tests {
+    //! Native proofs of the [`Figure`] render-on-demand contract (FE-138): the
+    //! browser loop is unverifiable here, but its whole policy is the pure
+    //! [`RenderSchedule`] plus the [`FigureController`] wake plumbing, both of
+    //! which run headlessly. These tests are the "idle-frame-counter" acceptance
+    //! evidence for the textbook page.
+    use super::*;
+    use std::cell::Cell;
+
+    fn controller() -> FigureController {
+        FigureController {
+            schedule: Rc::new(RefCell::new(RenderSchedule::new())),
+            wake: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    /// Installs a wake hook that counts kicks (as the running loop does), then
+    /// returns the counter.
+    fn count_wakes(c: &FigureController) -> Rc<Cell<u32>> {
+        let kicks = Rc::new(Cell::new(0));
+        let k = Rc::clone(&kicks);
+        *c.wake.borrow_mut() = Some(Rc::new(move || k.set(k.get() + 1)));
+        kicks
+    }
+
+    #[test]
+    fn mark_dirty_sets_schedule_dirty_and_wakes() {
+        let c = controller();
+        c.schedule().borrow_mut().should_render(0.0); // consume the mount frame
+        assert!(!c.schedule().borrow().wants_frame(), "idle after mount frame");
+
+        let kicks = count_wakes(&c);
+        c.mark_dirty();
+        assert!(c.schedule().borrow().wants_frame(), "dirty → wants a frame");
+        assert_eq!(kicks.get(), 1, "mark_dirty kicks the parked loop exactly once");
+    }
+
+    #[test]
+    fn set_pointer_active_wakes_and_marks_active() {
+        let c = controller();
+        c.schedule().borrow_mut().should_render(0.0);
+        let kicks = count_wakes(&c);
+        c.set_pointer_active(true);
+        assert!(c.schedule().borrow().is_pointer_active());
+        assert_eq!(kicks.get(), 1);
+    }
+
+    #[test]
+    fn wake_is_noop_without_a_running_loop() {
+        // Before the loop installs its hook, mark_dirty must not panic; it just
+        // flags the schedule so the loop draws when it starts.
+        let c = controller();
+        c.schedule().borrow_mut().should_render(0.0);
+        c.mark_dirty();
+        assert!(c.schedule().borrow().is_dirty());
+    }
+
+    /// Models the driver's park/wake loop over a schedule and counts the draws
+    /// until it parks (`wants_frame` false). Mirrors `start_figure_loop`.
+    fn run_until_idle(sched: &Rc<RefCell<RenderSchedule>>, mut t: f32) -> u32 {
+        let mut draws = 0;
+        while sched.borrow().wants_frame() {
+            if sched.borrow_mut().should_render(t) {
+                draws += 1;
+            }
+            t += 0.016;
+        }
+        draws
+    }
+
+    #[test]
+    fn static_figure_draws_once_then_idles_forever() {
+        let s = Rc::new(RefCell::new(RenderSchedule::new()));
+        assert_eq!(run_until_idle(&s, 0.0), 1, "one mount draw");
+        // Thousands of animation-frame ticks: never wakes, never draws.
+        for i in 0..5000 {
+            let t = 10.0 + i as f32 * 0.016;
+            assert!(!s.borrow().wants_frame(), "woke while idle at tick {i}");
+            assert!(!s.borrow_mut().should_render(t), "drew while idle at tick {i}");
+        }
+    }
+
+    #[test]
+    fn page_of_twelve_figures_costs_twelve_draws_then_zero() {
+        let figures: Vec<_> = (0..12)
+            .map(|_| Rc::new(RefCell::new(RenderSchedule::new())))
+            .collect();
+        let mount_draws: u32 = figures.iter().map(|f| run_until_idle(f, 0.0)).sum();
+        assert_eq!(mount_draws, 12, "12 figures → 12 mount draws");
+
+        // The whole page is now idle: a full second of rAF ticks draws nothing.
+        let mut idle_draws = 0;
+        for tick in 0..60 {
+            let t = 5.0 + tick as f32 * 0.016;
+            for f in &figures {
+                if f.borrow().wants_frame() && f.borrow_mut().should_render(t) {
+                    idle_draws += 1;
+                }
+            }
+        }
+        assert_eq!(idle_draws, 0, "an idle textbook page renders zero frames");
+    }
+
+    #[test]
+    fn waking_one_figure_redraws_only_it_once() {
+        let figures: Vec<_> = (0..12)
+            .map(|_| Rc::new(RefCell::new(RenderSchedule::new())))
+            .collect();
+        for f in &figures {
+            run_until_idle(f, 0.0);
+        }
+        // A parameter change on figure 3: exactly one extra draw, only there.
+        figures[3].borrow_mut().mark_dirty();
+        let extra: u32 = figures.iter().map(|f| run_until_idle(f, 1.0)).sum();
+        assert_eq!(extra, 1, "only the dirtied figure redraws, once");
+    }
+
+    #[test]
+    fn live_drag_draws_every_frame_then_settles_to_idle() {
+        // A live figure driven by pointer: continuous draws while dragging, a
+        // short settle after release, then park.
+        let c = controller();
+        let s = c.schedule();
+        s.borrow_mut().should_render(0.0); // mount
+        c.set_pointer_active(true);
+        // 5 drag frames all draw.
+        for i in 1..=5 {
+            let t = i as f32 * 0.016;
+            assert!(s.borrow_mut().should_render(t), "drag frame {i} draws");
+            assert!(s.borrow().wants_frame());
+        }
+        c.set_pointer_active(false); // release at ~0.08 → settle window opens
+        assert!(s.borrow_mut().should_render(0.1), "settle frame draws");
+        // Past the settle window, it parks.
+        assert!(!s.borrow_mut().should_render(1.0));
+        assert!(!s.borrow().wants_frame(), "settled → idle");
     }
 }

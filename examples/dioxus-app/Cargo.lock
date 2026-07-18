@@ -1665,6 +1665,7 @@ name = "manim-dioxus"
 version = "0.1.0"
 dependencies = [
  "dioxus",
+ "js-sys",
  "manim-core",
  "manim-render",
  "wasm-bindgen",

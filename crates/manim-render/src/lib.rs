@@ -58,6 +58,7 @@
 pub mod camera;
 pub mod layout;
 pub(crate) mod material;
+pub(crate) mod ops;
 pub mod mesh_pipeline;
 pub mod renderer;
 pub mod tessellate;
@@ -96,4 +97,4 @@ pub use renderer::OffscreenRenderer;
 pub use preview::RealtimePlayer;
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub use canvas::CanvasSurface;
+pub use canvas::{CanvasSurface, SharedGpu};

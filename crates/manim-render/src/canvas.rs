@@ -34,7 +34,7 @@ use crate::layout::letterbox;
 use crate::mesh_pipeline::{
     create_depth_view, MeshBufferCache, MeshGlobals, MeshPipeline, SceneLight,
 };
-use crate::renderer::{record_draw_over, Pipeline, RenderError, SAMPLE_COUNT};
+use crate::renderer::{Pipeline, RenderError, SAMPLE_COUNT};
 use crate::tessellate::TessellationCache;
 
 /// Installs [`console_error_panic_hook`] so Rust panics surface in the browser
@@ -59,6 +59,9 @@ pub struct CanvasSurface {
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
     pipeline: Pipeline,
+    /// The shared image + material `FrameOp` draw path — identical to what the
+    /// offscreen `TextureTarget` runs, so browser output matches it.
+    ops: crate::ops::OpsRenderer,
     uniform: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// Magnifying-camera uniform + identity (border) uniform for a zoom window.
@@ -90,6 +93,77 @@ pub struct CanvasSurface {
     background: Color,
     /// The active zoom window (from the last `render_frame`), or `None`.
     zoom_window: Option<manim_core::camera::ZoomWindow>,
+}
+
+/// A wgpu adapter + device + queue shared across many [`CanvasSurface`]s on one
+/// page.
+///
+/// Requesting a device is the expensive part of surface creation and browsers
+/// cap how many GPU devices exist at once — a textbook page with a dozen
+/// [`Figure`](../../manim_dioxus/index.html)s must not create a dozen of them.
+/// Build one `SharedGpu` (async, once), then create each surface synchronously
+/// with [`CanvasSurface::with_shared`]. wgpu's `Device`/`Queue` are
+/// reference-counted, so the clones each surface holds all point at the same GPU
+/// device and submit to the same queue.
+///
+/// Clone is cheap (it clones the reference-counted handles).
+#[derive(Clone)]
+pub struct SharedGpu {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+}
+
+impl SharedGpu {
+    /// Requests an adapter and device not tied to any single canvas.
+    ///
+    /// Uses the same WebGL2-downlevel limits as [`CanvasSurface::new`], so the
+    /// shared device runs on both the WebGPU and WebGL backends.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::NoAdapter`] / [`RenderError::NoDevice`] if the browser
+    /// cannot provide a GPU adapter or device.
+    pub async fn new() -> Result<Self, RenderError> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        });
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|e| RenderError::NoAdapter(e.to_string()))?;
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("manim-render shared device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_webgl2_defaults(),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| RenderError::NoDevice(e.to_string()))?;
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+        })
+    }
+
+    /// The shared device — e.g. to register a device-loss callback or poll it.
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    /// The shared queue.
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
 }
 
 impl CanvasSurface {
@@ -133,7 +207,55 @@ impl CanvasSurface {
             .await
             .map_err(|e| RenderError::NoDevice(e.to_string()))?;
 
-        let caps = surface.get_capabilities(&adapter);
+        Self::assemble(&adapter, device, queue, surface, width, height, config)
+    }
+
+    /// Builds a surface on an existing [`SharedGpu`], reusing its device/queue
+    /// instead of requesting new ones.
+    ///
+    /// This is the [`Figure`](../../manim_dioxus/index.html) path: a page with
+    /// many small canvases creates one [`SharedGpu`] and calls this per canvas,
+    /// so all of them submit to a single device. Synchronous — no adapter/device
+    /// request — so a figure can mount without awaiting.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderError::NoAdapter`] if a surface cannot be created for `canvas`.
+    pub fn with_shared(
+        gpu: &SharedGpu,
+        canvas: HtmlCanvasElement,
+        config: &Config,
+    ) -> Result<Self, RenderError> {
+        let width = canvas.width().max(1);
+        let height = canvas.height().max(1);
+        let surface = gpu
+            .instance
+            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+            .map_err(|e| RenderError::NoAdapter(format!("create canvas surface: {e}")))?;
+        Self::assemble(
+            &gpu.adapter,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            surface,
+            width,
+            height,
+            config,
+        )
+    }
+
+    /// Builds all format-dependent GPU state (surface config, pipelines, caches)
+    /// shared by [`new`](Self::new) and [`with_shared`](Self::with_shared).
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        adapter: &wgpu::Adapter,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+        config: &Config,
+    ) -> Result<Self, RenderError> {
+        let caps = surface.get_capabilities(adapter);
         let format = caps
             .formats
             .iter()
@@ -153,6 +275,8 @@ impl CanvasSurface {
         surface.configure(&device, &surface_config);
 
         let pipeline = Pipeline::new(&device, format);
+        let ops =
+            crate::ops::OpsRenderer::new(&device, &pipeline.bind_group_layout, format, SAMPLE_COUNT);
         let ztest_pipeline = Pipeline::new_depth_tested(&device, format);
         let (ztest_uniform, ztest_bind_group) =
             make_camera_bind_group(&device, &ztest_pipeline, "canvas z-test camera");
@@ -174,6 +298,7 @@ impl CanvasSurface {
             queue,
             surface_config,
             pipeline,
+            ops,
             uniform,
             bind_group,
             zoom_uniform,
@@ -267,6 +392,13 @@ impl CanvasSurface {
     /// reconfigured and skipped).
     pub fn render(&mut self, list: &DisplayList) -> Result<(), RenderError> {
         let (mesh, ztest_mesh) = self.cache.tessellate_split(list);
+        // The full z-ordered FrameOp stream (vector batches + image + material
+        // quads) drives the plain pass, so images/materials render in-browser
+        // exactly as offscreen. (The zoom-inset path still draws vectors only.)
+        let frame_ops = self.cache.tessellate_ops(list);
+        self.ops
+            .prepare(&self.device, &self.queue, list.arena(), frame_ops.iter());
+        let ops_gpu = self.ops.build_ops(&self.device, list.arena(), &frame_ops);
         let mesh_frame = if list.meshes().is_empty() {
             // Skipping the pass must not strand the last mesh scene's buffers.
             self.mesh_cache.clear();
@@ -473,18 +605,39 @@ impl CanvasSurface {
                 drew_meshes || drew_ztest,
             );
         } else {
-            record_draw_over(
-                &self.device,
-                &mut encoder,
-                &self.pipeline.pipeline,
-                &self.msaa_view,
-                &target,
-                &self.bind_group,
-                &mesh,
-                self.background,
-                Some(vp),
-                drew_meshes || drew_ztest,
-            );
+            // The final pass: the full FrameOp stream (vector + image + material),
+            // resolving MSAA → swapchain. Loads what the mesh/z-test passes drew,
+            // else clears to the background.
+            let bg = self.background.premultiplied();
+            let load = if drew_meshes || drew_ztest {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: bg[0] as f64,
+                    g: bg[1] as f64,
+                    b: bg[2] as f64,
+                    a: bg[3] as f64,
+                })
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("canvas ops pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,
+                    resolve_target: Some(&target),
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if vp.w > 0.0 && vp.h > 0.0 {
+                pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+            }
+            self.ops
+                .record(&mut pass, &ops_gpu, &self.bind_group, &self.pipeline.pipeline);
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
