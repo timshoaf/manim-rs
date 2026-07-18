@@ -1,0 +1,35 @@
+[package]
+name = "manim-nn"
+description = "Neural-network visualizers for manim_rust: compute graphs, layer/block architecture diagrams, weight/attention heatmaps, and loss landscapes with optimizer trajectories."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["manim", "neural-network", "visualization", "machine-learning", "diagram"]
+categories = ["graphics", "science", "visualization"]
+
+[dependencies]
+manim-fields = { workspace = true }
+manim-sci = { workspace = true }
+manim-core = { workspace = true }
+manim-text = { workspace = true }
+manim-math = { workspace = true }
+glam = { workspace = true }
+manim-render = { workspace = true, optional = true }
+
+[features]
+## Enables the GPU-rendering examples (pulls in `manim-render`).
+render-examples = ["dep:manim-render"]
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[[example]]
+name = "transformer_block"
+required-features = ["render-examples"]
+
+[lints]
+workspace = true
