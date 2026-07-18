@@ -2,9 +2,7 @@ name: Pages
 
 on:
   push:
-    # sci-extensions included pre-merge so the site can deploy for review;
-    # drop it once the branch lands on main.
-    branches: [main, sci-extensions]
+    branches: [main]
   workflow_dispatch:
 
 env:
