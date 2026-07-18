@@ -2574,6 +2574,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "manim-sci"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "glam",
+ "manim-core",
+ "manim-fields",
+ "manim-math",
+ "manim-render",
+]
+
+[[package]]
 name = "manim-text"
 version = "0.1.0"
 dependencies = [
