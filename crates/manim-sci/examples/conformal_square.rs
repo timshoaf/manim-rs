@@ -14,9 +14,10 @@ use manim_core::prelude::*;
 use manim_fields::map::SpaceMap;
 use manim_sci::deform::{ApplyMap, DeformationGrid};
 
-struct ConformalSquare;
+/// Scene builder for the conformal-square gallery example.
+pub struct Demo;
 
-impl SceneBuilder for ConformalSquare {
+impl SceneBuilder for Demo {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
         let map = SpaceMap::complex_power(2);
         let region = ([-2.0, 2.0], [-2.0, 2.0], 0.5);
@@ -41,7 +42,7 @@ impl SceneBuilder for ConformalSquare {
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut scene = Scene::build(&ConformalSquare, Config::low())?;
+    let mut scene = Scene::build(&Demo, Config::low())?;
     manim_render::export::VideoExporter::render_to_png_sequence(
         &mut scene,
         "out/conformal_square",

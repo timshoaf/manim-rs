@@ -318,13 +318,23 @@ pub fn orbital_isosurface(
     let ext = (3.0 * (n * n) as f64).max(6.0);
     let min = [-ext, -ext, -ext];
     let max = [ext, ext, ext];
-    let res = 28;
+    // Fine enough that lobe silhouettes read as smooth curves: the domain grows
+    // as n², so a fixed cell count per axis under-resolves diffuse orbitals.
+    let res = 80;
 
     let build = |scene: &mut SceneState, iso: f64, color| {
-        let tri = Isosurface::new(hydrogen_orbital(n, l, m), iso)
+        let mut surface = Isosurface::new(hydrogen_orbital(n, l, m), iso)
             .region(min, max)
-            .resolution(res)
-            .mesh();
+            .resolution(res);
+        // The positive lobe is the ψ > +level region, so marching cubes treats
+        // it as "outside" and its +∇ψ normals point inward — flip them, or the
+        // lobe is lit from behind and renders as a flat silhouette. The negative
+        // lobe (ψ < −level) really is the below-level region, so it is already
+        // oriented correctly.
+        if iso > 0.0 {
+            surface = surface.flip_normals();
+        }
+        let tri = surface.mesh();
         let mut mesh = Mesh::new(tri);
         mesh.set_base_color(color);
         scene.add(mesh).erase()

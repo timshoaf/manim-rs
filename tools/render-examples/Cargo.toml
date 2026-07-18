@@ -1,0 +1,30 @@
+[package]
+name = "render-examples"
+description = "Build-time asset harness: renders the scientific gallery examples to PNG stills and short MP4 clips for the documentation site."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# Every kit crate whose examples are in the manifest. This is why the harness is
+# its own crate rather than a bin inside one of them: `manim-quantum`/`-chem`/
+# `-nn` all depend on `manim-sci`, so no kit crate can reach all the others.
+manim-core = { workspace = true }
+manim-render = { workspace = true }
+manim-math = { workspace = true }
+manim-color = { workspace = true }
+manim-text = { workspace = true }
+manim-fields = { workspace = true }
+manim-sci = { workspace = true }
+manim-quantum = { workspace = true }
+manim-chem = { workspace = true }
+manim-nn = { workspace = true }
+glam = { workspace = true }
+
+[lints]
+workspace = true

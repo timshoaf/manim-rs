@@ -73,3 +73,32 @@ exists — a missing target breaks manifest parsing for the entire
 workspace (every cargo command, every crate). Write the example stub in
 the same change, or keep the manifest entry commented until the file
 lands.
+
+Every scientific gallery example must expose a `pub struct Demo`
+implementing `SceneBuilder`, with `fn main` doing nothing but building
+`Demo` and exporting it. The docs-site asset harness
+(`tools/render-examples`) includes each example's *source* as a module
+via `#[path]` and constructs `Demo` directly, so a differently-named
+scene builder silently drops the example from the site.
+
+## Docs-site assets
+
+`tools/render-examples` renders every gallery example to a PNG still or a
+short MP4 clip under `site/src/assets/<domain>/<example>.{png,mp4}`.
+Assets are generated at build time and are **not** committed (they are
+gitignored).
+
+```sh
+cargo run -p render-examples --release              # everything
+cargo run -p render-examples --release -- --domain quantum
+cargo run -p render-examples --release -- --only bloch_gates
+cargo run -p render-examples -- --list              # manifest, no GPU
+cargo run -p render-examples --release -- --stills-only  # no ffmpeg needed
+```
+
+Clips need `ffmpeg` on `PATH`; stills do not. As with the golden tests,
+`REQUIRE_GPU=1` turns a missing GPU adapter into a hard failure rather
+than a clean skip, so a CI asset job cannot pass by rendering nothing.
+
+Adding an example to the site is two lines in `tools/render-examples/src/main.rs`:
+an `include_example!` for its path and an `entry!` row in `manifest()`.

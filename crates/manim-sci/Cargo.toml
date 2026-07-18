@@ -39,5 +39,41 @@ required-features = ["render-examples"]
 name = "dipole_field"
 required-features = ["render-examples"]
 
+[[example]]
+name = "symplectic_vs_rk4"
+required-features = ["render-examples"]
+
+[[example]]
+name = "kepler_orbits"
+required-features = ["render-examples"]
+
+[[example]]
+name = "domain_coloring_gallery"
+required-features = ["render-examples"]
+
+[[example]]
+name = "heatmap_contours"
+required-features = ["render-examples"]
+
+[[example]]
+name = "mobius_flow"
+required-features = ["render-examples"]
+
+[[example]]
+name = "geodesic_race"
+required-features = ["render-examples"]
+
+[[example]]
+name = "trefoil_tube"
+required-features = ["render-examples"]
+
+[[example]]
+name = "stream_ribbons"
+required-features = ["render-examples"]
+
+[[example]]
+name = "tensor_glyph_field"
+required-features = ["render-examples"]
+
 [lints]
 workspace = true

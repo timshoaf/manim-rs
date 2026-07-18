@@ -35,9 +35,10 @@ fn embed(u: f64, v: f64) -> Point {
     Point::new(x as f32, y as f32, z as f32)
 }
 
-struct TorusCurvature;
+/// Scene builder for the torus-curvature gallery example.
+pub struct Demo;
 
-impl SceneBuilder for TorusCurvature {
+impl SceneBuilder for Demo {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
         scene.set_camera_orientation(65_f32.to_radians(), -55_f32.to_radians());
 
@@ -70,7 +71,7 @@ impl SceneBuilder for TorusCurvature {
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut scene = Scene::build(&TorusCurvature, Config::low())?;
+    let mut scene = Scene::build(&Demo, Config::low())?;
     manim_render::export::VideoExporter::render_to_png_sequence(&mut scene, "out/torus_curvature")?;
     println!("Rendered frames to out/torus_curvature");
     Ok(())

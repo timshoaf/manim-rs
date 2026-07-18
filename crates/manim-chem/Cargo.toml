@@ -30,5 +30,13 @@ approx = { workspace = true }
 name = "caffeine"
 required-features = ["render-examples"]
 
+[[example]]
+name = "nacl_lattice"
+required-features = ["render-examples"]
+
+[[example]]
+name = "orbital_isosurface"
+required-features = ["render-examples"]
+
 [lints]
 workspace = true

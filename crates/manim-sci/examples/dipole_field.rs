@@ -115,9 +115,10 @@ fn seed_ring(n: usize, r: f64, z0: f64) -> Vec<DVec3> {
         .collect()
 }
 
-struct DipoleField;
+/// Scene builder for the dipole-field gallery example.
+pub struct Demo;
 
-impl SceneBuilder for DipoleField {
+impl SceneBuilder for Demo {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
         scene.set_camera_orientation(70_f32.to_radians(), -50_f32.to_radians());
 
@@ -180,7 +181,7 @@ impl SceneBuilder for DipoleField {
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut scene = Scene::build(&DipoleField, Config::low())?;
+    let mut scene = Scene::build(&Demo, Config::low())?;
     manim_render::export::VideoExporter::render_to_png_sequence(&mut scene, "out/dipole_field")?;
     println!("Rendered frames to out/dipole_field");
     Ok(())

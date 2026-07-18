@@ -13,6 +13,7 @@ members = [
     "crates/manim-quantum",
     "crates/manim-chem",
     "crates/manim-nn",
+    "tools/render-examples",
 ]
 # Standalone wasm demos: separate crates with path deps, kept out of the main
 # workspace so native builds stay lean and window/ffmpeg-free.

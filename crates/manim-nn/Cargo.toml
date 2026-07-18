@@ -31,5 +31,9 @@ approx = { workspace = true }
 name = "transformer_block"
 required-features = ["render-examples"]
 
+[[example]]
+name = "loss_landscape_descent"
+required-features = ["render-examples"]
+
 [lints]
 workspace = true

@@ -59,6 +59,7 @@ pub struct Isosurface {
     min: [f64; 3],
     max: [f64; 3],
     resolution: usize,
+    flip_normals: bool,
 }
 
 impl Isosurface {
@@ -72,7 +73,48 @@ impl Isosurface {
             min: [-2.0, -2.0, -2.0],
             max: [2.0, 2.0, 2.0],
             resolution: 32,
+            flip_normals: false,
         }
+    }
+
+    /// Points the normals along `−∇f` instead of `+∇f`, for fields that **peak
+    /// inside** the surface rather than increasing outward.
+    ///
+    /// Marching cubes classifies a corner as "inside" when `f < level`, so the
+    /// outward direction — out of that below-level region — is `+∇f`. That is
+    /// correct for signed-distance-like fields, which grow away from the solid.
+    /// A density or orbital amplitude does the opposite: it is *largest* in the
+    /// blob you see, so the visible solid is the `f > level` region and `+∇f`
+    /// points into it. Unflipped, such a surface is lit entirely from behind and
+    /// renders as a flat, unshaded silhouette.
+    ///
+    /// ```
+    /// use manim_fields::ad::Scalar;
+    /// use manim_fields::field::{ScalarClosure, ScalarField};
+    /// use manim_sci::isosurface::Isosurface;
+    ///
+    /// // A peaked field: f(p) = exp(−|p|²), whose 0.5 level set is a sphere.
+    /// struct Blob;
+    /// impl ScalarClosure for Blob {
+    ///     fn eval<S: Scalar>(&self, p: [S; 3]) -> S {
+    ///         (S::constant(0.0) - (p[0] * p[0] + p[1] * p[1] + p[2] * p[2])).exp()
+    ///     }
+    /// }
+    ///
+    /// let mesh = Isosurface::new(ScalarField::from_closure(Blob), 0.5)
+    ///     .region([-2.0, -2.0, -2.0], [2.0, 2.0, 2.0])
+    ///     .resolution(16)
+    ///     .flip_normals()
+    ///     .mesh();
+    /// // Every normal now agrees with the outward radial direction.
+    /// for (p, n) in mesh.positions.iter().zip(mesh.normals.iter()) {
+    ///     assert!(p.normalize().dot(*n) > 0.0);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn flip_normals(mut self) -> Self {
+        self.flip_normals = true;
+        self
     }
 
     /// Sets the axis-aligned sampling region (inclusive corners `min`/`max`).
@@ -170,13 +212,35 @@ impl Isosurface {
             }
         }
 
-        // Positions (f32) and exact-gradient normals for each welded vertex.
+        // Geometric vertex normals (area-weighted face normals) from the
+        // marching-cubes winding. These back up the exact-gradient normals
+        // below: a field built from an `f64`-only closure (`Scalar::constant`)
+        // has an identically-zero AD gradient, and a constant fallback normal
+        // would render the surface unlit-flat.
+        let mut geometric: Vec<DVec3> = vec![DVec3::ZERO; positions_f64.len()];
+        for tri in indices.chunks_exact(3) {
+            let [a, b, c] = [tri[0] as usize, tri[1] as usize, tri[2] as usize];
+            let n =
+                (positions_f64[b] - positions_f64[a]).cross(positions_f64[c] - positions_f64[a]);
+            geometric[a] += n;
+            geometric[b] += n;
+            geometric[c] += n;
+        }
+
+        // Positions (f32) and per-vertex normals: the field's exact AD
+        // gradient where it is usable, the winding normal where it degenerates.
         let mut positions: Vec<Vec3> = Vec::with_capacity(positions_f64.len());
         let mut normals: Vec<Vec3> = Vec::with_capacity(positions_f64.len());
-        for &p in &positions_f64 {
+        for (i, &p) in positions_f64.iter().enumerate() {
             positions.push(p.as_vec3());
             let g: DVec3 = self.field.grad(Point::new(p.x, p.y, p.z));
-            let normal = if g.length() > 0.0 {
+            let g = if g.length_squared() > 1e-24 {
+                g
+            } else {
+                geometric[i]
+            };
+            let g = if self.flip_normals { -g } else { g };
+            let normal = if g.length_squared() > 0.0 {
                 g.normalize().as_vec3()
             } else {
                 Vec3::Z

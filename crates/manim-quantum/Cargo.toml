@@ -32,5 +32,13 @@ approx = { workspace = true }
 name = "wavepacket_barrier"
 required-features = ["render-examples"]
 
+[[example]]
+name = "hydrogen_orbitals"
+required-features = ["render-examples"]
+
+[[example]]
+name = "bloch_gates"
+required-features = ["render-examples"]
+
 [lints]
 workspace = true

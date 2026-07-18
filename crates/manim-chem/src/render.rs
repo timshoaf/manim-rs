@@ -346,10 +346,17 @@ pub fn molecular_orbital_isosurface(
     let max = [ORBITAL_HALF_EXTENT; 3];
 
     let lobe = |scene: &mut SceneState, signed_level: f64, color: Color| {
-        let mesh = Isosurface::new(field.clone(), signed_level)
+        let mut surface = Isosurface::new(field.clone(), signed_level)
             .region(min, max)
-            .resolution(ORBITAL_RESOLUTION)
-            .mesh();
+            .resolution(ORBITAL_RESOLUTION);
+        // The +lobe is the ψ > +level region, which marching cubes classifies as
+        // "outside", leaving its +∇ψ normals pointing inward — unflipped it is
+        // lit from behind and renders flat. The −lobe is genuinely the
+        // below-level region and is already oriented outward.
+        if signed_level > 0.0 {
+            surface = surface.flip_normals();
+        }
+        let mesh = surface.mesh();
         scene.add(Mesh::new(mesh).with_material(MeshMaterial::new(color).with_opacity(0.6)))
     };
 

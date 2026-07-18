@@ -93,9 +93,10 @@ impl Animation for WavepacketEvolve {
 }
 
 /// The scene: baseline, barrier band, and the evolving phase-hue density curve.
-struct WavepacketBarrier;
+/// Scene builder for the wavepacket-barrier gallery example.
+pub struct Demo;
 
-impl SceneBuilder for WavepacketBarrier {
+impl SceneBuilder for Demo {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
         let tf = transform();
         let ts = TunnelingScene::new(TunnelingParams::default());
@@ -144,7 +145,7 @@ impl SceneBuilder for WavepacketBarrier {
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut scene = Scene::build(&WavepacketBarrier, Config::low())?;
+    let mut scene = Scene::build(&Demo, Config::low())?;
     manim_render::export::VideoExporter::render_to_png_sequence(
         &mut scene,
         "out/wavepacket_barrier",

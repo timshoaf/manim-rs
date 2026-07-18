@@ -11,7 +11,7 @@
 //!
 //! What this shows:
 //! - Parsing an embedded MDL V2000 molblock with
-//!   [`from_sdf`](manim_chem::parsers::from_sdf) — the well-known PubChem
+//!   [`from_sdf`] — the well-known PubChem
 //!   caffeine geometry (CID 2519), with explicit bonds so no perception is
 //!   needed.
 //! - [`render::ball_and_stick`] building the model as two GPU-instanced draws
@@ -88,9 +88,9 @@ $$$$
 ";
 
 /// Scene builder for the caffeine turntable.
-struct Caffeine;
+pub struct Demo;
 
-impl SceneBuilder for Caffeine {
+impl SceneBuilder for Demo {
     fn construct(&self, scene: &mut Scene) -> Result<()> {
         // Look slightly down at the molecule (it lies near the z = 0 plane).
         scene.set_camera_orientation(72_f32.to_radians(), -45_f32.to_radians());
@@ -109,7 +109,7 @@ impl SceneBuilder for Caffeine {
 }
 
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let mut scene = Scene::build(&Caffeine, Config::low())?;
+    let mut scene = Scene::build(&Demo, Config::low())?;
     VideoExporter::render_to_png_sequence(&mut scene, "out/caffeine")?;
     println!("Rendered frames to out/caffeine");
     Ok(())
