@@ -1,6 +1,6 @@
 [package]
 name = "manim-sci"
-description = "Scientific visualizers for manim_rust: the bridge from manim-fields (fields, maps) to manim-core mobjects — deformation animations, adaptive grids, and a complex-analysis kit."
+description = "Scientific visualizers for manim_rust: the bridge from manim-fields (fields, maps) to manim-core mobjects — deformation animations, adaptive grids, complex analysis, isosurfaces, and differential geometry."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 readme.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
-keywords = ["manim", "visualization", "complex-analysis", "fields", "deformation"]
+keywords = ["manim", "visualization", "complex-analysis", "differential-geometry", "fields"]
 categories = ["graphics", "mathematics", "science"]
 
 [dependencies]
@@ -16,11 +16,24 @@ manim-fields = { workspace = true }
 manim-core = { workspace = true }
 manim-math = { workspace = true }
 glam = { workspace = true }
+# Only the renderable examples pull in the GPU renderer — gated so the library
+# and its tests never depend on it (keeps them light and wasm-clean).
+manim-render = { workspace = true, optional = true }
+
+[features]
+## Enables the GPU-rendering examples (pulls in `manim-render`).
+render-examples = ["dep:manim-render"]
 
 [dev-dependencies]
 approx = { workspace = true }
-# For the renderable examples only (keeps the library wasm-clean).
-manim-render = { workspace = true }
+
+[[example]]
+name = "conformal_square"
+required-features = ["render-examples"]
+
+[[example]]
+name = "torus_curvature"
+required-features = ["render-examples"]
 
 [lints]
 workspace = true

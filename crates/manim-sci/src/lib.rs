@@ -23,7 +23,11 @@
 //! ```
 
 pub mod complex_viz;
+pub mod curveviz;
 pub mod deform;
+pub mod diffgeo;
+pub mod geodesics;
+pub mod isosurface;
 
 use manim_core::prelude::Point;
 
