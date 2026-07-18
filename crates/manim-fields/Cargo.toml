@@ -1,0 +1,23 @@
+[package]
+name = "manim-fields"
+description = "Standalone applied-math substrate for manim_rust: forward-mode autodiff, complex numbers, scalar/vector/complex fields, space maps, ODE/PDE integrators. No manim dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["autodiff", "complex", "ode", "pde", "math"]
+categories = ["mathematics", "science", "simulation"]
+
+[dependencies]
+glam = { workspace = true }
+rustfft = { workspace = true }
+
+[dev-dependencies]
+approx = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

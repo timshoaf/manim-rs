@@ -8,6 +8,7 @@ members = [
     "crates/manim-text",
     "crates/manim",
     "crates/manim-dioxus",
+    "crates/manim-fields",
 ]
 # Standalone wasm demos: separate crates with path deps, kept out of the main
 # workspace so native builds stay lean and window/ffmpeg-free.
@@ -36,6 +37,9 @@ usvg = "0.47"
 # Pure-Rust Bézier path arithmetic (Apache-2.0) — curve-preserving boolean ops
 # for `manim-core::boolean`. wasm-compatible (no C deps).
 flo_curves = "0.8"
+# Pure-Rust FFT (MIT/Apache-2.0, wasm-clean) — split-step Schrödinger in
+# `manim-fields::pde`.
+rustfft = "6"
 slotmap = "1.0"
 thiserror = "2.0"
 smallvec = "1.13"
