@@ -45,12 +45,15 @@ jobs:
       - name: Install dioxus-cli
         run: cargo install dioxus-cli --locked --version 0.7.6
 
-      # --base-path makes the emitted asset URLs relative to /demos/, which is
-      # where the bundle is mounted in the final site. Without it the app
-      # requests /assets/*.wasm at the domain root and 404s.
+      # --base-path must be the full path from the *domain* root, and this is a
+      # project Pages site served under /manim-rs/ — so the prefix is
+      # manim-rs/demos, not demos. dx emits absolute asset URLs
+      # (/manim-rs/demos/assets/*.js and the wasm fetch inside the loader);
+      # with only "demos" the browser requests /demos/* at the domain root and
+      # 404s, which blanks the whole app.
       - name: Build the wasm demo
         working-directory: examples/dioxus-app
-        run: dx build --platform web --release --base-path demos
+        run: dx build --platform web --release --base-path manim-rs/demos
 
       - name: Collect the bundle
         id: mark
