@@ -172,9 +172,9 @@ impl ManimGpu {
         wasm_bindgen_futures::spawn_local(async move {
             match manim_render::SharedGpu::new().await {
                 Ok(gpu) => *sink.borrow_mut() = Some(gpu),
-                Err(e) => web_sys::console::error_1(
-                    &format!("manim: shared gpu init failed: {e}").into(),
-                ),
+                Err(e) => {
+                    web_sys::console::error_1(&format!("manim: shared gpu init failed: {e}").into())
+                }
             }
         });
         Self { slot }
@@ -934,7 +934,8 @@ impl Default for OrbitControls {
 }
 
 /// A visual layer of draggable handles (a filled dot inside a faint halo) for a
-/// live [`Figure`] (FE-139). Wraps a pure [`DragSet`]; each frame [`sync`] drives
+/// live [`Figure`] (FE-139). Wraps a pure [`DragSet`]; each frame
+/// [`sync`](Self::sync) drives
 /// the drag state from the pointer, lazily creates the handle mobjects, moves
 /// them, and highlights the hovered/grabbed one — returning which handle moved so
 /// the caller can resample whatever depends on the positions.
@@ -953,7 +954,11 @@ pub struct DragHandleLayer {
 impl DragHandleLayer {
     /// A layer of handles at `positions`, each grabbable within `hit_radius`
     /// scene units and drawn in the matching `palette` color (cycled if short).
-    pub fn new(positions: Vec<Point>, hit_radius: f32, palette: Vec<manim_core::prelude::Color>) -> Self {
+    pub fn new(
+        positions: Vec<Point>,
+        hit_radius: f32,
+        palette: Vec<manim_core::prelude::Color>,
+    ) -> Self {
         let n = positions.len();
         Self {
             drag: DragSet::new(positions, hit_radius),
@@ -997,7 +1002,11 @@ impl DragHandleLayer {
             let col = self.color(i);
             if self.dot_ids[i].is_none() {
                 let halo = state
-                    .add(Circle::new().with_scale(self.hit_radius).with_fill(col, 0.16))
+                    .add(
+                        Circle::new()
+                            .with_scale(self.hit_radius)
+                            .with_fill(col, 0.16),
+                    )
                     .erase();
                 let dot = state
                     .add(
@@ -1742,12 +1751,19 @@ mod figure_tests {
     fn mark_dirty_sets_schedule_dirty_and_wakes() {
         let c = controller();
         c.schedule().borrow_mut().should_render(0.0); // consume the mount frame
-        assert!(!c.schedule().borrow().wants_frame(), "idle after mount frame");
+        assert!(
+            !c.schedule().borrow().wants_frame(),
+            "idle after mount frame"
+        );
 
         let kicks = count_wakes(&c);
         c.mark_dirty();
         assert!(c.schedule().borrow().wants_frame(), "dirty → wants a frame");
-        assert_eq!(kicks.get(), 1, "mark_dirty kicks the parked loop exactly once");
+        assert_eq!(
+            kicks.get(),
+            1,
+            "mark_dirty kicks the parked loop exactly once"
+        );
     }
 
     #[test]
@@ -1791,7 +1807,10 @@ mod figure_tests {
         for i in 0..5000 {
             let t = 10.0 + i as f32 * 0.016;
             assert!(!s.borrow().wants_frame(), "woke while idle at tick {i}");
-            assert!(!s.borrow_mut().should_render(t), "drew while idle at tick {i}");
+            assert!(
+                !s.borrow_mut().should_render(t),
+                "drew while idle at tick {i}"
+            );
         }
     }
 

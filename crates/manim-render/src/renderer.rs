@@ -936,7 +936,6 @@ impl TextureTarget {
         }
     }
 
-
     /// The target size in pixels, `(width, height)`.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -980,7 +979,6 @@ impl TextureTarget {
         camera: &Camera2D,
         background: Color,
     ) -> Result<RgbaImage, RenderError> {
-
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -1022,7 +1020,8 @@ impl TextureTarget {
         );
         {
             let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes || drew_ztest);
-            self.ops.record(&mut pass, &gpu_ops, &self.bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &gpu_ops, &self.bind_group, &self.pipeline);
         }
         self.copy_and_read(encoder)
     }
@@ -1276,7 +1275,9 @@ impl TextureTarget {
             );
         }
         let border = border_mesh_ndc(inset, self.width, self.height, border_px, border_color);
-        let border_gpu = self.ops.build_ops(&self.device, arena, &[FrameOp::Vector(border)]);
+        let border_gpu = self
+            .ops
+            .build_ops(&self.device, arena, &[FrameOp::Vector(border)]);
 
         // Scissor rectangle in attachment pixels, clamped to bounds.
         let sx = inset.x.max(0.0).round() as u32;
@@ -1290,14 +1291,17 @@ impl TextureTarget {
             // draw, the magnified inset, and the border. Every zoom golden
             // guards these exact commands.
             let mut pass = self.begin_ops_pass(&mut encoder, background, false);
-            self.ops.record(&mut pass, &gpu_ops, &self.bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &gpu_ops, &self.bind_group, &self.pipeline);
             if sw > 0 && sh > 0 {
                 pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
                 pass.set_scissor_rect(sx, sy, sw, sh);
-                self.ops.record(&mut pass, &gpu_ops, &self.zoom_bind_group, &self.pipeline);
+                self.ops
+                    .record(&mut pass, &gpu_ops, &self.zoom_bind_group, &self.pipeline);
                 pass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
                 pass.set_scissor_rect(0, 0, self.width, self.height);
-                self.ops.record(&mut pass, &border_gpu, &self.hud_bind_group, &self.pipeline);
+                self.ops
+                    .record(&mut pass, &border_gpu, &self.hud_bind_group, &self.pipeline);
             }
             drop(pass);
             return self.copy_and_read(encoder);
@@ -1324,7 +1328,8 @@ impl TextureTarget {
         );
         {
             let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes || drew_ztest);
-            self.ops.record(&mut pass, &gpu_ops, &self.bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &gpu_ops, &self.bind_group, &self.pipeline);
         }
         if sw > 0 && sh > 0 {
             // The inset re-runs the same sequence, scissored and magnified. It
@@ -1376,11 +1381,13 @@ impl TextureTarget {
             let mut pass = self.begin_ops_pass(&mut encoder, background, true);
             pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
             pass.set_scissor_rect(sx, sy, sw, sh);
-            self.ops.record(&mut pass, &gpu_ops, &self.zoom_bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &gpu_ops, &self.zoom_bind_group, &self.pipeline);
             // Reset to full frame for the border.
             pass.set_viewport(0.0, 0.0, self.width as f32, self.height as f32, 0.0, 1.0);
             pass.set_scissor_rect(0, 0, self.width, self.height);
-            self.ops.record(&mut pass, &border_gpu, &self.hud_bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &border_gpu, &self.hud_bind_group, &self.pipeline);
         }
         self.copy_and_read(encoder)
     }
@@ -1407,7 +1414,6 @@ impl TextureTarget {
         camera: &Camera2D,
         background: Color,
     ) -> Result<RgbaImage, RenderError> {
-
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
@@ -1424,8 +1430,12 @@ impl TextureTarget {
         );
 
         // Image + material resources across both layers, then evict vanished.
-        self.ops
-            .prepare(&self.device, &self.queue, arena, world.iter().chain(hud.iter()));
+        self.ops.prepare(
+            &self.device,
+            &self.queue,
+            arena,
+            world.iter().chain(hud.iter()),
+        );
 
         let mesh_frame = self.prepare_meshes(arena, meshes, camera);
         let world_gpu = self.ops.build_ops(&self.device, arena, world);
@@ -1461,8 +1471,10 @@ impl TextureTarget {
         );
         {
             let mut pass = self.begin_ops_pass(&mut encoder, background, drew_meshes || drew_ztest);
-            self.ops.record(&mut pass, &world_gpu, &self.bind_group, &self.pipeline);
-            self.ops.record(&mut pass, &hud_gpu, &self.hud_bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &world_gpu, &self.bind_group, &self.pipeline);
+            self.ops
+                .record(&mut pass, &hud_gpu, &self.hud_bind_group, &self.pipeline);
         }
         self.copy_and_read(encoder)
     }

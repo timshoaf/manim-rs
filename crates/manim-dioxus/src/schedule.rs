@@ -1,4 +1,5 @@
-//! [`RenderSchedule`]: the render-on-demand state machine for a [`Figure`] or a
+//! [`RenderSchedule`]: the render-on-demand state machine for a
+//! [`Figure`](crate::Figure) or a
 //! shared-device player.
 //!
 //! Textbook pages hold many figures; idle ones must cost ~0. This decides, each
