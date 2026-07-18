@@ -1,0 +1,7 @@
+# mdBook output.
+book/
+
+# Rendered example media. Produced at build time by the render harness
+# (`cargo xtask render-docs` / scripts/render-docs.sh) and by CI; NEVER
+# committed — the repo stays text-only.
+src/assets/

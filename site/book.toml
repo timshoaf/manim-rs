@@ -1,0 +1,32 @@
+[book]
+title = "manim-rs"
+description = "Scientific animation in Rust — a constructivist textbook toolkit"
+authors = ["The manim_rust authors"]
+src = "src"
+language = "en"
+
+[build]
+build-dir = "book"
+# Every chapter listed in SUMMARY.md must exist on disk. A typo'd link is a
+# build failure, not a silently-generated stub.
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/cryptex-ai/manim_rust"
+edit-url-template = "https://github.com/cryptex-ai/manim_rust/edit/main/site/{path}"
+additional-css = ["theme/manim.css"]
+no-section-label = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.playground]
+runnable = false
+
+# KaTeX-free: the prose uses Unicode math (∇, ψ, ℂ) rather than a JS math
+# renderer, so the site has zero external asset dependencies and works offline.
+[output.html.search]
+enable = true

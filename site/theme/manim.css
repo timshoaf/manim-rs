@@ -1,0 +1,63 @@
+/* Figure blocks: rendered example media with a caption. */
+.manim-figure {
+    margin: 2rem 0;
+    padding: 0;
+}
+
+.manim-figure video,
+.manim-figure img {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 6px;
+    background: var(--quote-bg, #1a1a1a);
+    /* Reserve vertical space so a missing asset (a build without the render
+       harness) doesn't collapse the layout to a 0px sliver. */
+    min-height: 120px;
+}
+
+.manim-figure figcaption {
+    margin-top: 0.6rem;
+    font-size: 0.9em;
+    line-height: 1.5;
+    color: var(--fg);
+    opacity: 0.75;
+    border-left: 3px solid var(--links);
+    padding-left: 0.8rem;
+}
+
+/* "Source: crates/..." line above an included example. */
+.source-note {
+    font-size: 0.85em;
+    opacity: 0.7;
+    margin-bottom: -0.6rem;
+}
+
+.source-note p {
+    margin: 0;
+}
+
+/* Prominent call-to-action for the rustdoc / live-demo links. */
+.demo-callout {
+    margin: 1.5rem 0;
+    padding: 0.4rem 1.2rem;
+    border: 1px solid var(--links);
+    border-radius: 6px;
+    background: var(--quote-bg);
+}
+
+.demo-callout h3 {
+    margin: 0.8rem 0;
+}
+
+/* Included example files run long; cap them with an internal scroll so a
+   200-line example doesn't push the next section off the page. */
+pre code.language-rust {
+    max-height: 40em;
+}
+
+/* Tables in the chapter overviews read better full-width. */
+table {
+    width: 100%;
+}

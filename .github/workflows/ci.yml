@@ -60,6 +60,39 @@ jobs:
       # Syntax-highlighted `Code` mobject (syntect).
       - run: cargo test -p manim-text -p manim --features code
 
+  # Documentation-site smoke test: proves the book still builds on every branch
+  # without needing a GPU, ffmpeg, or any rendered media.
+  #
+  # No assets are produced here and none are required — mdBook renders a page
+  # whose <video> src is missing without complaining, which is exactly what we
+  # want for branch validation. The deploy workflow (pages.yml) is the one that
+  # renders the real figures and gates on them via check-assets.sh.
+  #
+  # What this DOES catch, and what breaks most often: a chapter listed in
+  # SUMMARY.md that doesn't exist (create-missing = false), and an
+  # {{#include}} pointing at an example file that was renamed or moved. Both
+  # are silent-until-deploy failures otherwise.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mdBook
+        run: cargo install mdbook --locked --version 0.4.52
+      - name: Build the book (no assets)
+        run: mdbook build site
+      # mdBook logs a broken include as an ERROR line but still exits 0, so the
+      # exit code alone would not catch a renamed example file.
+      - name: Fail on broken includes
+        run: |
+          set -euo pipefail
+          if mdbook build site 2>&1 | grep -E '^\S+ \S+ \[ERROR\]'; then
+            echo "::error::mdbook reported errors (broken {{#include}} or link)"
+            exit 1
+          fi
+          echo "no mdbook errors"
+
   wasm-check:
     runs-on: ubuntu-latest
     steps:

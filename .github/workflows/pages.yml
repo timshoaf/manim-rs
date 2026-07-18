@@ -1,0 +1,167 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: -D warnings
+  MDBOOK_VERSION: "0.4.52"
+
+# Allow one deploy at a time; let an in-flight run finish rather than
+# cancelling it half-way through an upload.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # The interactive wasm demo. Isolated and non-blocking: `dx` bundles through
+  # wasm-bindgen + wasm-opt, and wasm-opt is the fragile link — it aborts on
+  # some DWARF layouts (it does so today on a local release build, where dx
+  # falls back to the unoptimized wasm and still succeeds). A broken demo must
+  # not take the book and the API docs down with it, so this job is allowed to
+  # fail and the site job treats its artifact as optional.
+  # ─────────────────────────────────────────────────────────────────────────
+  demos:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    outputs:
+      built: ${{ steps.mark.outputs.built }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: examples/dioxus-app
+
+      - name: Install dioxus-cli
+        run: cargo install dioxus-cli --locked --version 0.7.6
+
+      # --base-path makes the emitted asset URLs relative to /demos/, which is
+      # where the bundle is mounted in the final site. Without it the app
+      # requests /assets/*.wasm at the domain root and 404s.
+      - name: Build the wasm demo
+        working-directory: examples/dioxus-app
+        run: dx build --platform web --release --base-path demos
+
+      - name: Collect the bundle
+        id: mark
+        run: |
+          set -euo pipefail
+          out=examples/dioxus-app/target/dx/manim-dioxus-gallery/release/web/public
+          if [ ! -f "$out/index.html" ]; then
+            echo "dx produced no index.html; treating the demo as unavailable" >&2
+            exit 1
+          fi
+          mkdir -p demos-bundle
+          cp -r "$out/." demos-bundle/
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demos
+          path: demos-bundle
+          retention-days: 1
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Render the figures, build the book and the rustdoc, assemble the site.
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    needs: demos
+    # `demos` is continue-on-error, so it always "succeeds" from here; this is
+    # belt-and-braces in case that changes.
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Same software-Vulkan setup as the `golden` job in ci.yml: the GitHub
+      # runner has no GPU, so mesa lavapipe provides the adapter.
+      - name: Install mesa lavapipe (software Vulkan) and ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-tools ffmpeg
+
+      - name: Install mdBook
+        run: cargo install mdbook --locked --version "${MDBOOK_VERSION}"
+
+      # REQUIRE_GPU=1 mirrors the golden job: a missing adapter is a hard
+      # failure, so this can never "succeed" by silently rendering nothing and
+      # shipping a site full of broken <video> tags.
+      - name: Render example figures
+        env:
+          REQUIRE_GPU: "1"
+        run: cargo run -p render-examples --release
+
+      - name: Check every referenced figure was produced
+        run: ./site/scripts/check-assets.sh
+
+      - name: Build the book
+        run: mdbook build site
+
+      # `render-examples` is the build-time asset harness, not part of the
+      # public API — excluding it keeps /api/ to the crates a user consumes and
+      # stops a tooling-only doc warning from blocking a deploy. (ci.yml still
+      # documents the full workspace, so the harness keeps its own doc gate.)
+      - name: Build the API docs
+        run: cargo doc --no-deps --workspace --exclude render-examples
+
+      - name: Assemble the site
+        run: |
+          set -euo pipefail
+          # The book is the site root.
+          mv site/book _site
+
+          # rustdoc under /api/, with a redirect landing page (cargo doc
+          # --no-deps over a workspace emits no top-level index.html).
+          mkdir -p _site/api
+          cp -r target/doc/. _site/api/
+          ./site/scripts/api-index.sh _site/api
+
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: demos
+          path: demos-bundle
+
+      - name: Mount the demo (if it built)
+        run: |
+          set -euo pipefail
+          if [ -f demos-bundle/index.html ]; then
+            mkdir -p _site/demos
+            cp -r demos-bundle/. _site/demos/
+            echo "::notice::interactive demo mounted at /demos/"
+          else
+            # Leave an honest placeholder rather than a 404 behind the links in
+            # the Interactive Web chapter.
+            mkdir -p _site/demos
+            cp site/scripts/demos-unavailable.html _site/demos/index.html
+            echo "::warning::demo bundle unavailable; /demos/ shows a placeholder"
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
