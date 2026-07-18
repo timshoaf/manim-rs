@@ -275,8 +275,12 @@ impl CanvasSurface {
         surface.configure(&device, &surface_config);
 
         let pipeline = Pipeline::new(&device, format);
-        let ops =
-            crate::ops::OpsRenderer::new(&device, &pipeline.bind_group_layout, format, SAMPLE_COUNT);
+        let ops = crate::ops::OpsRenderer::new(
+            &device,
+            &pipeline.bind_group_layout,
+            format,
+            SAMPLE_COUNT,
+        );
         let ztest_pipeline = Pipeline::new_depth_tested(&device, format);
         let (ztest_uniform, ztest_bind_group) =
             make_camera_bind_group(&device, &ztest_pipeline, "canvas z-test camera");
@@ -636,8 +640,12 @@ impl CanvasSurface {
             if vp.w > 0.0 && vp.h > 0.0 {
                 pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
             }
-            self.ops
-                .record(&mut pass, &ops_gpu, &self.bind_group, &self.pipeline.pipeline);
+            self.ops.record(
+                &mut pass,
+                &ops_gpu,
+                &self.bind_group,
+                &self.pipeline.pipeline,
+            );
         }
         self.queue.submit(Some(encoder.finish()));
         frame.present();

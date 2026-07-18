@@ -58,8 +58,8 @@
 pub mod camera;
 pub mod layout;
 pub(crate) mod material;
-pub(crate) mod ops;
 pub mod mesh_pipeline;
+pub(crate) mod ops;
 pub mod renderer;
 pub mod tessellate;
 

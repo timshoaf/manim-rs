@@ -402,12 +402,7 @@ impl OpsRenderer {
     /// Pre-builds GPU vertex/index buffers for each op (they must outlive the
     /// render pass). `VectorZ` batches are drawn by the caller's z-test pass, so
     /// they are skipped here.
-    pub(crate) fn build_ops(
-        &self,
-        device: &wgpu::Device,
-        arena: u64,
-        ops: &[FrameOp],
-    ) -> GpuOps {
+    pub(crate) fn build_ops(&self, device: &wgpu::Device, arena: u64, ops: &[FrameOp]) -> GpuOps {
         let mut gpu_ops = Vec::new();
         for op in ops {
             match op {

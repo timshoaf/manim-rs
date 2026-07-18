@@ -260,7 +260,7 @@ mod tests {
     fn pointer_capture_follows_outside_radius() {
         let mut d = DragSet::new(vec![p(0.0, 0.0)], 0.2);
         d.update(p(0.0, 0.0), true); // grab at center (offset zero)
-        // Yank far past the radius — capture keeps it attached.
+                                     // Yank far past the radius — capture keeps it attached.
         assert_eq!(d.update(p(5.0, 5.0), true), Some(0));
         assert_eq!(d.position(0), p(5.0, 5.0));
     }
