@@ -3,11 +3,11 @@
 //! Three text-free scenes (SquareToCircle, an axes plot, a vector field), each
 //! with the built-in controls. See the README for build/run steps.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dioxus::prelude::*;
-use glam::{Mat4, Quat, Vec3};
+use glam::{DMat3, DVec3, Mat4, Quat, Vec3};
 use manim_color::TEAL_D;
 use manim_core::animations::{Create, FadeOut, TransformInto};
 use manim_core::graphing::{Axes, NumberPlane};
@@ -15,7 +15,16 @@ use manim_core::mesh::{HeightField, Mesh, MeshMaterial, Surface3D};
 use manim_core::mobject::{AnyId, MobjectId};
 use manim_core::prelude::*;
 use manim_core::vector_field::ArrowVectorField;
-use manim_dioxus::{Figure, LiveUpdater, ManimGpuProvider, ManimPlayer};
+use manim_dioxus::{
+    use_parameter, use_parameters, DragHandleLayer, Figure, LiveUpdater, ManimGpuProvider,
+    ManimPlayer, OrbitControls, Parameters, ParametersProvider,
+};
+use manim_fields::complex::{Complex, Mobius};
+use manim_fields::field::ComplexField;
+use manim_fields::map::SpaceMap;
+use manim_sci::complex_viz::RiemannSphere;
+use manim_sci::deform::{ApplyMap, DeformationGrid};
+use manim_sci::material_quad::MaterialQuad;
 
 /// The canonical square → circle animation.
 #[derive(Clone, PartialEq)]
@@ -457,11 +466,220 @@ const SCENES: &[(Which, &str, &str)] = &[
     ),
 ];
 
-/// Top-level view: the single-player gallery, or the multi-figure textbook page.
+// ---------------------------------------------------------------------------
+// Visual Complex Analysis vertical slice (FE-140): three render-on-demand
+// figures sharing one GPU device — the S3 exit criterion.
+// ---------------------------------------------------------------------------
+
+/// The square domain (scene units) all three VCA figures live over.
+const VCA_DOMAIN: [f64; 2] = [-2.5, 2.5];
+/// Full-resolution field sampling (on settle); [`VCA_DRAG_RES`] while dragging.
+const VCA_HI_RES: usize = 256;
+/// Reduced sampling while a handle is being dragged (kept the frame budget).
+const VCA_DRAG_RES: usize = 128;
+
+/// `f(z) = e^{iφ} · Π(z − zᵢ) / Π(z − pⱼ)` from scene-space zero/pole handles.
+fn rational_field(zeros: &[Point], poles: &[Point], phase: f32) -> ComplexField {
+    let zs: Vec<Complex> = zeros
+        .iter()
+        .map(|p| Complex::new(p.x as f64, p.y as f64))
+        .collect();
+    let ps: Vec<Complex> = poles
+        .iter()
+        .map(|p| Complex::new(p.x as f64, p.y as f64))
+        .collect();
+    let rot = Complex::from_polar(1.0, phase as f64);
+    ComplexField::new(move |w| {
+        let mut num = rot;
+        for z in &zs {
+            num = num * (w - *z);
+        }
+        let mut den = Complex::new(1.0, 0.0);
+        for p in &ps {
+            den = den * (w - *p);
+        }
+        num / den
+    })
+}
+
+/// A Möbius transform `w = (az+b)/(cz+d)` as a [`SpaceMap`] of the plane, with an
+/// exact conformal Jacobian `w′ = (ad−bc)/(cz+d)²`.
+fn mobius_map(m: Mobius) -> SpaceMap {
+    let det = m.a * m.d - m.b * m.c;
+    SpaceMap::from_parts(
+        move |p| {
+            let w = m.apply(Complex::new(p.x, p.y));
+            DVec3::new(w.re, w.im, p.z)
+        },
+        move |p| {
+            let denom = m.c * Complex::new(p.x, p.y) + m.d;
+            let wp = det / (denom * denom); // complex derivative
+            // Holomorphic ⇒ conformal Jacobian; z passes through.
+            DMat3::from_cols(
+                DVec3::new(wp.re, wp.im, 0.0),
+                DVec3::new(-wp.im, wp.re, 0.0),
+                DVec3::new(0.0, 0.0, 1.0),
+            )
+        },
+    )
+}
+
+/// An empty host scene for Fig 1 — the quad and drag handles are built live.
+#[derive(Clone, PartialEq)]
+struct VcaPlaneScene;
+impl SceneBuilder for VcaPlaneScene {
+    fn construct(&self, _scene: &mut Scene) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The live updater for Fig 1: a domain-coloring quad under four drag handles (2
+/// zeros, 2 poles). Dragging a handle rebuilds the rational field and resamples
+/// the quad — at reduced resolution while dragging, full resolution on settle.
+/// A `phase` parameter (slider) rotates the coloring.
+fn vca_plane_updater(params: Parameters) -> LiveUpdater {
+    let handles = Rc::new(RefCell::new(DragHandleLayer::new(
+        vec![
+            Point::new(-1.0, 0.6, 0.0), // zero 0
+            Point::new(1.0, -0.5, 0.0), // zero 1
+            Point::new(0.4, 1.1, 0.0),  // pole 0
+            Point::new(-0.7, -1.0, 0.0),// pole 1
+        ],
+        0.3,
+        vec![TEAL_D, TEAL_D, RED, RED],
+    )));
+    let quad = Rc::new(Cell::new(None::<AnyId>));
+    // (phase, resolution) last sampled — NaN forces the first sample.
+    let last = Rc::new(Cell::new((f32::NAN, 0usize)));
+    LiveUpdater::new(move |state, pointer, _t| {
+        let mut hl = handles.borrow_mut();
+
+        // Frame 1: create the quad *under* the handles.
+        if quad.get().is_none() {
+            let f = rational_field(&hl.positions()[0..2], &hl.positions()[2..4], params.get("phase"));
+            let id = MaterialQuad::domain_coloring(
+                VCA_DOMAIN,
+                VCA_DOMAIN,
+                (VCA_DRAG_RES, VCA_DRAG_RES),
+                &f,
+            )
+            .add_to(state);
+            quad.set(Some(id.erase()));
+        }
+
+        let moved = hl.sync(state, pointer);
+        let phase = params.get("phase");
+        let res = if hl.is_dragging() {
+            VCA_DRAG_RES
+        } else {
+            VCA_HI_RES
+        };
+        let (last_phase, last_res) = last.get();
+        if moved.is_some() || phase != last_phase || res != last_res {
+            let f = rational_field(&hl.positions()[0..2], &hl.positions()[2..4], phase);
+            let material =
+                MaterialQuad::domain_coloring_material(VCA_DOMAIN, VCA_DOMAIN, (res, res), &f);
+            if let Some(id) = quad.get() {
+                MaterialQuad::resample(state, id, material);
+            }
+            last.set((phase, res));
+        }
+    })
+}
+
+/// Fig 1 component: a phase slider ([`use_parameter`]) over the interactive
+/// domain-coloring [`Figure`]. Both share the enclosing [`ParametersProvider`]'s
+/// [`Parameters`], so the slider wakes the figure for one redraw.
+#[component]
+fn VcaPlaneFigure() -> Element {
+    let params = use_parameters();
+    // The phase slider; its value is read by the updater each frame.
+    let (_phase, slider) = use_parameter("phase", [-PI, PI], 0.0);
+    // Build the updater once so the handle/quad state persists across renders.
+    let updater = use_hook(|| vca_plane_updater(params.clone()));
+    rsx! {
+        div { style: "padding:8px 12px;background:#181818;", {slider} }
+        Figure {
+            scene: VcaPlaneScene,
+            live: updater.clone(),
+            width: "100%",
+            height: "340px",
+            lazy: false,
+        }
+    }
+}
+
+/// Fig 2 scene: a deformation grid animated through `z ↦ z²` then a Möbius map.
+#[derive(Clone, PartialEq)]
+struct VcaDeformScene;
+impl SceneBuilder for VcaDeformScene {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        let grid = DeformationGrid::new([-3.0, 3.0], [-3.0, 3.0], 0.5)
+            .with_ghost()
+            .add_to(scene.state_mut());
+        scene.play(ApplyMap::new(grid, &SpaceMap::complex_power(2)).run_time(2.5))?;
+        scene.wait(0.5);
+        let mobius = mobius_map(Mobius::new(
+            Complex::new(1.0, 0.0),
+            Complex::new(0.0, 0.45),
+            Complex::new(0.35, 0.0),
+            Complex::new(1.0, 0.0),
+        ));
+        scene.play(ApplyMap::new(grid, &mobius).run_time(2.5))?;
+        scene.wait(0.5);
+        Ok(())
+    }
+}
+
+/// Fig 3 scene: the Riemann sphere with a stereographic grid (a plane grid
+/// wrapped onto the sphere) — orbited by [`OrbitControls`].
+#[derive(Clone, PartialEq)]
+struct VcaSphereScene;
+impl SceneBuilder for VcaSphereScene {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        RiemannSphere::add_to(scene.state_mut());
+        // `stereographic()` maps the plane onto the sphere; `pre_deformed` draws
+        // the grid already wrapped (a static stereographic net).
+        DeformationGrid::new([-4.0, 4.0], [-4.0, 4.0], 0.5)
+            .faded(0.85)
+            .with_map(&RiemannSphere::stereographic())
+            .pre_deformed()
+            .add_to(scene.state_mut());
+        Ok(())
+    }
+}
+
+/// The Visual Complex Analysis route: three figures under one
+/// [`ManimGpuProvider`], all render-on-demand.
+#[component]
+fn VcaPage() -> Element {
+    let card = "border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#000;margin-bottom:1.3rem;";
+    let cap = "margin:0;padding:8px 12px;color:#9aa;font-size:0.84rem;background:#181818;";
+    rsx! {
+        ManimGpuProvider {
+            div { style: "{card}",
+                ParametersProvider { VcaPlaneFigure {} }
+                p { style: "{cap}", "Fig 1. Domain coloring of f(z) = Π(z−zᵢ)/Π(z−pⱼ). Drag the teal zeros and red poles; the phase slider rotates the hue. Resamples at 128² while dragging, 256² on release." }
+            }
+            div { style: "{card}",
+                ManimPlayer { scene: VcaDeformScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "340px" }
+                p { style: "{cap}", "Fig 2. A conformal grid carried through z ↦ z², then a Möbius map — play or scrub the timeline." }
+            }
+            div { style: "{card}",
+                Figure { scene: VcaSphereScene, live: OrbitControls::new().updater(), width: "100%", height: "340px", lazy: false }
+                p { style: "{cap}", "Fig 3. The Riemann sphere with a stereographic grid. Drag to orbit, wheel to zoom." }
+            }
+        }
+    }
+}
+
+/// Top-level view: the single-player gallery, the multi-figure textbook page, or
+/// the Visual Complex Analysis slice.
 #[derive(Clone, Copy, PartialEq)]
 enum View {
     Gallery,
     Textbook,
+    Vca,
 }
 
 /// The gallery: a scene picker driving the selected `<ManimPlayer>`.
@@ -478,11 +696,11 @@ fn app() -> Element {
     rsx! {
         div {
             style: "font-family:system-ui;background:#141414;color:#eee;min-height:100vh;padding:2rem 1.5rem;box-sizing:border-box;",
-            div { style: if matches!(view(), View::Textbook) { "max-width:1040px;margin:0 auto;" } else { "max-width:760px;margin:0 auto;" },
+            div { style: if matches!(view(), View::Gallery) { "max-width:760px;margin:0 auto;" } else { "max-width:1040px;margin:0 auto;" },
                 h1 { style: "margin:0 0 4px;font-size:1.6rem;", "manim_rust · Dioxus gallery" }
-                // Top-level view switch: single-player gallery vs the multi-figure
-                // textbook page (a dozen shared-device render-on-demand figures).
-                div { style: "display:flex;gap:8px;margin:0 0 1rem;",
+                // Top-level view switch: single-player gallery, the multi-figure
+                // textbook page, or the Visual Complex Analysis slice.
+                div { style: "display:flex;gap:8px;margin:0 0 1rem;flex-wrap:wrap;",
                     button {
                         style: if matches!(view(), View::Gallery) {
                             "padding:6px 14px;background:#7cd;color:#023;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
@@ -501,8 +719,22 @@ fn app() -> Element {
                         onclick: move |_| view.set(View::Textbook),
                         "Textbook page"
                     }
+                    button {
+                        style: if matches!(view(), View::Vca) {
+                            "padding:6px 14px;background:#7cd;color:#023;border:none;border-radius:6px;font-weight:600;cursor:pointer;"
+                        } else {
+                            "padding:6px 14px;background:#222;color:#bcd;border:1px solid #345;border-radius:6px;cursor:pointer;"
+                        },
+                        onclick: move |_| view.set(View::Vca),
+                        "Visual Complex Analysis"
+                    }
                 }
-                if matches!(view(), View::Textbook) {
+                if matches!(view(), View::Vca) {
+                    p { style: "margin:0 0 1.2rem;color:#9aa;",
+                        "The v1 exit slice: three complex-analysis figures — an interactive domain-coloring plane, a conformal-map timeline, and the Riemann sphere — sharing one GPU device, all render-on-demand."
+                    }
+                    VcaPage {}
+                } else if matches!(view(), View::Textbook) {
                     p { style: "margin:0 0 1.2rem;color:#9aa;",
                         "A dozen render-on-demand "
                         code { style: "color:#7cd;", "<Figure>" }
@@ -567,4 +799,81 @@ fn app() -> Element {
 
 fn main() {
     dioxus::launch(app);
+}
+
+#[cfg(test)]
+mod vca_timing {
+    //! Native measurement of the Fig-1 domain-coloring resample cost — the
+    //! browser can't be timed here, but the CPU field-sampling that a drag frame
+    //! triggers is pure and runs natively. Run with `cargo test -- --nocapture`
+    //! to see the per-frame numbers that justify the 128²-while-dragging drop.
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn report_resample_timing() {
+        let zeros = [Point::new(-1.0, 0.6, 0.0), Point::new(1.0, -0.5, 0.0)];
+        let poles = [Point::new(0.4, 1.1, 0.0), Point::new(-0.7, -1.0, 0.0)];
+        let f = rational_field(&zeros, &poles, 0.5);
+        let iters = 30;
+        for res in [VCA_DRAG_RES, VCA_HI_RES, 512] {
+            let t = Instant::now();
+            for _ in 0..iters {
+                let m = MaterialQuad::domain_coloring_material(
+                    VCA_DOMAIN,
+                    VCA_DOMAIN,
+                    (res, res),
+                    &f,
+                );
+                std::hint::black_box(&m);
+            }
+            let per_ms = t.elapsed().as_secs_f64() * 1000.0 / iters as f64;
+            println!("VCA resample {res}²: {per_ms:.3} ms/frame ({} samples)", res * res);
+            // Sanity ceiling so a pathological regression fails the suite.
+            assert!(per_ms < 250.0, "resample {res}² far too slow: {per_ms:.1} ms");
+        }
+    }
+
+    /// Runs each VCA scene's `construct` headlessly — the browser is where a
+    /// component actually mounts, so this is the only native guard on the
+    /// `ApplyMap` timeline, the Möbius Jacobian, and the stereographic
+    /// pre-deform building cleanly.
+    #[test]
+    fn vca_scenes_build() {
+        let cfg = Config::low();
+
+        // Fig 2: z↦z² then Möbius on a deformation grid — a real timeline.
+        let deform = Scene::build(&VcaDeformScene, cfg.clone()).expect("deform scene builds");
+        assert!(
+            deform.total_duration() > 5.0,
+            "two 2.5s plays + waits ⇒ >5s timeline"
+        );
+
+        // Fig 3: sphere + stereographic grid (pre-deformed, static).
+        let sphere = Scene::build(&VcaSphereScene, cfg.clone()).expect("sphere scene builds");
+        assert!(!sphere.state().display_list().is_empty());
+
+        // Fig 1 host is empty (quad/handles are built live).
+        Scene::build(&VcaPlaneScene, cfg).expect("plane host builds");
+    }
+
+    #[test]
+    fn mobius_jacobian_matches_finite_difference() {
+        // The analytic conformal Jacobian must agree with a numeric one.
+        let m = mobius_map(Mobius::new(
+            Complex::new(1.0, 0.2),
+            Complex::new(0.0, 0.45),
+            Complex::new(0.35, 0.1),
+            Complex::new(1.0, 0.0),
+        ));
+        let p = DVec3::new(0.7, -0.4, 0.0);
+        let j = m.jacobian(p);
+        let h = 1e-6;
+        let dfdx = (m.apply(p + DVec3::new(h, 0.0, 0.0)) - m.apply(p - DVec3::new(h, 0.0, 0.0)))
+            / (2.0 * h);
+        let dfdy = (m.apply(p + DVec3::new(0.0, h, 0.0)) - m.apply(p - DVec3::new(0.0, h, 0.0)))
+            / (2.0 * h);
+        assert!((j.col(0).truncate() - dfdx.truncate()).length() < 1e-4);
+        assert!((j.col(1).truncate() - dfdy.truncate()).length() < 1e-4);
+    }
 }

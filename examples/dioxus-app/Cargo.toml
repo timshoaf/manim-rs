@@ -17,4 +17,9 @@ manim-core = { path = "../../crates/manim-core" }
 # The mesh scene: geometry is glam-typed, and the palette beyond the prelude's
 # basic colors lives in manim-color. Versions must match the workspace's.
 manim-color = { path = "../../crates/manim-color" }
+# The Visual Complex Analysis route: domain-coloring quads (manim-sci) built from
+# rational complex fields (manim-fields). Default features only — no manim-render
+# (that's behind manim-sci's `render-examples` gate), so this stays wasm-clean.
+manim-sci = { path = "../../crates/manim-sci" }
+manim-fields = { path = "../../crates/manim-fields" }
 glam = "0.30"

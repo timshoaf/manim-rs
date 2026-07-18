@@ -58,9 +58,11 @@
 
 #![allow(missing_docs)] // dioxus macro codegen; hand-written items are documented.
 
+pub mod interaction;
 pub mod player;
 pub mod schedule;
 
+pub use interaction::{DragSet, OrbitState};
 pub use player::PlayerState;
 pub use schedule::RenderSchedule;
 
@@ -86,6 +88,10 @@ pub struct PointerState {
     pub position: Point,
     /// Whether a pointer button is currently held down over the canvas.
     pub pressed: bool,
+    /// Accumulated wheel delta (vertical, stripped of units) since the previous
+    /// frame; consumed and reset each frame. Positive = scroll down. Used by
+    /// [`OrbitControls`] for dolly zoom; `0.0` when no wheel event occurred.
+    pub wheel: f32,
 }
 
 /// A per-frame scene mutator for live, input-driven scenes.
@@ -235,6 +241,8 @@ struct RawPointer {
     y: f32,
     /// Whether a button is currently pressed.
     pressed: bool,
+    /// Accumulated vertical wheel delta since the render loop last consumed it.
+    wheel: f32,
 }
 
 /// A shared, framework-independent handle to a player's transport state.
@@ -590,6 +598,27 @@ pub struct FigureController {
 type WakeSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 impl FigureController {
+    /// A fresh controller with a default-settle [`RenderSchedule`]. Create one
+    /// when the surrounding app needs to drive a [`Figure`]'s redraws itself
+    /// (e.g. a slider or a [`Parameters`] set does `mark_dirty`); pass it to the
+    /// figure via its `controller` prop. A figure with no `controller` makes its
+    /// own.
+    pub fn new() -> Self {
+        Self {
+            schedule: Rc::new(RefCell::new(RenderSchedule::new())),
+            wake: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    /// A controller whose schedule keeps drawing `settle` seconds after a pointer
+    /// release (inertia). See [`RenderSchedule::with_settle`].
+    pub fn with_settle(settle: f32) -> Self {
+        Self {
+            schedule: Rc::new(RefCell::new(RenderSchedule::new().with_settle(settle))),
+            wake: Rc::new(RefCell::new(None)),
+        }
+    }
+
     /// Requests exactly one redraw, restarting the frame loop if it had idled.
     pub fn mark_dirty(&self) {
         self.schedule.borrow_mut().mark_dirty();
@@ -623,9 +652,377 @@ impl PartialEq for FigureController {
     }
 }
 
+impl Default for FigureController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl std::fmt::Debug for FigureController {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("FigureController(..)")
+    }
+}
+
+/// A named set of scalar parameters shared between slider widgets and a
+/// [`Figure`]'s live closure (FE-139).
+///
+/// Sliders (built with [`Parameters::slider`] or the [`use_parameter`] hook)
+/// **write**; a figure's `live` closure **reads** the current values each frame.
+/// A write wakes every figure that [registered](Parameters::register) — so
+/// moving a slider redraws exactly the figures that depend on it, once, then they
+/// idle again (the render-on-demand contract). Cheap to clone (all state is
+/// reference-counted); clones share one value map + listener list.
+#[derive(Clone, Default)]
+pub struct Parameters {
+    values: Rc<RefCell<std::collections::HashMap<String, f32>>>,
+    listeners: Rc<RefCell<Vec<FigureController>>>,
+}
+
+impl Parameters {
+    /// An empty parameter set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The current value of `name`, or `default` if unset.
+    pub fn get_or(&self, name: &str, default: f32) -> f32 {
+        self.values.borrow().get(name).copied().unwrap_or(default)
+    }
+
+    /// The current value of `name`, or `0.0` if unset.
+    pub fn get(&self, name: &str) -> f32 {
+        self.get_or(name, 0.0)
+    }
+
+    /// Sets `name` to `value` and wakes every registered figure (one redraw
+    /// each). Seeds the value if new.
+    pub fn set(&self, name: &str, value: f32) {
+        self.values.borrow_mut().insert(name.to_string(), value);
+        for c in self.listeners.borrow().iter() {
+            c.mark_dirty();
+        }
+    }
+
+    /// Seeds `name` with `initial` only if it has no value yet (idempotent mount
+    /// seeding — does not wake listeners).
+    pub fn seed(&self, name: &str, initial: f32) {
+        self.values
+            .borrow_mut()
+            .entry(name.to_string())
+            .or_insert(initial);
+    }
+
+    /// Registers a figure controller to be woken on every [`set`](Self::set).
+    /// Idempotent per distinct controller.
+    pub fn register(&self, controller: FigureController) {
+        let mut ls = self.listeners.borrow_mut();
+        if !ls.contains(&controller) {
+            ls.push(controller);
+        }
+    }
+}
+
+impl PartialEq for Parameters {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.values, &other.values)
+    }
+}
+
+impl std::fmt::Debug for Parameters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Parameters({} values)", self.values.borrow().len())
+    }
+}
+
+impl Parameters {
+    /// A labeled range-slider element bound to `name` over `[min, max]`, seeded to
+    /// `initial`. Dragging it calls [`set`](Self::set) → wakes every registered
+    /// figure. Uncontrolled (the browser owns the thumb), so no reactive context
+    /// is needed — call it where you hold the `Parameters` directly. For a
+    /// value-readout that updates as you drag, use the [`use_parameter`] hook.
+    pub fn slider(&self, name: &str, label: &str, range: [f32; 2], initial: f32) -> Element {
+        self.seed(name, initial);
+        let params = self.clone();
+        let key = name.to_string();
+        let [min, max] = range;
+        let step = (max - min) / 200.0;
+        rsx! {
+            label {
+                style: "display:flex;align-items:center;gap:8px;font-size:0.82rem;color:#bcd;",
+                span { style: "min-width:8ch;", "{label}" }
+                input {
+                    r#type: "range",
+                    min: "{min}",
+                    max: "{max}",
+                    step: "{step}",
+                    value: "{initial}",
+                    style: "flex:1;accent-color:#7cd;",
+                    oninput: move |e| {
+                        if let Ok(v) = e.value().parse::<f32>() {
+                            params.set(&key, v);
+                        }
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Provides a fresh [`Parameters`] set to its subtree (FE-139). Sliders
+/// ([`use_parameter`]) and [`Figure`]s under it share one value map: a slider
+/// write wakes the dependent figures. Wrap a control panel + its figures in one.
+#[component]
+pub fn ParametersProvider(children: Element) -> Element {
+    use_context_provider(Parameters::new);
+    rsx! { {children} }
+}
+
+/// Reads the enclosing [`ParametersProvider`]'s [`Parameters`] from context.
+///
+/// # Panics
+///
+/// Panics if called outside a [`ParametersProvider`].
+pub fn use_parameters() -> Parameters {
+    use_context::<Parameters>()
+}
+
+/// A two-way-bound range slider for a named parameter (FE-139), read from the
+/// enclosing [`ParametersProvider`]'s [`Parameters`].
+///
+/// Returns the current value as a reactive [`Signal`] (so a readout re-renders as
+/// you drag) and the slider [`Element`] to place in your layout. Dragging updates
+/// both the signal and the shared parameter set — waking every [`Figure`] that
+/// depends on it for one redraw.
+///
+/// # Panics
+///
+/// Panics if called outside a [`ParametersProvider`].
+pub fn use_parameter(name: &str, range: [f32; 2], initial: f32) -> (Signal<f32>, Element) {
+    let params = use_context::<Parameters>();
+    params.seed(name, initial);
+    let mut sig = use_signal(|| params.get_or(name, initial));
+    let key = name.to_string();
+    let p = params.clone();
+    let [min, max] = range;
+    let step = (max - min) / 200.0;
+    let cur = sig();
+    let el = rsx! {
+        label {
+            style: "display:flex;align-items:center;gap:8px;font-size:0.82rem;color:#bcd;",
+            span { style: "min-width:8ch;", "{name}" }
+            input {
+                r#type: "range",
+                min: "{min}",
+                max: "{max}",
+                step: "{step}",
+                value: "{cur}",
+                style: "flex:1;accent-color:#7cd;",
+                oninput: move |e| {
+                    if let Ok(v) = e.value().parse::<f32>() {
+                        sig.set(v);
+                        p.set(&key, v);
+                    }
+                },
+            }
+            span { style: "min-width:5ch;text-align:right;color:#9aa;", "{cur:.2}" }
+        }
+    };
+    (sig, el)
+}
+
+/// A turntable camera controller (FE-139): a drop-in [`LiveUpdater`] that orbits
+/// a 3-D [`Figure`]'s camera by pointer drag and dollies it by wheel, with the
+/// [`RenderSchedule`] settle window supplying release inertia.
+///
+/// Attach to any 3-D scene: the scene's `construct` adds the geometry, and this
+/// updater drives only the camera each frame. Drag spins azimuth / tilts polar
+/// angle; the wheel zooms.
+///
+/// ```no_run
+/// use manim_dioxus::{Figure, OrbitControls};
+/// # use dioxus::prelude::*;
+/// # use manim_core::scene::{Scene, SceneBuilder}; use manim_core::error::Result;
+/// # #[derive(Clone, PartialEq)] struct Ball;
+/// # impl SceneBuilder for Ball { fn construct(&self, _: &mut Scene) -> Result<()> { Ok(()) } }
+/// # fn app() -> Element {
+/// rsx! { Figure { scene: Ball, live: OrbitControls::new().updater() } }
+/// # }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct OrbitControls {
+    phi: f32,
+    theta: f32,
+    sensitivity: f32,
+    phi_range: (f32, f32),
+    /// Scene-zoom applied per wheel pixel (delta is in CSS pixels, ~100/notch).
+    wheel_rate: f32,
+}
+
+impl OrbitControls {
+    /// A controller starting at a gentle three-quarter view, above the horizon.
+    pub fn new() -> Self {
+        Self {
+            phi: 1.1,
+            theta: -0.6,
+            sensitivity: 0.25,
+            phi_range: (0.05, std::f32::consts::FRAC_PI_2),
+            wheel_rate: 0.01,
+        }
+    }
+
+    /// Sets the initial polar/azimuth angles (radians).
+    pub fn angles(mut self, phi: f32, theta: f32) -> Self {
+        self.phi = phi;
+        self.theta = theta;
+        self
+    }
+
+    /// Sets the drag sensitivity (radians per scene unit).
+    pub fn sensitivity(mut self, s: f32) -> Self {
+        self.sensitivity = s;
+        self
+    }
+
+    /// Allows the camera over the top: use `(0.05, π−0.05)` for a full orbit.
+    pub fn phi_range(mut self, min: f32, max: f32) -> Self {
+        self.phi_range = (min, max);
+        self
+    }
+
+    /// Builds the [`LiveUpdater`] that drives the camera.
+    pub fn updater(self) -> LiveUpdater {
+        use manim_core::camera::ThreeDParams;
+        let orbit = std::cell::Cell::new(
+            OrbitState::new(self.phi, self.theta)
+                .with_sensitivity(self.sensitivity)
+                .with_phi_range(self.phi_range.0, self.phi_range.1),
+        );
+        let last = std::cell::Cell::new(None::<Point>);
+        let wheel_rate = self.wheel_rate;
+        LiveUpdater::new(move |state, pointer, _t| {
+            let mut o = orbit.get();
+            if pointer.pressed {
+                if let Some(prev) = last.get() {
+                    o.drag(pointer.position.x - prev.x, pointer.position.y - prev.y);
+                }
+                last.set(Some(pointer.position));
+            } else {
+                last.set(None);
+            }
+            if pointer.wheel != 0.0 {
+                // Scroll up (negative deltaY) zooms in.
+                o.zoom_by(-pointer.wheel * wheel_rate);
+            }
+            orbit.set(o);
+            let base = state.camera().three_d.unwrap_or_default();
+            state.camera_mut().set_three_d(ThreeDParams {
+                phi: o.phi,
+                theta: o.theta,
+                zoom: o.zoom,
+                gamma: base.gamma,
+                focal_distance: base.focal_distance,
+            });
+        })
+    }
+}
+
+impl Default for OrbitControls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A visual layer of draggable handles (a filled dot inside a faint halo) for a
+/// live [`Figure`] (FE-139). Wraps a pure [`DragSet`]; each frame [`sync`] drives
+/// the drag state from the pointer, lazily creates the handle mobjects, moves
+/// them, and highlights the hovered/grabbed one — returning which handle moved so
+/// the caller can resample whatever depends on the positions.
+///
+/// Use it inside a [`LiveUpdater`]: hold one in the closure, call `sync` each
+/// frame, and when it returns `Some`, rebuild your field / geometry from
+/// [`positions`](Self::positions).
+pub struct DragHandleLayer {
+    drag: DragSet,
+    palette: Vec<manim_core::prelude::Color>,
+    hit_radius: f32,
+    dot_ids: Vec<Option<manim_core::mobject::AnyId>>,
+    halo_ids: Vec<Option<manim_core::mobject::AnyId>>,
+}
+
+impl DragHandleLayer {
+    /// A layer of handles at `positions`, each grabbable within `hit_radius`
+    /// scene units and drawn in the matching `palette` color (cycled if short).
+    pub fn new(positions: Vec<Point>, hit_radius: f32, palette: Vec<manim_core::prelude::Color>) -> Self {
+        let n = positions.len();
+        Self {
+            drag: DragSet::new(positions, hit_radius),
+            palette,
+            hit_radius,
+            dot_ids: vec![None; n],
+            halo_ids: vec![None; n],
+        }
+    }
+
+    /// The current handle positions (scene space).
+    pub fn positions(&self) -> &[Point] {
+        self.drag.positions()
+    }
+
+    /// The position of handle `i`.
+    pub fn position(&self, i: usize) -> Point {
+        self.drag.position(i)
+    }
+
+    /// Whether a handle is being dragged this frame (for a cursor affordance).
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_dragging()
+    }
+
+    /// The color for handle `i` (cycles the palette).
+    fn color(&self, i: usize) -> manim_core::prelude::Color {
+        self.palette[i % self.palette.len().max(1)]
+    }
+
+    /// Advances one frame: drives the [`DragSet`] from `pointer`, draws/moves the
+    /// handles, highlights the hovered one, and returns the moved handle (if any).
+    pub fn sync(&mut self, state: &mut SceneState, pointer: &PointerState) -> Option<usize> {
+        use manim_core::prelude::{Circle, WHITE};
+        use manim_core::Buildable;
+
+        let moved = self.drag.update(pointer.position, pointer.pressed);
+        let n = self.dot_ids.len();
+        for i in 0..n {
+            let pos = self.drag.position(i);
+            let col = self.color(i);
+            if self.dot_ids[i].is_none() {
+                let halo = state
+                    .add(Circle::new().with_scale(self.hit_radius).with_fill(col, 0.16))
+                    .erase();
+                let dot = state
+                    .add(
+                        Circle::new()
+                            .with_scale(self.hit_radius * 0.42)
+                            .with_fill(col, 1.0)
+                            .with_stroke(WHITE, 2.0, 1.0),
+                    )
+                    .erase();
+                self.halo_ids[i] = Some(halo);
+                self.dot_ids[i] = Some(dot);
+            }
+            let halo = self.halo_ids[i].expect("halo created above");
+            let dot = self.dot_ids[i].expect("dot created above");
+            state.move_to(halo, pos);
+            state.move_to(dot, pos);
+            let hot = self.drag.hovered() == Some(i);
+            state.set_style_family(halo, |s| {
+                s.set_fill(col, if hot { 0.34 } else { 0.16 });
+            });
+            state.set_style_family(dot, |s| {
+                s.set_fill(if hot { WHITE } else { col }, 1.0);
+            });
+        }
+        moved
     }
 }
 
@@ -673,6 +1070,7 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
     #[props(default)] height: Option<String>,
     #[props(default = true)] lazy: bool,
     #[props(default)] settle: Option<f32>,
+    #[props(default)] controller: Option<FigureController>,
 ) -> Element {
     let config = config.unwrap_or_else(Config::low);
     let width = width.unwrap_or_else(|| "480px".to_string());
@@ -682,19 +1080,28 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
     // zero-duration construction, so this is a single frame.
     let data: Rc<SceneData> = use_hook(|| Rc::new(build_scene_data(&scene, config.clone())));
 
-    // The render-on-demand controller, seeded with the settle window, published
-    // into context for `use_figure_controller` and read by the frame loop.
+    // The render-on-demand controller: use the one the caller passed (so an
+    // external slider/`Parameters` can drive redraws), else make our own seeded
+    // with the settle window. Published into context for `use_figure_controller`
+    // and read by the frame loop.
     let controller = use_hook(|| {
-        let sched = match settle {
-            Some(secs) => RenderSchedule::new().with_settle(secs),
-            None => RenderSchedule::new(),
-        };
-        FigureController {
-            schedule: Rc::new(RefCell::new(sched)),
-            wake: Rc::new(RefCell::new(None)),
-        }
+        controller.clone().unwrap_or_else(|| match settle {
+            Some(secs) => FigureController::with_settle(secs),
+            None => FigureController::new(),
+        })
     });
     use_context_provider(|| controller.clone());
+
+    // If a `Parameters` set is in context, subscribe this figure so a slider
+    // write wakes it for exactly one redraw.
+    {
+        let ctrl = controller.clone();
+        use_hook(move || {
+            if let Some(params) = try_consume_context::<Parameters>() {
+                params.register(ctrl);
+            }
+        });
+    }
 
     let raw_pointer: Rc<RefCell<RawPointer>> =
         use_hook(|| Rc::new(RefCell::new(RawPointer::default())));
@@ -739,9 +1146,11 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
     let rp_move = Rc::clone(&raw_pointer);
     let rp_down = Rc::clone(&raw_pointer);
     let rp_up = Rc::clone(&raw_pointer);
+    let rp_wheel = Rc::clone(&raw_pointer);
     let c_move = controller.clone();
     let c_down = controller.clone();
     let c_up = controller.clone();
+    let c_wheel = controller.clone();
 
     let show_placeholder = !first_frame();
     let style = format!("position:relative;width:{width};height:{height};");
@@ -781,6 +1190,15 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                     if interactive {
                         rp_up.borrow_mut().pressed = false;
                         c_up.set_pointer_active(false);
+                    }
+                },
+                onwheel: move |e| {
+                    if interactive {
+                        e.prevent_default();
+                        let dy = e.delta().strip_units().y as f32;
+                        rp_wheel.borrow_mut().wheel += dy;
+                        // A discrete zoom: one redraw applies it, then park.
+                        c_wheel.mark_dirty();
                     }
                 },
             }
@@ -1006,6 +1424,7 @@ mod wasm {
                     PointerState {
                         position,
                         pressed: raw.pressed,
+                        wheel: 0.0,
                     }
                 };
 
@@ -1221,17 +1640,22 @@ mod wasm {
 
                 if schedule.borrow_mut().should_render(elapsed) {
                     let ptr = {
-                        let raw = *raw_pointer.borrow();
+                        let (x, y, pressed, wheel) = {
+                            let mut raw = raw_pointer.borrow_mut();
+                            let wheel = std::mem::take(&mut raw.wheel);
+                            (raw.x, raw.y, raw.pressed, wheel)
+                        };
                         let (cw, ch) =
                             (canvas.client_width() as f32, canvas.client_height() as f32);
                         let position = surface
                             .borrow()
                             .as_ref()
-                            .and_then(|s| s.client_to_scene(raw.x, raw.y, cw, ch))
+                            .and_then(|s| s.client_to_scene(x, y, cw, ch))
                             .unwrap_or_default();
                         PointerState {
                             position,
-                            pressed: raw.pressed,
+                            pressed,
+                            wheel,
                         }
                     };
                     if let Some(updater) = &live {
@@ -1404,6 +1828,57 @@ mod figure_tests {
         figures[3].borrow_mut().mark_dirty();
         let extra: u32 = figures.iter().map(|f| run_until_idle(f, 1.0)).sum();
         assert_eq!(extra, 1, "only the dirtied figure redraws, once");
+    }
+
+    #[test]
+    fn parameter_round_trip_and_wake() {
+        let params = Parameters::new();
+        params.seed("k", 1.0);
+        assert_eq!(params.get_or("k", 0.0), 1.0);
+        assert_eq!(params.get("missing"), 0.0);
+
+        // A figure registered on the set is woken (marked dirty) by a write.
+        let ctrl = FigureController::new();
+        ctrl.schedule().borrow_mut().should_render(0.0); // consume mount → idle
+        assert!(!ctrl.schedule().borrow().is_dirty());
+        params.register(ctrl.clone());
+        params.set("k", 2.5);
+        assert_eq!(params.get("k"), 2.5);
+        assert!(
+            ctrl.schedule().borrow().is_dirty(),
+            "slider write wakes the registered figure"
+        );
+
+        // register is idempotent per controller.
+        params.register(ctrl.clone());
+        assert_eq!(params.listeners.borrow().len(), 1);
+    }
+
+    #[test]
+    fn drag_handle_layer_creates_once_and_moves_grabbed() {
+        use manim_core::prelude::{Color, Point, SceneState};
+        let mut scene = SceneState::new();
+        let mut layer = DragHandleLayer::new(
+            vec![Point::new(0.0, 0.0, 0.0), Point::new(2.0, 0.0, 0.0)],
+            0.4,
+            vec![Color::from_rgba(1.0, 0.0, 0.0, 1.0)],
+        );
+        let ptr = |x: f32, y: f32, pressed: bool| PointerState {
+            position: Point::new(x, y, 0.0),
+            pressed,
+            wheel: 0.0,
+        };
+        // First sync: hover only → lazily draws 2 handles (dot + halo each).
+        assert_eq!(layer.sync(&mut scene, &ptr(5.0, 5.0, false)), None);
+        let after_first = scene.display_list().len();
+        assert!(after_first >= 4, "two dots + two halos drawn");
+        // Second sync: no new mobjects (memoized).
+        layer.sync(&mut scene, &ptr(5.0, 5.0, false));
+        assert_eq!(scene.display_list().len(), after_first, "handles reused");
+        // Grab handle 1 at its center, drag it: returns Some(1), position moves.
+        layer.sync(&mut scene, &ptr(2.0, 0.0, true));
+        assert_eq!(layer.sync(&mut scene, &ptr(2.0, 1.0, true)), Some(1));
+        assert_eq!(layer.position(1), Point::new(2.0, 1.0, 0.0));
     }
 
     #[test]
