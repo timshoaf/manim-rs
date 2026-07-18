@@ -896,10 +896,12 @@ impl SceneState {
                             gradient: None,
                         });
                 let image = data.image.clone();
+                let material = data.material.clone();
                 if fill.is_none()
                     && stroke.is_none()
                     && background_stroke.is_none()
                     && image.is_none()
+                    && material.is_none()
                 {
                     continue;
                 }
@@ -909,9 +911,9 @@ impl SceneState {
                     stroke,
                     background_stroke,
                     image,
-                    // Materials are attached by renderers/`manim-sci`, not by the
-                    // base mobject data yet; `None` here keeps 2-D output unchanged.
-                    material: None,
+                    // A material paints the path region per-pixel (domain coloring
+                    // / heatmap). Carried straight from the mobject data.
+                    material,
                     fixed_in_frame: data.fixed_in_frame,
                     z_test: data.z_test,
                     z_index: data.z_index,
@@ -1226,6 +1228,43 @@ mod tests {
         let bg = dl.0[0].background_stroke.as_ref().unwrap();
         assert!((bg.width - 8.0).abs() < 1e-6);
         assert_eq!(bg.color, RED);
+    }
+
+    #[test]
+    fn display_list_carries_material_and_emits_paintless_item() {
+        use crate::display::{Colormap, FieldChannels, Material, MaterialKind, TextureData};
+        use std::sync::Arc;
+        let mut scene = SceneState::new();
+        // A square with NO fill and NO stroke — only a material.
+        let sq = scene.add(Square::new());
+        scene
+            .get_dyn_mut(sq.erase())
+            .set_stroke(manim_color::WHITE, 0.0, 0.0);
+        let tex = Arc::new(TextureData {
+            width: 2,
+            height: 2,
+            channels: FieldChannels::R,
+            data: vec![0.0, 1.0, 1.0, 0.0],
+            center: Point::ZERO,
+            size: [2.0, 2.0],
+        });
+        scene.get_dyn_mut(sq.erase()).set_material(Material {
+            kind: MaterialKind::Heatmap {
+                colormap: Colormap::Viridis,
+            },
+            texture: tex.clone(),
+            value_range: [0.0, 1.0],
+            opacity: 1.0,
+        });
+        let dl = scene.display_list();
+        // The item is emitted even though it has no fill/stroke, and carries the
+        // exact material (same texture Arc).
+        let item = &dl.0[0];
+        let mat = item
+            .material
+            .as_ref()
+            .expect("material plumbed to DrawItem");
+        assert!(Arc::ptr_eq(&mat.texture, &tex));
     }
 
     #[test]

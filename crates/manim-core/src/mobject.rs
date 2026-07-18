@@ -87,6 +87,11 @@ pub struct MobjectData {
     /// A raster image paint for image mobjects (the `path` is its quad); `None`
     /// for ordinary vector mobjects.
     pub image: Option<crate::display::ImagePaint>,
+    /// A GPU material (domain coloring / heatmap / field texture) painting the
+    /// mobject's `path` region; `None` for ordinary vector mobjects. Set it via
+    /// `<dyn Mobject>::set_material` — a paint like [`image`](Self::image), so
+    /// changing it bumps the generation.
+    pub material: Option<crate::display::Material>,
     /// Whether this mobject is fixed in the camera frame (a HUD overlay drawn
     /// orthographically under a 3-D camera). manim's `add_fixed_in_frame_mobjects`.
     pub fixed_in_frame: bool,
@@ -210,6 +215,46 @@ impl dyn Mobject {
     /// Sets both fill and stroke opacity (manim's `set_opacity`).
     pub fn set_opacity(&mut self, opacity: f32) -> &mut Self {
         self.data_mut().style.set_opacity(opacity);
+        self
+    }
+
+    /// Attaches a GPU [`Material`](crate::display::Material) that paints this
+    /// mobject's `path` region per-pixel (domain coloring / heatmap / field
+    /// texture). A paint like the image paint, so it bumps the generation to
+    /// invalidate any cached tessellation.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_core::display::{Colormap, FieldChannels, Material, MaterialKind, TextureData};
+    /// use std::sync::Arc;
+    /// let mut scene = SceneState::new();
+    /// let q = scene.add(Square::new());
+    /// let tex = Arc::new(TextureData {
+    ///     width: 1, height: 1, channels: FieldChannels::R, data: vec![0.5],
+    ///     center: Point::ZERO, size: [2.0, 2.0],
+    /// });
+    /// let mat = Material {
+    ///     kind: MaterialKind::Heatmap { colormap: Colormap::Viridis },
+    ///     texture: tex, value_range: [0.0, 1.0], opacity: 1.0,
+    /// };
+    /// let before = scene.get_dyn(q).data().generation;
+    /// scene.get_dyn_mut(q).set_material(mat);
+    /// assert!(scene.get_dyn(q).data().material.is_some());
+    /// assert!(scene.get_dyn(q).data().generation > before);
+    /// ```
+    pub fn set_material(&mut self, material: crate::display::Material) -> &mut Self {
+        let data = self.data_mut();
+        data.material = Some(material);
+        data.bump_generation();
+        self
+    }
+
+    /// Removes any attached material (bumping the generation).
+    pub fn clear_material(&mut self) -> &mut Self {
+        let data = self.data_mut();
+        if data.material.take().is_some() {
+            data.bump_generation();
+        }
         self
     }
 }

@@ -389,6 +389,46 @@ impl Wavefunction2D {
         m.move_to(self.center());
         id
     }
+
+    /// Adds this wavefunction as a [`MaterialQuad`](manim_sci::material_quad::MaterialQuad)
+    /// painted by the real GPU [`PhaseHue`](manim_core::display::MaterialKind::PhaseHue)
+    /// material, sampling the `RG32F` (re, im) [`texture_data`](Self::texture_data)
+    /// per pixel (the S1b material path). Prefer this over
+    /// [`add_phase_hue_quad`](Self::add_phase_hue_quad), which bakes the coloring
+    /// into an [`ImageMobject`] and is kept as a no-material fallback.
+    ///
+    /// ```
+    /// use manim_core::prelude::*;
+    /// use manim_fields::complex::Complex;
+    /// use manim_quantum::wavefunction::Wavefunction2D;
+    /// let psi = Wavefunction2D::from_closure(8, 8, (-1.0, 1.0), (-1.0, 1.0), |x, y| {
+    ///     Complex::from_polar((-(x * x + y * y)).exp(), 3.0 * x)
+    /// });
+    /// let mut scene = SceneState::new();
+    /// let q = psi.add_phase_hue_material(&mut scene);
+    /// assert!(scene.get_dyn(q).data().material.is_some());
+    /// ```
+    pub fn add_phase_hue_material(
+        &self,
+        scene: &mut SceneState,
+    ) -> MobjectId<manim_sci::material_quad::MaterialQuad> {
+        use manim_core::display::{Material, MaterialKind};
+        use manim_sci::material_quad::MaterialQuad;
+        let material = Material {
+            kind: MaterialKind::PhaseHue {
+                modulus_contours: false,
+            },
+            texture: std::sync::Arc::new(self.texture_data()),
+            value_range: [0.0, 1.0],
+            opacity: 1.0,
+        };
+        MaterialQuad::from_material(
+            [self.x_range.0, self.x_range.1],
+            [self.y_range.0, self.y_range.1],
+            material,
+        )
+        .add_to(scene)
+    }
 }
 
 #[cfg(test)]

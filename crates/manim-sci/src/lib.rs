@@ -28,6 +28,7 @@ pub mod deform;
 pub mod diffgeo;
 pub mod geodesics;
 pub mod isosurface;
+pub mod material_quad;
 
 use manim_core::prelude::Point;
 
