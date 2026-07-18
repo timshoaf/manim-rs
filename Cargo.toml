@@ -10,6 +10,7 @@ members = [
     "crates/manim-dioxus",
     "crates/manim-fields",
     "crates/manim-sci",
+    "crates/manim-quantum",
 ]
 # Standalone wasm demos: separate crates with path deps, kept out of the main
 # workspace so native builds stay lean and window/ffmpeg-free.
@@ -33,6 +34,7 @@ manim-text = { path = "crates/manim-text" }
 manim-dioxus = { path = "crates/manim-dioxus" }
 manim-fields = { path = "crates/manim-fields" }
 manim-sci = { path = "crates/manim-sci" }
+manim-quantum = { path = "crates/manim-quantum" }
 
 dioxus = "0.6"
 glam = "0.30"

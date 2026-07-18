@@ -2552,6 +2552,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "manim-quantum"
+version = "0.1.0"
+dependencies = [
+ "approx",
+ "glam",
+ "manim-core",
+ "manim-fields",
+ "manim-math",
+ "manim-render",
+ "manim-sci",
+]
+
+[[package]]
 name = "manim-render"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,36 @@
+[package]
+name = "manim-quantum"
+description = "Quantum-mechanics visualizers for manim_rust: wavefunctions, eigenstates (box/oscillator/hydrogen), superposition evolution, the Bloch sphere, and potential-well / tunneling scenes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["manim", "quantum", "wavefunction", "visualization", "physics"]
+categories = ["graphics", "mathematics", "science"]
+
+[dependencies]
+manim-fields = { workspace = true }
+manim-sci = { workspace = true }
+manim-core = { workspace = true }
+manim-math = { workspace = true }
+glam = { workspace = true }
+# Renderable examples only — gated so the library and its tests never pull the
+# GPU renderer (see manim-sci for the same pattern).
+manim-render = { workspace = true, optional = true }
+
+[features]
+## Enables the GPU-rendering examples (pulls in `manim-render`).
+render-examples = ["dep:manim-render"]
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[[example]]
+name = "wavepacket_barrier"
+required-features = ["render-examples"]
+
+[lints]
+workspace = true
