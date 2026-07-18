@@ -65,3 +65,11 @@ cargo check -p manim-render --target wasm32-unknown-unknown --features web
 Run the four everyday commands above plus any goldens your change touches, and
 confirm the wasm check (`cargo check --target wasm32-unknown-unknown` for the
 web-facing crates). CI runs the same gates plus the software-rendered golden job.
+
+## Workspace etiquette for kit crates
+
+Never declare an `[[example]]` in a Cargo.toml before the example file
+exists — a missing target breaks manifest parsing for the entire
+workspace (every cargo command, every crate). Write the example stub in
+the same change, or keep the manifest entry commented until the file
+lands.
