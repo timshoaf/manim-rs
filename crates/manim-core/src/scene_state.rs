@@ -909,6 +909,9 @@ impl SceneState {
                     stroke,
                     background_stroke,
                     image,
+                    // Materials are attached by renderers/`manim-sci`, not by the
+                    // base mobject data yet; `None` here keeps 2-D output unchanged.
+                    material: None,
                     fixed_in_frame: data.fixed_in_frame,
                     z_test: data.z_test,
                     z_index: data.z_index,

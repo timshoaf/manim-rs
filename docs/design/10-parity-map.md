@@ -92,11 +92,12 @@ items:
   texture; a per-frame-evolving field costs one `nu × nv × 4 B` upload and zero
   CPU re-meshing. Neither CE nor ManimGL has an equivalent.
 
-*`set_fill_by_value`* (per-face value color) ⬜ on the CE `Surface`. Note the
-mesh path reaches the same *effect* by other means today: `Surface3D` takes
-per-vertex colors (and a checkerboard, for CE `Surface` parity), so value-colored
-surfaces are expressible there — but the CE-compatible `set_fill_by_value`
-spelling on `threed::Surface` is still unimplemented.
+*`set_fill_by_value`* (per-face value color) ✅ (S1/FE-136) —
+`Surface3D::set_fill_by_value(f, colormap, min, max)` colors each vertex by a
+scalar function of its position through a [`Colormap`](../../crates/manim-core/src/display.rs)
+(viridis / magma / coolwarm / turbo), recomputed on re-mesh; clears the M6
+deferral. (The CE `threed::Surface` project-and-sort path keeps its checkerboard;
+value coloring lives on the depth-tested `Surface3D`.)
 
 ### others (M5) ✅
 Matrix ✅, DecimalMatrix ✅, IntegerMatrix ✅, MobjectMatrix ✅,

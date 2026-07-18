@@ -57,6 +57,7 @@
 
 pub mod camera;
 pub mod layout;
+pub(crate) mod material;
 pub mod mesh_pipeline;
 pub mod renderer;
 pub mod tessellate;

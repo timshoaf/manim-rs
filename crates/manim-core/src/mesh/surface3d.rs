@@ -7,6 +7,7 @@ use manim_color::Color;
 
 use super::frame::LocalFrame;
 use super::{mesh_style, MeshMaterial, MeshMobject, MeshPayload, TriMesh};
+use crate::display::Colormap;
 use crate::impl_mobject;
 use crate::mobject::MobjectData;
 
@@ -18,6 +19,19 @@ pub const DEFAULT_SURFACE3D_RESOLUTION: (usize, usize) = (32, 32);
 /// Shared behind an [`Arc`] so cloning a surface — which snapshots do every
 /// frame — never clones the closure.
 pub type ParametricFn = Arc<dyn Fn(f64, f64) -> Vec3 + Send + Sync>;
+
+/// A scalar function of a surface vertex position (local space), for
+/// [`Surface3D::set_fill_by_value`].
+pub type ValueFn = Arc<dyn Fn(Vec3) -> f32 + Send + Sync>;
+
+/// A "color by value" rule: a scalar field over the surface, a [`Colormap`], and
+/// the `[min, max]` value range mapped to the colormap's `[0, 1]`.
+#[derive(Clone)]
+struct FillByValue {
+    f: ValueFn,
+    colormap: Colormap,
+    range: (f32, f32),
+}
 
 /// A parametric surface `f(u, v)` over `u_range × v_range`, meshed at a given
 /// resolution and re-meshed whenever any of those change.
@@ -63,6 +77,7 @@ pub struct Surface3D {
     v_range: (f64, f64),
     resolution: (usize, usize),
     checkerboard: Option<[Color; 2]>,
+    fill_value: Option<FillByValue>,
 }
 impl_mobject!(Surface3D, mesh);
 
@@ -93,6 +108,7 @@ impl Surface3D {
             v_range,
             resolution: DEFAULT_SURFACE3D_RESOLUTION,
             checkerboard: Some(default_checkerboard()),
+            fill_value: None,
         };
         s.regenerate(Mat4::IDENTITY);
         s
@@ -218,7 +234,54 @@ impl Surface3D {
     /// ```
     pub fn set_checkerboard(&mut self, colors: Option<[Color; 2]>) -> &mut Self {
         self.checkerboard = colors;
+        self.fill_value = None; // checkerboard and value-fill are mutually exclusive
         self.recolor();
+        self
+    }
+
+    /// Colors the surface by a scalar function of vertex position (local space)
+    /// through a [`Colormap`] — manim CE's `set_fill_by_value`. Clears any
+    /// checkerboard and sets the material base color to white so the colormap
+    /// shows faithfully; recomputed whenever the surface re-meshes.
+    ///
+    /// `min`/`max` map to the colormap's `[0, 1]`; out-of-range values clamp.
+    ///
+    /// ```
+    /// use manim_core::mesh::Surface3D;
+    /// use manim_core::display::Colormap;
+    /// use glam::Vec3;
+    /// let mut s = Surface3D::new(
+    ///     |u, v| Vec3::new(u as f32, v as f32, (u * v) as f32), (0.0, 1.0), (0.0, 1.0));
+    /// s.set_fill_by_value(|p| p.z, Colormap::Viridis, 0.0, 1.0);
+    /// assert!(s.mesh().colors.is_some());
+    /// ```
+    pub fn set_fill_by_value(
+        &mut self,
+        f: impl Fn(Vec3) -> f32 + Send + Sync + 'static,
+        colormap: Colormap,
+        min: f32,
+        max: f32,
+    ) -> &mut Self {
+        self.fill_value = Some(FillByValue {
+            f: Arc::new(f),
+            colormap,
+            range: (min, max),
+        });
+        self.checkerboard = None;
+        self.material.base_color = manim_color::WHITE;
+        self.recolor();
+        self
+    }
+
+    /// Builder form of [`set_fill_by_value`](Self::set_fill_by_value).
+    pub fn with_fill_by_value(
+        mut self,
+        f: impl Fn(Vec3) -> f32 + Send + Sync + 'static,
+        colormap: Colormap,
+        min: f32,
+        max: f32,
+    ) -> Self {
+        self.set_fill_by_value(f, colormap, min, max);
         self
     }
 
@@ -262,7 +325,7 @@ impl Surface3D {
             self.v_range,
             self.resolution,
         );
-        apply_checkerboard(&mut mesh, self.checkerboard, self.resolution);
+        mesh.colors = self.colors_for(&mesh.positions);
         self.mesh = Arc::new(mesh);
         self.frame = LocalFrame::of(&self.mesh);
         self.data.path = self.frame.path_for(transform);
@@ -271,12 +334,26 @@ impl Surface3D {
 
     /// Repaints the existing mesh's vertex colors through copy-on-write.
     fn recolor(&mut self) {
-        apply_checkerboard(
-            Arc::make_mut(&mut self.mesh),
-            self.checkerboard,
-            self.resolution,
-        );
+        let mesh = Arc::clone(&self.mesh);
+        let colors = self.colors_for(&mesh.positions);
+        Arc::make_mut(&mut self.mesh).colors = colors;
         self.data.bump_generation();
+    }
+
+    /// The per-vertex colors for `positions`: the `set_fill_by_value` colormap
+    /// when set, else the checkerboard (or `None` when both are off).
+    fn colors_for(&self, positions: &[Vec3]) -> Option<Vec<Color>> {
+        if let Some(fv) = &self.fill_value {
+            let span = fv.range.1 - fv.range.0;
+            let denom = if span.abs() < 1e-9 { 1.0 } else { span };
+            return Some(
+                positions
+                    .iter()
+                    .map(|p| fv.colormap.sample(((fv.f)(*p) - fv.range.0) / denom))
+                    .collect(),
+            );
+        }
+        checkerboard_colors(self.checkerboard, self.resolution, positions.len())
     }
 }
 
@@ -296,27 +373,26 @@ pub fn default_checkerboard() -> [Color; 2] {
     [manim_color::BLUE_D, manim_color::BLUE_E]
 }
 
-/// Paints a cell-split mesh's vertices with a `(i + j) % 2` checkerboard, or
-/// clears them when `colors` is `None`.
+/// The `(i + j) % 2` checkerboard vertex colors for a cell-split grid, or `None`
+/// when `colors` is `None`.
 ///
-/// Assumes the vertex layout of
-/// [`TriMesh::from_parametric_cells`]: cell `(i, j)` owns vertices
-/// `4 * (i * nv + j) ..`.
-fn apply_checkerboard(mesh: &mut TriMesh, colors: Option<[Color; 2]>, res: (usize, usize)) {
-    let Some(colors) = colors else {
-        mesh.colors = None;
-        return;
-    };
+/// Assumes the vertex layout of [`TriMesh::from_parametric_cells`]: cell `(i, j)`
+/// owns vertices `4 * (i * nv + j) ..`. Returns `None` (rather than a mismatched
+/// buffer) if the vertex count is not the expected `nu × nv × 4`.
+fn checkerboard_colors(
+    colors: Option<[Color; 2]>,
+    res: (usize, usize),
+    n_vertices: usize,
+) -> Option<Vec<Color>> {
+    let colors = colors?;
     let (nu, nv) = (res.0.max(1), res.1.max(1));
-    let mut out = Vec::with_capacity(mesh.positions.len());
+    let mut out = Vec::with_capacity(n_vertices);
     for i in 0..nu {
         for j in 0..nv {
             out.extend_from_slice(&[colors[(i + j) % 2]; 4]);
         }
     }
-    // Defensive: a mesh that is not the expected cell-split grid keeps no colors
-    // rather than a mismatched buffer the renderer would read out of bounds.
-    mesh.colors = (out.len() == mesh.positions.len()).then_some(out);
+    (out.len() == n_vertices).then_some(out)
 }
 
 #[cfg(test)]

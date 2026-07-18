@@ -11,13 +11,21 @@
 
 #![cfg(not(target_arch = "wasm32"))]
 
+use std::sync::Arc;
+
+use glam::Vec3;
 use manim_color::{BLUE, GREEN, RED, WHITE, YELLOW};
 use manim_core::animations::{Flash, Indicate};
 use manim_core::camera::ThreeDParams;
 use manim_core::config::Config;
+use manim_core::display::{
+    Colormap, ContourParams, DisplayList, DrawItem, FieldChannels, Material, MaterialKind,
+    TextureData,
+};
 use manim_core::geometry::{Arrow, Circle, Line, Square, Triangle};
 use manim_core::graphing::{Axes, NumberPlane};
 use manim_core::image_mobject::ImageMobject;
+use manim_core::mesh::Surface3D;
 use manim_core::mobject::Buildable;
 use manim_core::network::{Graph, GraphLayout};
 use manim_core::scene::Scene;
@@ -25,6 +33,7 @@ use manim_core::scene_state::SceneState;
 use manim_core::style::Gradient;
 use manim_core::threed::{Cube, Sphere, Surface, ThreeDAxes, Torus};
 use manim_core::vector_field::{ArrowVectorField, StreamLines};
+use manim_math::path::Path;
 use manim_math::{Point, DOWN, LEFT, ORIGIN, RIGHT, UP};
 use manim_render::golden::assert_golden;
 use manim_render::renderer::OffscreenRenderer;
@@ -617,4 +626,221 @@ fn image_between_shapes() {
 
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("image_between_shapes", &img);
+}
+
+// ---------------------------------------------------------------------------
+// FE-135 / FE-136: GPU material system (domain coloring, heatmaps, fill-by-value).
+// ---------------------------------------------------------------------------
+
+/// Samples a scalar closure `f(x, y)` over the scene rectangle centered at
+/// `center` with size `(w, h)` into an `R32Float` grid — row 0 is the top edge.
+fn scalar_grid(
+    center: Point,
+    w: f32,
+    h: f32,
+    res: u32,
+    f: impl Fn(f32, f32) -> f32,
+) -> TextureData {
+    let mut data = Vec::with_capacity((res * res) as usize);
+    for j in 0..res {
+        let v = j as f32 / (res - 1) as f32;
+        let y = center.y + h * 0.5 - v * h;
+        for i in 0..res {
+            let u = i as f32 / (res - 1) as f32;
+            let x = center.x - w * 0.5 + u * w;
+            data.push(f(x, y));
+        }
+    }
+    TextureData {
+        width: res,
+        height: res,
+        channels: FieldChannels::R,
+        data,
+        center,
+        size: [w, h],
+    }
+}
+
+/// Samples a complex closure `f(x, y) -> (re, im)` into an `Rg32Float` grid.
+fn complex_grid(
+    center: Point,
+    w: f32,
+    h: f32,
+    res: u32,
+    f: impl Fn(f32, f32) -> (f32, f32),
+) -> TextureData {
+    let mut data = Vec::with_capacity((res * res * 2) as usize);
+    for j in 0..res {
+        let v = j as f32 / (res - 1) as f32;
+        let y = center.y + h * 0.5 - v * h;
+        for i in 0..res {
+            let u = i as f32 / (res - 1) as f32;
+            let x = center.x - w * 0.5 + u * w;
+            let (re, im) = f(x, y);
+            data.push(re);
+            data.push(im);
+        }
+    }
+    TextureData {
+        width: res,
+        height: res,
+        channels: FieldChannels::Rg,
+        data,
+        center,
+        size: [w, h],
+    }
+}
+
+/// Renders a single material quad over the rectangle centered at `center`, sized
+/// `(w, h)`, on a black background.
+fn render_material(
+    renderer: &mut OffscreenRenderer,
+    center: Point,
+    w: f32,
+    h: f32,
+    material: Material,
+) -> image::RgbaImage {
+    // A throwaway mobject just supplies a valid (arena, source) id.
+    let mut scene = SceneState::new();
+    let src = scene.add(Square::new()).erase();
+    let arena = scene.display_list().arena();
+    let (hw, hh) = (w * 0.5, h * 0.5);
+    let tl = Point::new(center.x - hw, center.y + hh, 0.0);
+    let tr = Point::new(center.x + hw, center.y + hh, 0.0);
+    let br = Point::new(center.x + hw, center.y - hh, 0.0);
+    let bl = Point::new(center.x - hw, center.y - hh, 0.0);
+    // 3 curves (TL→TR→BR→BL): `quad_corners` reads the 4 corners for UVs
+    // (0,0),(1,0),(1,1),(0,1).
+    let path = Path::from_corners(&[tl, tr, br, bl], false);
+    let item = DrawItem {
+        path,
+        fill: None,
+        stroke: None,
+        background_stroke: None,
+        image: None,
+        material: Some(material),
+        fixed_in_frame: false,
+        z_test: false,
+        z_index: 0,
+        source: src,
+        generation: 1,
+    };
+    let dl = DisplayList::with_meshes(vec![item], vec![]).in_arena(arena);
+    renderer.render_display_list(&dl).unwrap()
+}
+
+/// FE-135: complex domain coloring of `(z² − 1)/(z² + 1)` — phase→hue with
+/// log-modulus rings. Shows two zeros (z = ±1) and two poles (z = ±i).
+#[test]
+fn material_domain_coloring() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let center = ORIGIN;
+    let (w, h) = (4.4, 4.4);
+    let cf = |x: f32, y: f32| -> (f32, f32) {
+        let z2 = (x * x - y * y, 2.0 * x * y);
+        let num = (z2.0 - 1.0, z2.1);
+        let den = (z2.0 + 1.0, z2.1);
+        let d = (den.0 * den.0 + den.1 * den.1).max(1e-6);
+        (
+            (num.0 * den.0 + num.1 * den.1) / d,
+            (num.1 * den.0 - num.0 * den.1) / d,
+        )
+    };
+    let tex = Arc::new(complex_grid(center, w, h, 320, cf));
+    let material = Material {
+        kind: MaterialKind::PhaseHue {
+            modulus_contours: true,
+        },
+        texture: tex,
+        value_range: [0.0, 1.0],
+        opacity: 1.0,
+    };
+    let img = render_material(&mut renderer, center, w, h, material);
+    assert_golden("material_domain_coloring", &img);
+}
+
+/// FE-135: a viridis heatmap of a Gaussian bump.
+#[test]
+fn material_heatmap_gaussian() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let center = ORIGIN;
+    let (w, h) = (6.0, 6.0);
+    let tex = Arc::new(scalar_grid(center, w, h, 256, |x, y| {
+        (-(x * x + y * y) * 0.5).exp()
+    }));
+    let material = Material {
+        kind: MaterialKind::Heatmap {
+            colormap: Colormap::Viridis,
+        },
+        texture: tex,
+        value_range: [0.0, 1.0],
+        opacity: 1.0,
+    };
+    let img = render_material(&mut renderer, center, w, h, material);
+    assert_golden("material_heatmap_gaussian", &img);
+}
+
+/// FE-135: a coolwarm field of a saddle `x² − y²` with white iso-contour lines.
+#[test]
+fn material_field_contours() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let center = ORIGIN;
+    let (w, h) = (5.0, 5.0);
+    let tex = Arc::new(scalar_grid(center, w, h, 256, |x, y| x * x - y * y));
+    let material = Material {
+        kind: MaterialKind::FieldTexture {
+            colormap: Colormap::Coolwarm,
+            contours: Some(ContourParams {
+                spacing: 1.0,
+                width: 1.5,
+                color: WHITE,
+            }),
+        },
+        texture: tex,
+        value_range: [-6.0, 6.0],
+        opacity: 1.0,
+    };
+    let img = render_material(&mut renderer, center, w, h, material);
+    assert_golden("material_field_contours", &img);
+}
+
+/// FE-136: a sphere colored by height (`z`) through the viridis colormap
+/// (`set_fill_by_value`), clearing the M6 deferral.
+#[test]
+fn surface_fill_by_value() {
+    use std::f64::consts::{PI, TAU};
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let mut scene = SceneState::new();
+    let sphere = Surface3D::new(
+        |phi, theta| {
+            Vec3::new(
+                (phi.sin() * theta.cos()) as f32,
+                (phi.sin() * theta.sin()) as f32,
+                phi.cos() as f32,
+            )
+        },
+        (0.0, PI),
+        (0.0, TAU),
+    )
+    .with_resolution(24, 48)
+    .with_scale(2.4)
+    .with_fill_by_value(|p| p.z, Colormap::Viridis, -1.0, 1.0);
+    scene.add(sphere);
+
+    let deg = std::f32::consts::PI / 180.0;
+    renderer.camera_mut().three_d = Some(ThreeDParams {
+        phi: 70.0 * deg,
+        theta: 25.0 * deg,
+        ..ThreeDParams::default()
+    });
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert_golden("surface_fill_by_value", &img);
 }

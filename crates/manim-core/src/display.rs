@@ -51,6 +51,128 @@ pub enum Sampler {
     Nearest,
 }
 
+/// A perceptual colormap: a scalar in `[0, 1]` → color, for heatmaps, domain
+/// coloring, and mesh `set_fill_by_value`.
+///
+/// The variants are the four workhorse maps: perceptually-uniform sequential
+/// [`Viridis`](Self::Viridis) / [`Magma`](Self::Magma), diverging
+/// [`Coolwarm`](Self::Coolwarm), and the rainbow-ish [`Turbo`](Self::Turbo). Each
+/// is defined by a small set of evenly-spaced sRGB anchors and interpolated —
+/// close to the matplotlib originals, exact enough for figures and stable enough
+/// to bless goldens against. Both a CPU sampler ([`sample`](Self::sample), for
+/// per-vertex mesh coloring) and a GPU LUT ([`lut_rgba8`](Self::lut_rgba8), a
+/// 256×1 sRGB texture) read the same anchors.
+///
+/// ```
+/// use manim_core::display::Colormap;
+/// // Viridis runs dark purple → yellow.
+/// let lo = Colormap::Viridis.sample(0.0).to_srgb_u8();
+/// let hi = Colormap::Viridis.sample(1.0).to_srgb_u8();
+/// assert!(lo[2] > lo[0]); // dark end is blue-purple
+/// assert!(hi[0] > 200 && hi[1] > 200 && hi[2] < 120); // bright end is yellow
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Colormap {
+    /// Perceptually-uniform sequential dark-purple → teal → yellow.
+    Viridis,
+    /// Perceptually-uniform sequential black → magenta → cream.
+    Magma,
+    /// Diverging blue → white → red (good for signed data around 0).
+    Coolwarm,
+    /// High-contrast rainbow (Google's Turbo).
+    Turbo,
+}
+
+impl Colormap {
+    /// The evenly-spaced sRGB anchor colors defining this map.
+    fn anchors(&self) -> &'static [[f32; 3]] {
+        match self {
+            Colormap::Viridis => &VIRIDIS,
+            Colormap::Magma => &MAGMA,
+            Colormap::Coolwarm => &COOLWARM,
+            Colormap::Turbo => &TURBO,
+        }
+    }
+
+    /// The sRGB components at `t ∈ [0, 1]` (clamped), linearly interpolating the
+    /// evenly-spaced anchors.
+    fn srgb_at(&self, t: f32) -> [f32; 3] {
+        let a = self.anchors();
+        let n = a.len();
+        let t = t.clamp(0.0, 1.0) * (n - 1) as f32;
+        let i = (t.floor() as usize).min(n - 2);
+        let f = t - i as f32;
+        let (lo, hi) = (a[i], a[i + 1]);
+        [
+            lo[0] + (hi[0] - lo[0]) * f,
+            lo[1] + (hi[1] - lo[1]) * f,
+            lo[2] + (hi[2] - lo[2]) * f,
+        ]
+    }
+
+    /// The (opaque, linear-light) [`Color`] at `t ∈ [0, 1]` (clamped).
+    pub fn sample(&self, t: f32) -> Color {
+        let s = self.srgb_at(t);
+        Color::from_srgb(s[0], s[1], s[2])
+    }
+
+    /// A 256-entry **sRGB** RGBA8 lookup table (`256 × 4` bytes) for upload as a
+    /// `256×1` sRGB texture. The GPU decodes sRGB→linear on sample, matching
+    /// [`sample`](Self::sample).
+    ///
+    /// ```
+    /// use manim_core::display::Colormap;
+    /// let lut = Colormap::Turbo.lut_rgba8();
+    /// assert_eq!(lut.len(), 256 * 4);
+    /// assert_eq!(lut[3], 255); // opaque
+    /// ```
+    pub fn lut_rgba8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(256 * 4);
+        for i in 0..256 {
+            let s = self.srgb_at(i as f32 / 255.0);
+            out.push((s[0].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            out.push((s[1].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            out.push((s[2].clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+            out.push(255);
+        }
+        out
+    }
+}
+
+/// Viridis anchors (sRGB), evenly spaced over `[0, 1]`.
+#[rustfmt::skip]
+const VIRIDIS: [[f32; 3]; 11] = [
+    [0.267, 0.005, 0.329], [0.283, 0.131, 0.449], [0.263, 0.242, 0.521],
+    [0.221, 0.343, 0.549], [0.177, 0.438, 0.558], [0.143, 0.523, 0.556],
+    [0.120, 0.607, 0.540], [0.166, 0.691, 0.497], [0.320, 0.771, 0.411],
+    [0.526, 0.833, 0.288], [0.993, 0.906, 0.144],
+];
+
+/// Magma anchors (sRGB), evenly spaced over `[0, 1]`.
+#[rustfmt::skip]
+const MAGMA: [[f32; 3]; 11] = [
+    [0.001, 0.000, 0.014], [0.078, 0.054, 0.211], [0.232, 0.059, 0.437],
+    [0.390, 0.100, 0.502], [0.550, 0.161, 0.506], [0.716, 0.215, 0.475],
+    [0.868, 0.288, 0.409], [0.967, 0.440, 0.360], [0.994, 0.624, 0.427],
+    [0.996, 0.795, 0.573], [0.987, 0.991, 0.750],
+];
+
+/// Coolwarm (diverging) anchors (sRGB), evenly spaced over `[0, 1]`.
+#[rustfmt::skip]
+const COOLWARM: [[f32; 3]; 5] = [
+    [0.230, 0.299, 0.754], [0.552, 0.690, 0.996], [0.866, 0.866, 0.866],
+    [0.968, 0.657, 0.537], [0.706, 0.016, 0.150],
+];
+
+/// Turbo anchors (sRGB), evenly spaced over `[0, 1]`.
+#[rustfmt::skip]
+const TURBO: [[f32; 3]; 11] = [
+    [0.190, 0.072, 0.232], [0.275, 0.408, 0.859], [0.180, 0.702, 0.949],
+    [0.146, 0.887, 0.730], [0.353, 0.977, 0.457], [0.628, 0.998, 0.235],
+    [0.859, 0.921, 0.183], [0.984, 0.739, 0.222], [0.973, 0.462, 0.106],
+    [0.842, 0.208, 0.030], [0.480, 0.016, 0.011],
+];
+
 /// A resolved raster-image paint: the pixels plus the sampler. Carried by an
 /// [`ImageMobject`](crate::image_mobject::ImageMobject)'s [`DrawItem`], whose
 /// `path` is the world-space quad the texture maps onto.
@@ -76,6 +198,132 @@ impl std::fmt::Debug for ImagePaint {
         f.debug_struct("ImagePaint")
             .field("data", &self.data)
             .field("sampler", &self.sampler)
+            .finish()
+    }
+}
+
+/// Channel count of a [`TextureData`] field grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldChannels {
+    /// One channel per texel (a scalar field), `R32Float`.
+    R = 1,
+    /// Two channels per texel (a complex/2-vector field), `Rg32Float`.
+    Rg = 2,
+}
+
+/// A scalar (`R32F`) or 2-vector (`RG32F`) field sampled on a regular grid and
+/// pinned to a scene-space rectangle — the input a [`Material`] shades per pixel.
+///
+/// Callers (e.g. `manim-sci`, or a golden test) sample a closure into
+/// [`data`](Self::data) (row-major, `width × height × channels` floats) over the
+/// rectangle centered at [`center`](Self::center) with [`size`](Self::size). The
+/// renderer uploads it as a float texture and samples it in the quad's UVs.
+#[derive(Clone)]
+pub struct TextureData {
+    /// Grid columns.
+    pub width: u32,
+    /// Grid rows.
+    pub height: u32,
+    /// Samples per texel.
+    pub channels: FieldChannels,
+    /// Row-major samples: `width × height × channels` floats.
+    pub data: Vec<f32>,
+    /// Scene-space center of the covered rectangle.
+    pub center: Point,
+    /// Scene-space `(width, height)` of the covered rectangle.
+    pub size: [f32; 2],
+}
+
+impl std::fmt::Debug for TextureData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureData")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("channels", &self.channels)
+            .field("floats", &self.data.len())
+            .field("center", &self.center)
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
+/// Iso-contour line overlay parameters for a field material.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ContourParams {
+    /// Value spacing between successive contour lines, in field-value units.
+    pub spacing: f32,
+    /// Line half-width in output pixels (screen-space, `fwidth`-antialiased).
+    pub width: f32,
+    /// Line color.
+    pub color: Color,
+}
+
+/// What a [`Material`] computes per pixel from its field [`TextureData`].
+///
+/// - [`FieldTexture`](Self::FieldTexture): scalar (R) → colormap LUT, with
+///   optional iso-contour lines.
+/// - [`PhaseHue`](Self::PhaseHue): complex (RG = re, im) → domain coloring
+///   (hue = `arg / 2π`, brightness from log-modulus), with optional modulus
+///   banding.
+/// - [`Heatmap`](Self::Heatmap): scalar (R) → colormap LUT (no contours).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MaterialKind {
+    /// Scalar field → colormap, optional contour lines.
+    FieldTexture {
+        /// The colormap LUT applied to the normalized scalar.
+        colormap: Colormap,
+        /// Optional iso-contour overlay.
+        contours: Option<ContourParams>,
+    },
+    /// Complex field → phase-hue domain coloring.
+    PhaseHue {
+        /// Draw log-modulus contour banding (the "phase portrait" look).
+        modulus_contours: bool,
+    },
+    /// Scalar field → colormap (plain heatmap).
+    Heatmap {
+        /// The colormap LUT.
+        colormap: Colormap,
+    },
+}
+
+/// A per-pixel GPU material paint: domain coloring, heatmaps, and scalar-field
+/// textures (S1, `docs/design/12-scientific-extensions.md`).
+///
+/// Additive to [`DrawItem`] and mirroring [`ImagePaint`]: when set, the renderer
+/// draws the item's quad [`path`](DrawItem::path) through a material pipeline that
+/// samples [`texture`](Self::texture) in the quad's UVs and shades each pixel per
+/// [`kind`](Self::kind), instead of vector fill. Equality is by texture [`Arc`]
+/// identity plus the (small, `Copy`) parameters, so the renderer caches the
+/// uploaded field texture cheaply.
+#[derive(Clone)]
+pub struct Material {
+    /// The per-pixel shading model.
+    pub kind: MaterialKind,
+    /// The field grid sampled per pixel.
+    pub texture: Arc<TextureData>,
+    /// `[min, max]` field-value range mapped to the colormap / brightness `[0, 1]`.
+    pub value_range: [f32; 2],
+    /// Overall opacity multiplier in `[0, 1]`.
+    pub opacity: f32,
+}
+
+impl PartialEq for Material {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && Arc::ptr_eq(&self.texture, &other.texture)
+            && self.value_range == other.value_range
+            && self.opacity == other.opacity
+    }
+}
+
+impl std::fmt::Debug for Material {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Material")
+            .field("kind", &self.kind)
+            .field("texture", &self.texture)
+            .field("value_range", &self.value_range)
+            .field("opacity", &self.opacity)
             .finish()
     }
 }
@@ -198,6 +446,11 @@ pub struct DrawItem {
     /// `None`. When set, the renderer draws the textured quad (respecting
     /// `z_index`) instead of vector fill.
     pub image: Option<ImagePaint>,
+    /// A per-pixel GPU [`Material`] (domain coloring / heatmap / field texture)
+    /// mapped onto the item's quad [`path`](Self::path), or `None`. When set, the
+    /// renderer shades the quad through the material pipeline instead of vector
+    /// fill (mirrors [`image`](Self::image)).
+    pub material: Option<Material>,
     /// Whether this item is fixed in the camera frame (a HUD overlay). Under a
     /// 3-D camera the renderer draws it with the orthographic matrix instead of
     /// the perspective one, so it stays flat and unmoving; ignored in 2-D.

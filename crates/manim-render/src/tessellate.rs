@@ -36,7 +36,7 @@ use lyon::tessellation::{
     StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
 };
 use manim_color::Color;
-use manim_core::display::{DisplayList, DrawItem, ImagePaint, LinearGradient};
+use manim_core::display::{DisplayList, DrawItem, ImagePaint, LinearGradient, Material};
 use manim_core::mobject::AnyId;
 use manim_math::path::Path;
 use manim_math::Point;
@@ -563,7 +563,16 @@ impl TessellationCache {
             }
         };
         for item in items {
-            if let Some(paint) = &item.image {
+            if let Some(mat) = &item.material {
+                if !batch.is_empty() {
+                    ops.push(wrap(batch_z, std::mem::take(&mut batch)));
+                }
+                // Material quads shade per pixel through their own pipeline, like
+                // images; they never depth-test.
+                if let Some(quad) = material_quad(item, mat.clone()) {
+                    ops.push(FrameOp::Material(quad));
+                }
+            } else if let Some(paint) = &item.image {
                 if !batch.is_empty() {
                     ops.push(wrap(batch_z, std::mem::take(&mut batch)));
                 }
@@ -632,6 +641,8 @@ pub enum FrameOp {
     VectorZ(MeshData),
     /// A single raster-image quad.
     Image(ImageQuad),
+    /// A single per-pixel material quad (domain coloring / heatmap / field).
+    Material(MaterialQuad),
 }
 
 /// A world-space textured quad extracted from an image [`DrawItem`].
@@ -648,9 +659,23 @@ pub struct ImageQuad {
     pub generation: u64,
 }
 
-/// Extracts the four quad corners from an image item's path (the first four
-/// subpath anchors), or `None` if the path is not a quad.
-fn image_quad(item: &DrawItem, paint: ImagePaint) -> Option<ImageQuad> {
+/// A world-space quad shaded by a per-pixel [`Material`] (the material-pipeline
+/// analogue of [`ImageQuad`]).
+pub struct MaterialQuad {
+    /// The four corners `[TL, TR, BR, BL]` in world space, matching the UVs
+    /// `(0,0),(1,0),(1,1),(0,1)` — the field is sampled in these UVs.
+    pub corners: [[f32; 3]; 4],
+    /// The material (field texture + shading kind + params).
+    pub material: Material,
+    /// The source mobject (field-texture cache key).
+    pub source: AnyId,
+    /// The source generation (field-texture cache key).
+    pub generation: u64,
+}
+
+/// The four quad corners from a rect item's path (its first subpath's anchors),
+/// or `None` if the path is not a 4-corner quad.
+fn quad_corners(item: &DrawItem) -> Option<[[f32; 3]; 4]> {
     let sub = item.path.subpaths.first()?;
     // A closed rect through 4 corners is 3 line segments; the 4th corner is the
     // last segment's endpoint.
@@ -658,20 +683,35 @@ fn image_quad(item: &DrawItem, paint: ImagePaint) -> Option<ImageQuad> {
         return None;
     }
     let last = sub.curves.len() - 1;
-    let corners = [
+    let c = [
         sub.curves[0].p0,
         sub.curves[1].p0,
         sub.curves[2].p0,
         sub.curves[last].p3,
     ];
+    Some([
+        [c[0].x, c[0].y, c[0].z],
+        [c[1].x, c[1].y, c[1].z],
+        [c[2].x, c[2].y, c[2].z],
+        [c[3].x, c[3].y, c[3].z],
+    ])
+}
+
+/// Extracts the four quad corners from an image item's path, or `None`.
+fn image_quad(item: &DrawItem, paint: ImagePaint) -> Option<ImageQuad> {
     Some(ImageQuad {
-        corners: [
-            [corners[0].x, corners[0].y, corners[0].z],
-            [corners[1].x, corners[1].y, corners[1].z],
-            [corners[2].x, corners[2].y, corners[2].z],
-            [corners[3].x, corners[3].y, corners[3].z],
-        ],
+        corners: quad_corners(item)?,
         paint,
+        source: item.source,
+        generation: item.generation,
+    })
+}
+
+/// Extracts the four quad corners from a material item's path, or `None`.
+fn material_quad(item: &DrawItem, material: Material) -> Option<MaterialQuad> {
+    Some(MaterialQuad {
+        corners: quad_corners(item)?,
+        material,
         source: item.source,
         generation: item.generation,
     })

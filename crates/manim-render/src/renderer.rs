@@ -840,6 +840,22 @@ enum GpuOp {
         ib: wgpu::Buffer,
         texture: (u64, manim_core::mobject::AnyId),
     },
+    /// A per-pixel material quad (two triangles), keyed to a cached material
+    /// bind group by `(arena, source)`.
+    Material {
+        vb: wgpu::Buffer,
+        ib: wgpu::Buffer,
+        material: (u64, manim_core::mobject::AnyId),
+    },
+}
+
+/// A cached material bind group: its params uniform and the `@group(1)` bind
+/// group (which keeps the uploaded field texture alive), validated by the
+/// source's generation.
+struct CachedMaterial {
+    generation: u64,
+    params_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 /// An offscreen render target: an MSAA texture resolved to an sRGB texture, plus
@@ -882,6 +898,13 @@ pub struct TextureTarget {
     /// the tessellation and mesh caches are — a bare mobject id collides across
     /// independently-built scenes.
     texture_cache: std::collections::HashMap<(u64, manim_core::mobject::AnyId), CachedTexture>,
+    /// The per-pixel material pipeline (domain coloring / heatmap / field), its
+    /// per-item bind-group cache keyed `(arena, source)`, and the colormap LUT
+    /// textures cached by [`Colormap`](manim_core::display::Colormap). Untouched
+    /// by frames whose display list has no materials.
+    material_pipeline: crate::material::MaterialPipeline,
+    material_cache: std::collections::HashMap<(u64, manim_core::mobject::AnyId), CachedMaterial>,
+    lut_cache: std::collections::HashMap<manim_core::display::Colormap, wgpu::TextureView>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// A second camera uniform holding the orthographic matrix, used to draw
@@ -1007,6 +1030,12 @@ impl TextureTarget {
         });
 
         let image_pipeline = ImagePipeline::new(device, &pipeline.bind_group_layout, TARGET_FORMAT);
+        let material_pipeline = crate::material::MaterialPipeline::new(
+            device,
+            &pipeline.bind_group_layout,
+            TARGET_FORMAT,
+            SAMPLE_COUNT,
+        );
 
         let ztest = Pipeline::new_depth_tested(device, TARGET_FORMAT);
         let ztest_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1051,6 +1080,9 @@ impl TextureTarget {
             queue: queue.clone(),
             pipeline: pipeline.pipeline.clone(),
             image_pipeline,
+            material_pipeline,
+            material_cache: std::collections::HashMap::new(),
+            lut_cache: std::collections::HashMap::new(),
             mesh_pipeline,
             mesh_cache: MeshBufferCache::new(),
             depth_view,
@@ -1159,6 +1191,66 @@ impl TextureTarget {
         );
     }
 
+    /// Ensures colormap `cm`'s LUT texture is uploaded (cached for the target's
+    /// lifetime — there are only four).
+    fn ensure_lut(&mut self, cm: manim_core::display::Colormap) {
+        if !self.lut_cache.contains_key(&cm) {
+            let view = crate::material::build_lut_texture(&self.device, &self.queue, cm);
+            self.lut_cache.insert(cm, view);
+        }
+    }
+
+    /// Ensures the material `q`'s field texture, params uniform, and bind group
+    /// are built and cached (keyed `(arena, source)`, validated by generation).
+    /// A param-only change (same generation) just rewrites the uniform in place.
+    fn ensure_material(&mut self, arena: u64, q: &crate::tessellate::MaterialQuad) {
+        let key = (arena, q.source);
+        let params = crate::material::MaterialParams::from_material(&q.material);
+        if let Some(c) = self.material_cache.get(&key) {
+            if c.generation == q.generation {
+                self.queue
+                    .write_buffer(&c.params_buffer, 0, bytemuck::bytes_of(&params));
+                return;
+            }
+        }
+        let cm = crate::material::MaterialParams::colormap(&q.material);
+        self.ensure_lut(cm);
+        let field_view =
+            crate::material::build_field_texture(&self.device, &self.queue, &q.material.texture);
+        let params_buffer = crate::material::params_buffer(&self.device, &params);
+        let lut_view = self.lut_cache.get(&cm).expect("LUT ensured above");
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("manim-render material bind group"),
+            layout: &self.material_pipeline.group1_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&field_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(lut_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.material_pipeline.lut_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        self.material_cache.insert(
+            key,
+            CachedMaterial {
+                generation: q.generation,
+                params_buffer,
+                bind_group,
+            },
+        );
+    }
+
     /// The target size in pixels, `(width, height)`.
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -1219,6 +1311,7 @@ impl TextureTarget {
             }
         }
         self.texture_cache.retain(|key, _| present.contains(key));
+        self.prepare_materials(arena, ops.iter());
 
         let mesh_frame = self.prepare_meshes(arena, meshes, camera);
         let gpu_ops = self.build_gpu_ops(arena, ops);
@@ -1485,6 +1578,7 @@ impl TextureTarget {
             }
         }
         self.texture_cache.retain(|key, _| present.contains(key));
+        self.prepare_materials(arena, ops.iter());
 
         let mesh_frame = self.prepare_meshes(arena, meshes, main);
         if !mesh_frame.is_empty() {
@@ -1670,6 +1764,7 @@ impl TextureTarget {
             }
         }
         self.texture_cache.retain(|key, _| present.contains(key));
+        self.prepare_materials(arena, world.iter().chain(hud.iter()));
 
         let mesh_frame = self.prepare_meshes(arena, meshes, camera);
         let world_gpu = self.build_gpu_ops(arena, world);
@@ -1759,6 +1854,24 @@ impl TextureTarget {
         })
     }
 
+    /// Uploads/refreshes the field texture + params for every material op, then
+    /// evicts cached materials whose source vanished — the material analogue of
+    /// the image `ensure_texture` + `texture_cache.retain` block.
+    fn prepare_materials<'a>(
+        &mut self,
+        arena: u64,
+        ops: impl Iterator<Item = &'a crate::tessellate::FrameOp>,
+    ) {
+        let mut present = Vec::new();
+        for op in ops {
+            if let crate::tessellate::FrameOp::Material(q) = op {
+                self.ensure_material(arena, q);
+                present.push((arena, q.source));
+            }
+        }
+        self.material_cache.retain(|key, _| present.contains(key));
+    }
+
     /// Pre-builds GPU vertex/index buffers for each op (they must outlive the
     /// render pass). Empty vector batches are skipped.
     fn build_gpu_ops(&self, arena: u64, ops: &[crate::tessellate::FrameOp]) -> Vec<GpuOp> {
@@ -1815,6 +1928,34 @@ impl TextureTarget {
                                 usage: wgpu::BufferUsages::INDEX,
                             }),
                         texture: (arena, q.source),
+                    });
+                }
+                FrameOp::Material(q) => {
+                    // Two triangles over corners [TL,TR,BR,BL] with field UVs.
+                    let uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+                    let verts: Vec<crate::material::MaterialVertex> = (0..4)
+                        .map(|i| crate::material::MaterialVertex {
+                            position: q.corners[i],
+                            uv: uvs[i],
+                        })
+                        .collect();
+                    let idx: [u32; 6] = [0, 1, 2, 0, 2, 3];
+                    gpu_ops.push(GpuOp::Material {
+                        vb: self
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("manim-render material vertices"),
+                                contents: bytemuck::cast_slice(&verts),
+                                usage: wgpu::BufferUsages::VERTEX,
+                            }),
+                        ib: self
+                            .device
+                            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                                label: Some("manim-render material indices"),
+                                contents: bytemuck::cast_slice(&idx),
+                                usage: wgpu::BufferUsages::INDEX,
+                            }),
+                        material: (arena, q.source),
                     });
                 }
             }
@@ -1880,6 +2021,16 @@ impl TextureTarget {
                         pass.set_pipeline(&self.image_pipeline.pipeline);
                         pass.set_bind_group(0, camera_bg, &[]);
                         pass.set_bind_group(1, &tex.bind_group, &[]);
+                        pass.set_vertex_buffer(0, vb.slice(..));
+                        pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..6, 0, 0..1);
+                    }
+                }
+                GpuOp::Material { vb, ib, material } => {
+                    if let Some(mat) = self.material_cache.get(material) {
+                        pass.set_pipeline(&self.material_pipeline.pipeline);
+                        pass.set_bind_group(0, camera_bg, &[]);
+                        pass.set_bind_group(1, &mat.bind_group, &[]);
                         pass.set_vertex_buffer(0, vb.slice(..));
                         pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
                         pass.draw_indexed(0..6, 0, 0..1);
