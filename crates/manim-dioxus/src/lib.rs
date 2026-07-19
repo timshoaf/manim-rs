@@ -265,6 +265,23 @@ struct RawPointer {
     pressed: bool,
     /// Accumulated vertical wheel delta since the render loop last consumed it.
     wheel: f32,
+    /// The pointer id that started the active press, if any. Only that
+    /// pointer's events drive the gesture until it releases: on a touch screen
+    /// a second contact (palm edge, stray finger) otherwise interleaves its
+    /// positions into this single slot and the derived deltas ping-pong
+    /// between the two contact points.
+    active_id: Option<i32>,
+}
+
+impl RawPointer {
+    /// Whether an event from `id` may drive the gesture: any pointer may hover,
+    /// but once a press is active only the pressing pointer counts.
+    fn admits(&self, id: i32) -> bool {
+        match self.active_id {
+            Some(active) => active == id,
+            None => !self.pressed,
+        }
+    }
 }
 
 /// A shared, framework-independent handle to a player's transport state.
@@ -552,33 +569,49 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
                 height: "{config.pixel_height}",
                 style: "{CANVAS_STYLE}",
                 onpointermove: move |e| {
-                    let c = e.element_coordinates();
                     let mut p = rp_move.borrow_mut();
-                    p.x = c.x as f32;
-                    p.y = c.y as f32;
+                    if p.admits(e.pointer_id()) {
+                        let c = e.element_coordinates();
+                        p.x = c.x as f32;
+                        p.y = c.y as f32;
+                    }
                 },
                 onpointerdown: move |e| {
                     e.prevent_default();
                     {
-                        let c = e.element_coordinates();
                         let mut p = rp_down.borrow_mut();
+                        // A second contact while pressed is ignored, not
+                        // adopted — see RawPointer::active_id.
+                        if p.pressed {
+                            return;
+                        }
+                        let c = e.element_coordinates();
                         p.x = c.x as f32;
                         p.y = c.y as f32;
                         p.pressed = true;
+                        p.active_id = Some(e.pointer_id());
                     }
                     capture_pointer(&id_down, e.pointer_id());
                     focus_player(&id_down);
                 },
                 onpointerup: move |e| {
-                    rp_up.borrow_mut().pressed = false;
-                    release_pointer(&id_up, e.pointer_id());
+                    let mut p = rp_up.borrow_mut();
+                    if p.admits(e.pointer_id()) {
+                        p.pressed = false;
+                        p.active_id = None;
+                        release_pointer(&id_up, e.pointer_id());
+                    }
                 },
                 // A mobile browser that takes over a gesture (scroll hand-off,
                 // system edge swipe) sends `pointercancel` and no `pointerup`;
                 // without this the drag would stay latched down forever.
                 onpointercancel: move |e| {
-                    rp_cancel.borrow_mut().pressed = false;
-                    release_pointer(&id_cancel, e.pointer_id());
+                    let mut p = rp_cancel.borrow_mut();
+                    if p.admits(e.pointer_id()) {
+                        p.pressed = false;
+                        p.active_id = None;
+                        release_pointer(&id_cancel, e.pointer_id());
+                    }
                 },
             }
             if show_poster {
@@ -1001,9 +1034,15 @@ pub struct DragHandleLayer {
     hit_radius: f32,
     dot_ids: Vec<Option<manim_core::mobject::AnyId>>,
     halo_ids: Vec<Option<manim_core::mobject::AnyId>>,
+    /// The handle whose halo is currently flared (grabbed), if any.
+    flared: Option<usize>,
 }
 
 impl DragHandleLayer {
+    /// Halo scale multiplier while grabbed (sized to peek out from under a
+    /// fingertip, which covers roughly 1.5 scene units on a phone-width canvas).
+    const GRAB_FLARE: f32 = 3.0;
+
     /// A layer of handles at `positions`, each grabbable within `hit_radius`
     /// scene units and drawn in the matching `palette` color (cycled if short).
     pub fn new(
@@ -1018,6 +1057,7 @@ impl DragHandleLayer {
             hit_radius,
             dot_ids: vec![None; n],
             halo_ids: vec![None; n],
+            flared: None,
         }
     }
 
@@ -1082,6 +1122,23 @@ impl DragHandleLayer {
             state.set_style_family(dot, |s| {
                 s.set_fill(if hot { WHITE } else { col }, 1.0);
             });
+        }
+        // Flare the grabbed handle's halo so its color rings the fingertip: on
+        // a touch screen the dot itself sits exactly under the finger, so
+        // without this the grab reads as "the handle vanished".
+        let target = self.drag.grabbed();
+        if self.flared != target {
+            if let Some(old) = self.flared {
+                if let Some(halo) = self.halo_ids[old] {
+                    state.scale_about(halo, 1.0 / Self::GRAB_FLARE, self.drag.position(old));
+                }
+            }
+            if let Some(new) = target {
+                if let Some(halo) = self.halo_ids[new] {
+                    state.scale_about(halo, Self::GRAB_FLARE, self.drag.position(new));
+                }
+            }
+            self.flared = target;
         }
         moved
     }
@@ -1235,9 +1292,12 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 style: "{CANVAS_STYLE}",
                 onpointermove: move |e| {
                     if interactive {
-                        let c = e.element_coordinates();
                         {
                             let mut p = rp_move.borrow_mut();
+                            if !p.admits(e.pointer_id()) {
+                                return;
+                            }
+                            let c = e.element_coordinates();
                             p.x = c.x as f32;
                             p.y = c.y as f32;
                         }
@@ -1248,11 +1308,17 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                     if interactive {
                         e.prevent_default();
                         {
-                            let c = e.element_coordinates();
                             let mut p = rp_down.borrow_mut();
+                            // A second contact while pressed is ignored, not
+                            // adopted — see RawPointer::active_id.
+                            if p.pressed {
+                                return;
+                            }
+                            let c = e.element_coordinates();
                             p.x = c.x as f32;
                             p.y = c.y as f32;
                             p.pressed = true;
+                            p.active_id = Some(e.pointer_id());
                         }
                         capture_pointer(&id_down, e.pointer_id());
                         c_down.set_pointer_active(true);
@@ -1260,7 +1326,14 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 },
                 onpointerup: move |e| {
                     if interactive {
-                        rp_up.borrow_mut().pressed = false;
+                        {
+                            let mut p = rp_up.borrow_mut();
+                            if !p.admits(e.pointer_id()) {
+                                return;
+                            }
+                            p.pressed = false;
+                            p.active_id = None;
+                        }
                         release_pointer(&id_up, e.pointer_id());
                         c_up.set_pointer_active(false);
                     }
@@ -1270,7 +1343,14 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 // "pointer active" and never park.
                 onpointercancel: move |e| {
                     if interactive {
-                        rp_cancel.borrow_mut().pressed = false;
+                        {
+                            let mut p = rp_cancel.borrow_mut();
+                            if !p.admits(e.pointer_id()) {
+                                return;
+                            }
+                            p.pressed = false;
+                            p.active_id = None;
+                        }
                         release_pointer(&id_cancel, e.pointer_id());
                         c_cancel.set_pointer_active(false);
                     }
