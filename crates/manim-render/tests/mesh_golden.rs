@@ -708,3 +708,81 @@ fn ztest_without_meshes_is_invisible() {
         "a z_test item in a mesh-less 2-D scene must render byte-identically"
     );
 }
+
+/// FE-143a: an [`InstancedMesh`] carrying *zero* instances must draw nothing.
+///
+/// The regression it guards: the buffer builder matched `Some(xs) if
+/// !xs.is_empty()` and fell through to the plain-mesh arm for `Some(empty)`,
+/// uploading one `MeshInstance::IDENTITY` — so an empty instance cloud drew a
+/// phantom copy of its base geometry at the origin, untransformed and white.
+/// An emptied-out molecule or a lattice built from an empty site list would
+/// sprout a stray sphere in the middle of the frame.
+///
+/// The scene is rendered twice: once with the empty cloud present and once with
+/// it absent. The two frames must be byte-identical — not merely close, since a
+/// zero-instance item must not reach the GPU at all.
+#[test]
+fn empty_instanced_mesh_draws_nothing() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    orbit_camera(&mut renderer);
+
+    // A visible neighbour, so the comparison is against a real frame rather
+    // than two identically empty ones.
+    let anchor = || {
+        Mesh::sphere()
+            .with_scale(0.6)
+            .with_material(MeshMaterial::new(GREEN).with_lighting(0.3, 0.75, 0.3))
+    };
+
+    let mut with_empty = SceneState::new();
+    with_empty.add(anchor());
+    with_empty.add(InstancedMesh::spheres(&[], 1.0).with_material(MeshMaterial::new(RED)));
+    let img_with = renderer
+        .render_display_list(&with_empty.display_list())
+        .unwrap();
+
+    let mut without = SceneState::new();
+    without.add(anchor());
+    let img_without = renderer
+        .render_display_list(&without.display_list())
+        .unwrap();
+
+    assert_eq!(
+        img_with.as_raw(),
+        img_without.as_raw(),
+        "a zero-instance InstancedMesh drew something: the phantom identity \
+         instance is back"
+    );
+    // Guard the guard: the anchor really is on screen, so this is not two
+    // blank frames agreeing with each other.
+    assert!(
+        covered_fraction(&img_with) > 0.01,
+        "anchor sphere did not render; the comparison proves nothing"
+    );
+}
+
+/// FE-143a, the other half: a *plain* (non-instanced) mesh still draws its one
+/// identity instance. The fix distinguishes `None` from `Some(empty)`, and this
+/// pins the `None` side so the empty case cannot be "fixed" by dropping every
+/// single-instance draw.
+#[test]
+fn plain_mesh_still_draws_one_instance() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    orbit_camera(&mut renderer);
+
+    let mut scene = SceneState::new();
+    scene.add(
+        Mesh::sphere()
+            .with_scale(1.5)
+            .with_material(MeshMaterial::new(BLUE).with_lighting(0.3, 0.75, 0.3)),
+    );
+    let img = renderer.render_display_list(&scene.display_list()).unwrap();
+    assert!(
+        covered_fraction(&img) > 0.02,
+        "a plain mesh drew nothing: the identity instance was dropped"
+    );
+}

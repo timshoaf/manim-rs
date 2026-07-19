@@ -396,13 +396,19 @@ impl CanvasSurface {
     /// between the two, so meshes occlude them; note a zoom-window inset omits
     /// them (like it omits meshes — the inset never re-runs the depth passes).
     ///
+    /// A zoom-window inset re-records the **full** `FrameOp` stream under the
+    /// magnifying camera, so images and material quads appear inside the
+    /// magnifier exactly as they do in the main frame (FE-143b).
+    ///
     /// # Errors
     ///
     /// [`RenderError::Readback`] if the swapchain texture cannot be acquired for
     /// a reason other than a recoverable lost/outdated surface (which is
     /// reconfigured and skipped).
     pub fn render(&mut self, list: &DisplayList) -> Result<(), RenderError> {
-        let (mesh, ztest_mesh) = self.cache.tessellate_split(list);
+        // Only the depth-tested half is needed as a raw mesh; the plain half
+        // rides the `FrameOp` stream below (including through the zoom inset).
+        let (_, ztest_mesh) = self.cache.tessellate_split(list);
         // The full z-ordered FrameOp stream (vector batches + image + material
         // quads) drives the plain pass, so images/materials render in-browser
         // exactly as offscreen. (The zoom-inset path still draws vectors only.)
@@ -597,24 +603,76 @@ impl CanvasSurface {
                 zw.border_width,
                 zw.border_color,
             );
-            crate::renderer::record_draw_zoomed(
+            let border_gpu = self.ops.build_ops(
                 &self.device,
-                &mut encoder,
-                &self.pipeline.pipeline,
-                &self.msaa_view,
-                &target,
-                &self.bind_group,
-                &self.zoom_bind_group,
-                &self.border_bind_group,
-                &mesh,
-                &border,
-                self.background,
-                vp,
-                inset,
-                out_w,
-                out_h,
-                drew_meshes || drew_ztest,
+                list.arena(),
+                &[crate::tessellate::FrameOp::Vector(border)],
             );
+
+            // Scissor rectangle in surface pixels, clamped to bounds.
+            let sx = inset.x.max(0.0).round() as u32;
+            let sy = inset.y.max(0.0).round() as u32;
+            let sw = (inset.w.round() as u32).min(out_w.saturating_sub(sx));
+            let sh = (inset.h.round() as u32).min(out_h.saturating_sub(sy));
+
+            let bg = self.background.premultiplied();
+            let load = if drew_meshes || drew_ztest {
+                wgpu::LoadOp::Load
+            } else {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: bg[0] as f64,
+                    g: bg[1] as f64,
+                    b: bg[2] as f64,
+                    a: bg[3] as f64,
+                })
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("canvas zoom ops pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.msaa_view,
+                    resolve_target: Some(&target),
+                    ops: wgpu::Operations {
+                        load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            // The main draw, over the letterboxed base viewport.
+            if vp.w > 0.0 && vp.h > 0.0 {
+                pass.set_viewport(vp.x, vp.y, vp.w, vp.h, 0.0, 1.0);
+            }
+            self.ops.record(
+                &mut pass,
+                &ops_gpu,
+                &self.bind_group,
+                &self.pipeline.pipeline,
+            );
+            // The magnifier: the *same* op stream re-recorded under the zoom
+            // camera, scissored to the inset. Routing the full stream (not just
+            // the vector batches) is what keeps images and material quads
+            // visible inside the inset — FE-143b.
+            if sw > 0 && sh > 0 {
+                pass.set_viewport(inset.x, inset.y, inset.w, inset.h, 0.0, 1.0);
+                pass.set_scissor_rect(sx, sy, sw, sh);
+                self.ops.record(
+                    &mut pass,
+                    &ops_gpu,
+                    &self.zoom_bind_group,
+                    &self.pipeline.pipeline,
+                );
+                // Reset to the full surface for the border.
+                pass.set_viewport(0.0, 0.0, out_w as f32, out_h as f32, 0.0, 1.0);
+                pass.set_scissor_rect(0, 0, out_w, out_h);
+                self.ops.record(
+                    &mut pass,
+                    &border_gpu,
+                    &self.border_bind_group,
+                    &self.pipeline.pipeline,
+                );
+            }
         } else {
             // The final pass: the full FrameOp stream (vector + image + material),
             // resolving MSAA → swapchain. Loads what the mesh/z-test passes drew,

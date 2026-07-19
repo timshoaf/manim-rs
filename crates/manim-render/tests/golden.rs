@@ -844,3 +844,115 @@ fn surface_fill_by_value() {
     let img = renderer.render_display_list(&scene.display_list()).unwrap();
     assert_golden("surface_fill_by_value", &img);
 }
+
+/// FE-143b: a zoom-window inset over a heatmap material quad.
+///
+/// The regression it guards: the inset's scissored second draw used to record
+/// only the tessellated *vector* batches, so an [`ImageMobject`] or a material
+/// quad simply vanished inside the magnifier — the inset showed the vector
+/// overlay floating on bare background. The inset now re-records the full
+/// `FrameOp` stream under the magnifying camera.
+///
+/// The scene is a Gaussian viridis heatmap with a white reference ring over it,
+/// magnified ~3× into a top-right inset. The assertion below is the real test;
+/// the golden pins the exact appearance.
+#[test]
+fn zoomed_inset_over_material() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let center = ORIGIN;
+    let (w, h) = (6.0, 6.0);
+    let tex = Arc::new(scalar_grid(center, w, h, 256, |x, y| {
+        (-(x * x + y * y) * 0.5).exp()
+    }));
+    let material = Material {
+        kind: MaterialKind::Heatmap {
+            colormap: Colormap::Viridis,
+        },
+        texture: tex,
+        value_range: [0.0, 1.0],
+        opacity: 1.0,
+    };
+
+    // A material quad plus a vector ring, in one display list.
+    let mut scene = SceneState::new();
+    let src = scene.add(Square::new()).erase();
+    let ring_src = scene.add(Circle::new().with_scale(2.5)).erase();
+    let arena = scene.display_list().arena();
+    let (hw, hh) = (w * 0.5, h * 0.5);
+    let quad = DrawItem {
+        path: Path::from_corners(
+            &[
+                Point::new(center.x - hw, center.y + hh, 0.0),
+                Point::new(center.x + hw, center.y + hh, 0.0),
+                Point::new(center.x + hw, center.y - hh, 0.0),
+                Point::new(center.x - hw, center.y - hh, 0.0),
+            ],
+            false,
+        ),
+        fill: None,
+        stroke: None,
+        background_stroke: None,
+        image: None,
+        material: Some(material),
+        fixed_in_frame: false,
+        z_test: false,
+        z_index: 0,
+        source: src,
+        generation: 1,
+    };
+    let mut ring_scene = SceneState::new();
+    ring_scene.add(Circle::new().with_scale(2.5).with_stroke(WHITE, 3.0, 1.0));
+    let mut ring: Vec<DrawItem> = ring_scene.display_list().iter().cloned().collect();
+    for item in &mut ring {
+        item.source = ring_src;
+        item.z_index = 1;
+    }
+
+    let mut items = vec![quad];
+    items.extend(ring);
+    let dl = DisplayList::with_meshes(items, vec![]).in_arena(arena);
+
+    let zoom = manim_core::camera::ZoomWindow::new(ORIGIN, 2.0, [0.60, 0.05, 0.35, 0.35]);
+    let frame = manim_core::scene::Frame {
+        t: 0.0,
+        display_list: dl,
+        camera: manim_core::camera::CameraFrame {
+            center: ORIGIN,
+            width: test_config().frame_width,
+            height: test_config().frame_height,
+            rotation: 0.0,
+            background: test_config().background_color,
+            three_d: None,
+            zoom_window: Some(zoom),
+        },
+    };
+    let img = renderer.render_frame(&frame).unwrap();
+
+    // The heart of the test: the inset interior must carry saturated viridis
+    // color, not background. Sample well inside the inset, clear of the border.
+    let (iw, ih) = (img.width() as f32, img.height() as f32);
+    let x0 = (0.60 * iw) as u32 + 12;
+    let y0 = (0.05 * ih) as u32 + 12;
+    let x1 = ((0.60 + 0.35) * iw) as u32 - 12;
+    let y1 = ((0.05 + 0.35) * ih) as u32 - 12;
+    let colored = (x0..x1)
+        .flat_map(|x| (y0..y1).map(move |y| (x, y)))
+        .filter(|&(x, y)| {
+            let p = img.get_pixel(x, y).0;
+            // Viridis over the bump is green/teal — clearly not the near-black
+            // background and not the white ring.
+            p[1] > 60 && (p[1] as i32 - p[0] as i32) > 20
+        })
+        .count();
+    let total = ((x1 - x0) * (y1 - y0)) as f64;
+    assert!(
+        colored as f64 / total > 0.5,
+        "material quad is missing inside the zoom inset: only {:.1}% of the \
+         inset interior is colored",
+        100.0 * colored as f64 / total
+    );
+
+    assert_golden("zoomed_inset_over_material", &img);
+}

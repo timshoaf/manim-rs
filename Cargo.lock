@@ -2620,6 +2620,7 @@ dependencies = [
  "console_error_panic_hook",
  "glam",
  "image",
+ "js-sys",
  "lyon",
  "manim-color",
  "manim-core",
@@ -2649,9 +2650,12 @@ dependencies = [
 name = "manim-signal"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "glam",
  "manim-core",
  "manim-fields",
+ "manim-math",
+ "manim-render",
  "manim-sci",
  "rustfft",
 ]

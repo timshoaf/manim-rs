@@ -32,7 +32,20 @@ winit = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
-web-sys = { workspace = true, optional = true }
+# Additional browser APIs this crate needs on top of the workspace defaults:
+# the canvas capture-to-video path (`recording`).
+web-sys = { workspace = true, optional = true, features = [
+    "Blob",
+    "BlobEvent",
+    "BlobPropertyBag",
+    "MediaRecorder",
+    "MediaRecorderOptions",
+    "MediaStream",
+    "RecordingState",
+    "Url",
+] }
+# Not a workspace dep: only this crate needs it (Blob sequence + JS error text).
+js-sys = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 
 [features]
@@ -46,6 +59,7 @@ web = [
     "dep:wasm-bindgen",
     "dep:wasm-bindgen-futures",
     "dep:web-sys",
+    "dep:js-sys",
     "dep:console_error_panic_hook",
 ]
 

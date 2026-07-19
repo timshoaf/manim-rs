@@ -1197,9 +1197,17 @@ impl MeshBufferCache {
             Some(e) => (e.instances.clone(), e.n_instances),
             None => {
                 self.instance_uploads += 1;
+                // `None` is a plain mesh: one identity instance keeps it on the
+                // instanced path. `Some(empty)` is an *explicitly* instanced item
+                // with nothing to place — it must draw nothing, so the count is 0
+                // (the buffer still carries one identity instance, because a
+                // zero-sized vertex buffer is not a legal binding).
+                let n = match item.instances.as_ref() {
+                    Some(xs) => xs.len() as u32,
+                    None => 1,
+                };
                 let xs: Vec<MeshInstance> = match item.instances.as_ref() {
                     Some(xs) if !xs.is_empty() => xs.iter().map(MeshInstance::from_core).collect(),
-                    // One identity instance keeps plain meshes on the instanced path.
                     _ => vec![MeshInstance::IDENTITY],
                 };
                 (
@@ -1208,7 +1216,7 @@ impl MeshBufferCache {
                         contents: bytemuck::cast_slice(&xs),
                         usage: wgpu::BufferUsages::VERTEX,
                     }),
-                    xs.len() as u32,
+                    n,
                 )
             }
         };
@@ -1424,7 +1432,7 @@ impl MeshBufferCache {
             let Some(entry) = self.entries.get(&(arena, item.source)) else {
                 continue;
             };
-            if entry.n_indices == 0 {
+            if entry.n_indices == 0 || entry.n_instances == 0 {
                 continue;
             }
             frame.opaque.push(MeshDraw {
@@ -1441,7 +1449,7 @@ impl MeshBufferCache {
             let Some(entry) = self.entries.get(&(arena, item.source)) else {
                 continue;
             };
-            if entry.n_indices == 0 {
+            if entry.n_indices == 0 || entry.n_instances == 0 {
                 continue;
             }
             // Only a sorted instanced item needs a fresh buffer; everything else

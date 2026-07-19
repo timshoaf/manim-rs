@@ -27,6 +27,9 @@
 //!   window.
 //! - `canvas` *(feature `web`, wasm32 only)* — `CanvasSurface`, rendering into
 //!   an HTML `<canvas>`.
+//! - [`recording`] — `CanvasRecorder`: capture a `<canvas>` to a video blob via
+//!   `MediaRecorder` *(the recorder itself is feature `web`, wasm32 only; the
+//!   MIME-negotiation helpers build everywhere)*.
 //!
 //! # Portability
 //!
@@ -60,6 +63,7 @@ pub mod layout;
 pub(crate) mod material;
 pub mod mesh_pipeline;
 pub(crate) mod ops;
+pub mod recording;
 pub mod renderer;
 pub mod tessellate;
 
@@ -98,3 +102,5 @@ pub use preview::RealtimePlayer;
 
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
 pub use canvas::{CanvasSurface, SharedGpu};
+#[cfg(all(feature = "web", target_arch = "wasm32"))]
+pub use recording::CanvasRecorder;

@@ -48,6 +48,7 @@ manim-dynamics = { path = "crates/manim-dynamics" }
 manim-book = { path = "crates/manim-book" }
 
 dioxus = "0.6"
+js-sys = "0.3"
 glam = "0.30"
 usvg = "0.47"
 # Pure-Rust Bézier path arithmetic (Apache-2.0) — curve-preserving boolean ops

@@ -528,13 +528,14 @@ pub(crate) fn record_draw_over(
 }
 
 /// Draws `mesh` with `main_bg` over `base`, then again scissored into `inset`
-/// with `zoom_bg` (the magnifier), then `border` with `border_bg` — the mesh-path
-/// analogue of [`TextureTarget::render_ops_zoomed`], shared by the surface
-/// renderers (canvas / preview). Clears to `background` over the whole attachment.
-#[cfg(any(
-    all(feature = "preview", not(target_arch = "wasm32")),
-    all(feature = "web", target_arch = "wasm32")
-))]
+/// with `zoom_bg` (the magnifier), then `border` with `border_bg` — the
+/// vector-only analogue of [`TextureTarget::render_ops_zoomed`].
+///
+/// Used by the winit preview, whose draw path is vector-only throughout. The
+/// browser canvas renders the full `FrameOp` stream through its inset instead
+/// (images and material quads must survive the magnifier — FE-143b), so it does
+/// not go through here.
+#[cfg(all(feature = "preview", not(target_arch = "wasm32")))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_draw_zoomed(
     device: &wgpu::Device,
