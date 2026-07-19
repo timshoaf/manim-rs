@@ -181,7 +181,7 @@ impl OrbitState {
             phi,
             theta,
             zoom: 1.0,
-            sensitivity: 0.25,
+            sensitivity: 3.5,
             zoom_step: 1.15,
             phi_min: 0.05,
             phi_max: std::f32::consts::FRAC_PI_2,
@@ -190,7 +190,8 @@ impl OrbitState {
         }
     }
 
-    /// Sets the drag sensitivity (radians per scene unit of pointer travel).
+    /// Sets the drag sensitivity (radians per unit of pointer travel; drivers
+    /// feed element-fraction deltas, so units are full canvas traversals).
     pub fn with_sensitivity(mut self, s: f32) -> Self {
         self.sensitivity = s.max(0.0);
         self
@@ -205,8 +206,10 @@ impl OrbitState {
         self
     }
 
-    /// Applies a pointer drag `(dx, dy)` in scene units: horizontal spins the
-    /// azimuth, vertical tilts the polar angle (clamped).
+    /// Applies a pointer drag `(dx, dy)`: horizontal spins the azimuth,
+    /// vertical tilts the polar angle (clamped). Feed deltas of a
+    /// camera-independent coordinate (element fractions, y up) — deltas of
+    /// camera-derived scene positions feed back into the orbit and oscillate.
     pub fn drag(&mut self, dx: f32, dy: f32) {
         self.theta -= dx * self.sensitivity;
         self.phi = (self.phi + dy * self.sensitivity).clamp(self.phi_min, self.phi_max);

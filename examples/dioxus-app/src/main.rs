@@ -228,7 +228,7 @@ fn orbit_updater() -> LiveUpdater {
     const EXTENT: f32 = 3.0;
     let field: Rc<Cell<Option<MobjectId<HeightField>>>> = Rc::new(Cell::new(None));
     let angles = Rc::new(Cell::new((62_f32.to_radians(), -45_f32.to_radians())));
-    let last_drag: Rc<Cell<Option<Point>>> = Rc::new(Cell::new(None));
+    let last_drag: Rc<Cell<Option<(f32, f32)>>> = Rc::new(Cell::new(None));
     LiveUpdater::new(move |state, pointer, t| {
         let id = match field.get() {
             Some(id) => id,
@@ -242,15 +242,18 @@ fn orbit_updater() -> LiveUpdater {
                 id
             }
         };
-        // Drag to orbit: pointer deltas (scene units) become camera angles.
+        // Drag to orbit: element-fraction deltas become camera angles. The
+        // camera-independent `frac` is essential here — scene-space positions
+        // re-map as the camera orbits, so differencing them oscillates.
         let (mut phi, mut theta) = angles.get();
         if pointer.pressed {
-            if let Some(prev) = last_drag.get() {
-                theta -= (pointer.position.x - prev.x) * 0.25;
-                phi = (phi + (pointer.position.y - prev.y) * 0.25)
-                    .clamp(0.15, std::f32::consts::FRAC_PI_2);
+            if let Some((px, py)) = last_drag.get() {
+                let (fx, fy) = pointer.frac;
+                theta -= (fx - px) * 3.5;
+                // Fraction y grows down; dragging up tilts toward top-down.
+                phi = (phi + (py - fy) * 2.0).clamp(0.15, std::f32::consts::FRAC_PI_2);
             }
-            last_drag.set(Some(pointer.position));
+            last_drag.set(Some(pointer.frac));
             angles.set((phi, theta));
         } else {
             last_drag.set(None);

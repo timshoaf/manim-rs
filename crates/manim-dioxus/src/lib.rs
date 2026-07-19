@@ -92,6 +92,15 @@ pub struct PointerState {
     /// frame; consumed and reset each frame. Positive = scroll down. Used by
     /// [`OrbitControls`] for dolly zoom; `0.0` when no wheel event occurred.
     pub wheel: f32,
+    /// Cursor position as a fraction of the canvas element: `(0,0)` top-left to
+    /// `(1,1)` bottom-right, y growing **down**. Unlike [`position`], this is
+    /// camera-independent, which is what delta-based gestures must difference:
+    /// an orbit drag that differences `position` feeds its own camera motion
+    /// back into the next delta and oscillates violently, because moving the
+    /// camera re-maps the same finger point to a new scene position.
+    ///
+    /// [`position`]: Self::position
+    pub frac: (f32, f32),
 }
 
 /// A per-frame scene mutator for live, input-driven scenes.
@@ -229,6 +238,19 @@ pub fn ManimGpuProvider(children: Element) -> Element {
 #[cfg(target_arch = "wasm32")]
 fn shared_gpu_from_context() -> Option<ManimGpu> {
     try_consume_context::<ManimGpu>()
+}
+
+/// The pointer's element-fraction coordinates for [`PointerState::frac`]:
+/// element CSS px over the element size, `(0,0)`..`(1,1)`, y down. A degenerate
+/// element maps to the origin. (Only the wasm render loops call this; native
+/// builds see it as dead code.)
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+fn element_fraction(x: f32, y: f32, cw: f32, ch: f32) -> (f32, f32) {
+    if cw > 0.0 && ch > 0.0 {
+        (x / cw, y / ch)
+    } else {
+        (0.0, 0.0)
+    }
 }
 
 /// Raw pointer input in element (CSS) pixels, written by the DOM event handlers
@@ -887,7 +909,7 @@ impl OrbitControls {
         Self {
             phi: 1.1,
             theta: -0.6,
-            sensitivity: 0.25,
+            sensitivity: 3.5,
             phi_range: (0.05, std::f32::consts::FRAC_PI_2),
             wheel_rate: 0.01,
         }
@@ -900,7 +922,9 @@ impl OrbitControls {
         self
     }
 
-    /// Sets the drag sensitivity (radians per scene unit).
+    /// Sets the drag sensitivity (radians per full canvas traversal — the
+    /// drag deltas are element fractions, so `3.5` ≈ a bit over a half turn
+    /// edge-to-edge).
     pub fn sensitivity(mut self, s: f32) -> Self {
         self.sensitivity = s;
         self
@@ -920,15 +944,21 @@ impl OrbitControls {
                 .with_sensitivity(self.sensitivity)
                 .with_phi_range(self.phi_range.0, self.phi_range.1),
         );
-        let last = std::cell::Cell::new(None::<Point>);
+        let last = std::cell::Cell::new(None::<(f32, f32)>);
         let wheel_rate = self.wheel_rate;
         LiveUpdater::new(move |state, pointer, _t| {
             let mut o = orbit.get();
             if pointer.pressed {
-                if let Some(prev) = last.get() {
-                    o.drag(pointer.position.x - prev.x, pointer.position.y - prev.y);
+                if let Some((px, py)) = last.get() {
+                    // Deltas MUST come from the camera-independent element
+                    // fraction, not `position`: scene coordinates move with the
+                    // camera this very drag is orbiting, so differencing them
+                    // feeds the camera's own motion back in and oscillates.
+                    // Fraction y grows down; phi tilts with upward drag.
+                    let (fx, fy) = pointer.frac;
+                    o.drag(fx - px, py - fy);
                 }
-                last.set(Some(pointer.position));
+                last.set(Some(pointer.frac));
             } else {
                 last.set(None);
             }
@@ -1561,6 +1591,7 @@ mod wasm {
                         position,
                         pressed: raw.pressed,
                         wheel: 0.0,
+                        frac: crate::element_fraction(raw.x, raw.y, cw, ch),
                     }
                 };
 
@@ -1792,6 +1823,7 @@ mod wasm {
                             position,
                             pressed,
                             wheel,
+                            frac: crate::element_fraction(x, y, cw, ch),
                         }
                     };
                     if let Some(updater) = &live {
@@ -2062,6 +2094,7 @@ mod figure_tests {
             position: Point::new(x, y, 0.0),
             pressed,
             wheel: 0.0,
+            frac: (0.0, 0.0),
         };
         // First sync: hover only → lazily draws 2 handles (dot + halo each).
         assert_eq!(layer.sync(&mut scene, &ptr(5.0, 5.0, false)), None);
