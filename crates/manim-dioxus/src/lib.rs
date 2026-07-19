@@ -415,8 +415,11 @@ fn build_scene_data<S: SceneBuilder>(builder: &S, config: Config) -> SceneData {
 /// - `autoplay`: start playing on mount (default `true`).
 /// - `loop_playback`: restart at the end instead of stopping (default `false`).
 /// - `controls`: show the built-in controls bar (default `false`).
-/// - `width` / `height`: CSS sizing for the canvas (default `"640px"` /
-///   `"360px"`).
+/// - `width`: the box's maximum CSS width (default `"640px"`). The box is
+///   responsive — it shrinks below this on a narrow screen and derives its
+///   height from the scene's aspect, so the image never distorts.
+/// - `height`: opts out of the responsive aspect and pins the box height. Only
+///   pass it when you want a fixed box and accept letterbox bars inside it.
 /// - `poster`: image URL shown until the first rendered frame presents.
 /// - `live`: a [`LiveUpdater`] for cursor-driven scenes (disables frame playback).
 #[allow(clippy::too_many_arguments)]
@@ -434,7 +437,6 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
 ) -> Element {
     let config = config.unwrap_or_else(Config::low);
     let width = width.unwrap_or_else(|| "640px".to_string());
-    let height = height.unwrap_or_else(|| "360px".to_string());
 
     // Build the scene + frames once (synchronous, CPU-only).
     let data: Rc<SceneData> = use_hook(|| Rc::new(build_scene_data(&scene, config.clone())));
@@ -505,9 +507,16 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
     let rp_move = Rc::clone(&raw_pointer);
     let rp_down = Rc::clone(&raw_pointer);
     let rp_up = Rc::clone(&raw_pointer);
+    let rp_cancel = Rc::clone(&raw_pointer);
+    let (id_down, id_up, id_cancel) = (canvas_id.clone(), canvas_id.clone(), canvas_id.clone());
 
     let show_poster = poster.is_some() && !first_frame();
-    let style = format!("position:relative;width:{width};height:{height};");
+    let style = container_style(
+        &width,
+        height.as_deref(),
+        config.pixel_width,
+        config.pixel_height,
+    );
     rsx! {
         div {
             class: "manim-player",
@@ -519,7 +528,7 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
                 id: "{canvas_id}",
                 width: "{config.pixel_width}",
                 height: "{config.pixel_height}",
-                style: "width:100%;height:100%;display:block;background:#000;touch-action:none;",
+                style: "{CANVAS_STYLE}",
                 onpointermove: move |e| {
                     let c = e.element_coordinates();
                     let mut p = rp_move.borrow_mut();
@@ -527,14 +536,27 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
                     p.y = c.y as f32;
                 },
                 onpointerdown: move |e| {
-                    let c = e.element_coordinates();
-                    let mut p = rp_down.borrow_mut();
-                    p.x = c.x as f32;
-                    p.y = c.y as f32;
-                    p.pressed = true;
+                    e.prevent_default();
+                    {
+                        let c = e.element_coordinates();
+                        let mut p = rp_down.borrow_mut();
+                        p.x = c.x as f32;
+                        p.y = c.y as f32;
+                        p.pressed = true;
+                    }
+                    capture_pointer(&id_down, e.pointer_id());
+                    focus_player(&id_down);
                 },
-                onpointerup: move |_| {
+                onpointerup: move |e| {
                     rp_up.borrow_mut().pressed = false;
+                    release_pointer(&id_up, e.pointer_id());
+                },
+                // A mobile browser that takes over a gesture (scroll hand-off,
+                // system edge swipe) sends `pointercancel` and no `pointerup`;
+                // without this the drag would stay latched down forever.
+                onpointercancel: move |e| {
+                    rp_cancel.borrow_mut().pressed = false;
+                    release_pointer(&id_cancel, e.pointer_id());
                 },
             }
             if show_poster {
@@ -1063,7 +1085,9 @@ pub fn use_figure_controller() -> FigureController {
 ///   frame — a figure is usually the *result* of a construction).
 /// - `live`: a [`LiveUpdater`] for cursor-driven figures (drag to explore); when
 ///   set, pointer activity wakes the loop, which settles after release.
-/// - `width` / `height`: CSS sizing (default `"480px"` / `"320px"`).
+/// - `width`: the box's maximum CSS width (default `"480px"`); the box is
+///   responsive and takes its height from the scene's aspect.
+/// - `height`: opts out of the responsive aspect and pins the box height.
 /// - `lazy`: defer the first render until the figure scrolls into view (default
 ///   `true`); a placeholder shows until then.
 /// - `settle`: seconds to keep drawing after a pointer release (default
@@ -1083,7 +1107,6 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
 ) -> Element {
     let config = config.unwrap_or_else(Config::low);
     let width = width.unwrap_or_else(|| "480px".to_string());
-    let height = height.unwrap_or_else(|| "320px".to_string());
 
     // Build the scene + frames once (CPU-only). A static figure is usually a
     // zero-duration construction, so this is a single frame.
@@ -1156,13 +1179,21 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
     let rp_down = Rc::clone(&raw_pointer);
     let rp_up = Rc::clone(&raw_pointer);
     let rp_wheel = Rc::clone(&raw_pointer);
+    let rp_cancel = Rc::clone(&raw_pointer);
     let c_move = controller.clone();
     let c_down = controller.clone();
     let c_up = controller.clone();
+    let c_cancel = controller.clone();
     let c_wheel = controller.clone();
+    let (id_down, id_up, id_cancel) = (canvas_id.clone(), canvas_id.clone(), canvas_id.clone());
 
     let show_placeholder = !first_frame();
-    let style = format!("position:relative;width:{width};height:{height};");
+    let style = container_style(
+        &width,
+        height.as_deref(),
+        config.pixel_width,
+        config.pixel_height,
+    );
     rsx! {
         div {
             class: "manim-figure",
@@ -1171,7 +1202,7 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 id: "{canvas_id}",
                 width: "{config.pixel_width}",
                 height: "{config.pixel_height}",
-                style: "width:100%;height:100%;display:block;background:#000;touch-action:none;",
+                style: "{CANVAS_STYLE}",
                 onpointermove: move |e| {
                     if interactive {
                         let c = e.element_coordinates();
@@ -1185,20 +1216,33 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 },
                 onpointerdown: move |e| {
                     if interactive {
-                        let c = e.element_coordinates();
+                        e.prevent_default();
                         {
+                            let c = e.element_coordinates();
                             let mut p = rp_down.borrow_mut();
                             p.x = c.x as f32;
                             p.y = c.y as f32;
                             p.pressed = true;
                         }
+                        capture_pointer(&id_down, e.pointer_id());
                         c_down.set_pointer_active(true);
                     }
                 },
-                onpointerup: move |_| {
+                onpointerup: move |e| {
                     if interactive {
                         rp_up.borrow_mut().pressed = false;
+                        release_pointer(&id_up, e.pointer_id());
                         c_up.set_pointer_active(false);
+                    }
+                },
+                // A mobile browser that takes over a gesture sends `pointercancel`
+                // and no `pointerup`; without this the figure would stay latched
+                // "pointer active" and never park.
+                onpointercancel: move |e| {
+                    if interactive {
+                        rp_cancel.borrow_mut().pressed = false;
+                        release_pointer(&id_cancel, e.pointer_id());
+                        c_cancel.set_pointer_active(false);
                     }
                 },
                 onwheel: move |e| {
@@ -1309,6 +1353,89 @@ fn Controls() -> Element {
         }
     }
 }
+
+/// The canvas element's own CSS, shared by [`ManimPlayer`] and [`Figure`].
+///
+/// `touch-action:none` hands every touch gesture to the pointer handlers instead
+/// of the page scroller; the `user-select`/`touch-callout` suppressions stop
+/// mobile Safari from turning a press-and-hold into a text-selection or callout
+/// gesture, which would otherwise cancel an in-progress drag.
+const CANVAS_STYLE: &str = "width:100%;height:100%;display:block;background:#000;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;";
+
+/// CSS for a player/figure container box.
+///
+/// The default box is **responsive**: it fills the available width (capped at
+/// the `width` prop) and takes its height from the scene's pixel aspect, so the
+/// canvas backing store is always scaled uniformly. A fixed height combined with
+/// a CSS-clamped width — the old behaviour — gives the box an aspect the scene
+/// does not have, and the browser then stretches the backing store per axis, which
+/// is exactly the distortion seen on a narrow phone.
+///
+/// Passing an explicit `height` opts out and pins the box to `width × height`;
+/// the caller then owns the aspect (pointer mapping stays correct either way).
+fn container_style(
+    width: &str,
+    height: Option<&str>,
+    pixel_width: u32,
+    pixel_height: u32,
+) -> String {
+    match height {
+        Some(h) => format!("position:relative;width:{width};height:{h};"),
+        None => format!(
+            "position:relative;width:100%;max-width:{width};aspect-ratio:{pixel_width}/{pixel_height};"
+        ),
+    }
+}
+
+/// Binds the pointer to the canvas for the rest of the gesture, so `pointermove`
+/// keeps firing on the canvas once the finger/cursor leaves its bounds.
+///
+/// Touch pointers capture implicitly, mouse pointers do not; being explicit makes
+/// drag behave the same on both. Failures (a stale id after a cancel) are benign.
+#[cfg(target_arch = "wasm32")]
+fn capture_pointer(canvas_id: &str, pointer_id: i32) {
+    if let Some(el) = wasm::get_element(canvas_id) {
+        let _ = el.set_pointer_capture(pointer_id);
+    }
+}
+
+/// Releases a [`capture_pointer`] binding at the end of a gesture.
+#[cfg(target_arch = "wasm32")]
+fn release_pointer(canvas_id: &str, pointer_id: i32) {
+    if let Some(el) = wasm::get_element(canvas_id) {
+        let _ = el.release_pointer_capture(pointer_id);
+    }
+}
+
+/// Focuses the enclosing player shell.
+///
+/// The pointerdown handler calls `prevent_default` (to stop mobile selection and
+/// long-press gestures from stealing the drag), which also suppresses the default
+/// focus, so the keyboard bindings need focus moved explicitly.
+#[cfg(target_arch = "wasm32")]
+fn focus_player(canvas_id: &str) {
+    use wasm_bindgen::JsCast;
+    let Some(el) = wasm::get_element(canvas_id) else {
+        return;
+    };
+    if let Some(shell) = el
+        .closest(".manim-player")
+        .ok()
+        .flatten()
+        .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+    {
+        let _ = shell.focus();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn focus_player(_canvas_id: &str) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn capture_pointer(_canvas_id: &str, _pointer_id: i32) {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn release_pointer(_canvas_id: &str, _pointer_id: i32) {}
 
 /// A process-wide counter for unique canvas element ids.
 fn next_canvas_id() -> String {
@@ -1706,17 +1833,66 @@ mod wasm {
 
     /// Looks up a canvas element by id.
     fn get_canvas(id: &str) -> Option<web_sys::HtmlCanvasElement> {
-        web_sys::window()?
-            .document()?
-            .get_element_by_id(id)?
+        get_element(id)?
             .dyn_into::<web_sys::HtmlCanvasElement>()
             .ok()
+    }
+
+    /// Looks up any element by id (the pointer-capture glue needs only `Element`).
+    pub(super) fn get_element(id: &str) -> Option<web_sys::Element> {
+        web_sys::window()?.document()?.get_element_by_id(id)
     }
 
     /// Schedules `f` on the next animation frame.
     fn request_frame(f: &Closure<dyn FnMut(f64)>) {
         if let Some(win) = web_sys::window() {
             let _ = win.request_animation_frame(f.as_ref().unchecked_ref());
+        }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    //! Native proofs of the container sizing contract. The DOM glue is thin;
+    //! the sizing decision itself is a pure string function, so it is testable
+    //! here even though the phone is not.
+    use super::*;
+
+    #[test]
+    fn default_box_is_responsive_and_carries_the_scene_aspect() {
+        let s = container_style("640px", None, 854, 480);
+        assert!(s.contains("width:100%"), "{s}");
+        assert!(s.contains("max-width:640px"), "{s}");
+        assert!(s.contains("aspect-ratio:854/480"), "{s}");
+        // A fixed height is what squashes the canvas on a narrow phone.
+        assert!(!s.contains("height:"), "{s}");
+    }
+
+    #[test]
+    fn explicit_height_pins_the_box() {
+        let s = container_style("100%", Some("428px"), 854, 480);
+        assert!(
+            s.contains("width:100%") && s.contains("height:428px"),
+            "{s}"
+        );
+        assert!(!s.contains("aspect-ratio"), "{s}");
+    }
+
+    #[test]
+    fn aspect_ratio_tracks_the_config_pixels() {
+        assert!(container_style("480px", None, 1920, 1080).contains("aspect-ratio:1920/1080"));
+        assert!(container_style("480px", None, 600, 600).contains("aspect-ratio:600/600"));
+    }
+
+    #[test]
+    fn canvas_style_suppresses_mobile_gesture_stealers() {
+        for rule in [
+            "touch-action:none",
+            "user-select:none",
+            "-webkit-user-select:none",
+            "-webkit-touch-callout:none",
+        ] {
+            assert!(CANVAS_STYLE.contains(rule), "missing {rule}");
         }
     }
 }

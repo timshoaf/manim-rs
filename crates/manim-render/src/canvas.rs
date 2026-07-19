@@ -355,13 +355,18 @@ impl CanvasSurface {
         self.light = light;
     }
 
-    /// Converts a pointer position in element (client) pixels to scene
-    /// coordinates, inverting the current letterbox fit and camera projection.
+    /// Converts a pointer position in element (CSS) pixels to scene
+    /// coordinates, inverting the CSS scaling of the backing store, the
+    /// letterbox fit and the camera projection.
     ///
     /// `client_x`/`client_y` are relative to the canvas element's top-left, and
-    /// `elem_w`/`elem_h` are its displayed size (CSS or backing pixels — the fit
-    /// is scale-invariant). Returns `None` for a degenerate (zero-sized) fit. See
-    /// [`layout::client_to_scene`](crate::layout::client_to_scene).
+    /// `elem_w`/`elem_h` are its **displayed** (CSS) size. The displayed box need
+    /// not share the backing store's aspect — a canvas styled to fill a box of a
+    /// different shape is stretched per axis by the browser, so the inverse maps
+    /// through the backing size rather than assuming a uniform fit (this is what
+    /// keeps drag tracking under the finger on a phone). Returns `None` for a
+    /// degenerate (zero-sized) element or fit. See
+    /// [`layout::element_to_scene`](crate::layout::element_to_scene).
     pub fn client_to_scene(
         &self,
         client_x: f32,
@@ -369,11 +374,13 @@ impl CanvasSurface {
         elem_w: f32,
         elem_h: f32,
     ) -> Option<glam::Vec3> {
-        crate::layout::client_to_scene(
+        crate::layout::element_to_scene(
             client_x,
             client_y,
             elem_w,
             elem_h,
+            self.surface_config.width as f32,
+            self.surface_config.height as f32,
             self.aspect,
             self.camera.view_proj(),
         )

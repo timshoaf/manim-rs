@@ -359,13 +359,13 @@ impl SceneBuilder for NestedFig {
 /// its own `SceneBuilder`.
 fn textbook_figures() -> Vec<(Element, &'static str)> {
     // Each entry renders a `<Figure>` (static, lazy, shared-device) plus a
-    // caption. Figures are small (300px) so a dozen fit a scrollable column.
+    // caption. Each fills its column and takes its height from the scene aspect,
+    // so a dozen fit a scrollable column and none distort on a narrow screen.
     fn fig<S: SceneBuilder + Clone + PartialEq + 'static>(scene: S) -> Element {
         rsx! {
             Figure {
                 scene,
                 width: "100%",
-                height: "220px",
             }
         }
     }
@@ -603,7 +603,6 @@ fn VcaPlaneFigure() -> Element {
             scene: VcaPlaneScene,
             live: updater.clone(),
             width: "100%",
-            height: "340px",
             lazy: false,
         }
     }
@@ -662,11 +661,11 @@ fn VcaPage() -> Element {
                 p { style: "{cap}", "Fig 1. Domain coloring of f(z) = Π(z−zᵢ)/Π(z−pⱼ). Drag the teal zeros and red poles; the phase slider rotates the hue. Resamples at 128² while dragging, 256² on release." }
             }
             div { style: "{card}",
-                ManimPlayer { scene: VcaDeformScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "340px" }
+                ManimPlayer { scene: VcaDeformScene, autoplay: true, loop_playback: true, controls: true, width: "100%" }
                 p { style: "{cap}", "Fig 2. A conformal grid carried through z ↦ z², then a Möbius map — play or scrub the timeline." }
             }
             div { style: "{card}",
-                Figure { scene: VcaSphereScene, live: OrbitControls::new().updater(), width: "100%", height: "340px", lazy: false }
+                Figure { scene: VcaSphereScene, live: OrbitControls::new().updater(), width: "100%", lazy: false }
                 p { style: "{cap}", "Fig 3. The Riemann sphere with a stereographic grid. Drag to orbit, wheel to zoom." }
             }
         }
@@ -763,25 +762,25 @@ fn app() -> Element {
                     div { style: "border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#000;",
                         match sel {
                             Which::Square => rsx! {
-                                ManimPlayer { scene: SquareToCircle, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                                ManimPlayer { scene: SquareToCircle, autoplay: true, loop_playback: true, controls: true, width: "100%" }
                             },
                             Which::Plot => rsx! {
-                                ManimPlayer { scene: PlotScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                                ManimPlayer { scene: PlotScene, autoplay: true, loop_playback: true, controls: true, width: "100%" }
                             },
                             Which::Field => rsx! {
-                                ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%", height: "428px" }
+                                ManimPlayer { scene: FieldScene, autoplay: false, controls: true, width: "100%" }
                             },
                             Which::Mesh3D => rsx! {
-                                ManimPlayer { scene: MeshScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                                ManimPlayer { scene: MeshScene, autoplay: true, loop_playback: true, controls: true, width: "100%" }
                             },
                             Which::Orbit => rsx! {
-                                ManimPlayer { scene: LiveOrbitScene, live: orbit_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
+                                ManimPlayer { scene: LiveOrbitScene, live: orbit_updater(), autoplay: false, controls: false, width: "100%" }
                             },
                             Which::Cursor => rsx! {
-                                ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%", height: "428px" }
+                                ManimPlayer { scene: CursorScene, live: cursor_updater(), autoplay: false, controls: false, width: "100%" }
                             },
                             Which::Zoom => rsx! {
-                                ManimPlayer { scene: ZoomScene, autoplay: true, loop_playback: true, controls: true, width: "100%", height: "428px" }
+                                ManimPlayer { scene: ZoomScene, autoplay: true, loop_playback: true, controls: true, width: "100%" }
                             },
                         }
                     }
