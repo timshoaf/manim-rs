@@ -1,0 +1,11 @@
+[package]
+name = "manim-book"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Interactive-textbook chapter components for manim_rust"
+
+[dependencies]
+manim-core = { workspace = true }
+manim-dioxus = { workspace = true }
+dioxus = { workspace = true }

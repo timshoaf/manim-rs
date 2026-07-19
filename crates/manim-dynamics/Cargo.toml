@@ -1,0 +1,12 @@
+[package]
+name = "manim-dynamics"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Dynamical-systems visualization kit for manim_rust"
+
+[dependencies]
+manim-fields = { workspace = true }
+manim-core = { workspace = true }
+manim-sci = { workspace = true }
+glam = { workspace = true }

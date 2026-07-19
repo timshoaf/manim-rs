@@ -1,0 +1,13 @@
+[package]
+name = "manim-signal"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Signal-processing visualization kit for manim_rust"
+
+[dependencies]
+manim-fields = { workspace = true }
+manim-core = { workspace = true }
+manim-sci = { workspace = true }
+glam = { workspace = true }
+rustfft = { workspace = true }

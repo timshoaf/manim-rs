@@ -13,11 +13,14 @@ members = [
     "crates/manim-quantum",
     "crates/manim-chem",
     "crates/manim-nn",
+    "crates/manim-signal",
+    "crates/manim-dynamics",
+    "crates/manim-book",
     "tools/render-examples",
 ]
 # Standalone wasm demos: separate crates with path deps, kept out of the main
 # workspace so native builds stay lean and window/ffmpeg-free.
-exclude = ["examples/web-vanilla", "examples/dioxus-app"]
+exclude = ["examples/web-vanilla", "examples/dioxus-app", "examples/book-template"]
 
 [workspace.package]
 version = "0.1.0"
@@ -40,6 +43,9 @@ manim-sci = { path = "crates/manim-sci" }
 manim-quantum = { path = "crates/manim-quantum" }
 manim-chem = { path = "crates/manim-chem" }
 manim-nn = { path = "crates/manim-nn" }
+manim-signal = { path = "crates/manim-signal" }
+manim-dynamics = { path = "crates/manim-dynamics" }
+manim-book = { path = "crates/manim-book" }
 
 dioxus = "0.6"
 glam = "0.30"
