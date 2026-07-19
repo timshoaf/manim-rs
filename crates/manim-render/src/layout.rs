@@ -90,7 +90,8 @@ pub fn client_to_scene(
 /// 1. element px → backing px, scaling each axis independently
 ///    (`backing_w / elem_w`, `backing_h / elem_h`);
 /// 2. backing px → scene, inverting the [`letterbox`] fit that
-///    [`render`](crate::canvas::CanvasSurface::render) applies *inside the
+///    `CanvasSurface::render` (a wasm-only item, hence no doc link) applies
+///    *inside the
 ///    backing store* plus the camera projection.
 ///
 /// Note both coordinate spaces here are CSS-pixel-derived on the element side
