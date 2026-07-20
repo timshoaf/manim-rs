@@ -182,6 +182,9 @@ impl LoopLife {
     }
 
     /// Whether the owning component is still mounted.
+    // Only the wasm render loops consult this — on native no loop ever spawns,
+    // so a native lib build sees it as dead code.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     pub(crate) fn is_alive(&self) -> bool {
         self.0.get()
     }
@@ -2558,5 +2561,141 @@ mod figure_tests {
         // Past the settle window, it parks.
         assert!(!s.borrow_mut().should_render(1.0));
         assert!(!s.borrow().wants_frame(), "settled → idle");
+    }
+}
+
+/// Unmount tests over a real [`VirtualDom`]: the render loops' safety rests on
+/// `use_drop` firing when Dioxus tears a component down, so that contract is
+/// pinned here rather than assumed.
+#[cfg(test)]
+mod unmount_tests {
+    use super::*;
+
+    thread_local! {
+        /// Every [`LoopLife`] handed out by a mounted `Guarded`, in mount order —
+        /// the test's stand-in for the handle a render loop captures.
+        static LIVES: RefCell<Vec<LoopLife>> = const { RefCell::new(Vec::new()) };
+        /// Which child the app renders; flipping it swaps one for the other,
+        /// exactly as a scene picker does.
+        static SHOW_SECOND: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Mirrors the hook pattern in `ManimPlayer`/`Figure`: take a `LoopLife` at
+    /// mount, hand a clone to the "loop", kill it on unmount.
+    #[component]
+    fn Guarded(tag: u32) -> Element {
+        let life = use_hook(|| {
+            let life = LoopLife::new();
+            LIVES.with(|l| l.borrow_mut().push(life.clone()));
+            life
+        });
+        {
+            let life = life.clone();
+            use_drop(move || life.kill());
+        }
+        rsx! { div { "{tag}" } }
+    }
+
+    fn app() -> Element {
+        if SHOW_SECOND.with(|s| s.get()) {
+            rsx! { Guarded { tag: 2 } }
+        } else {
+            rsx! { Guarded { tag: 1 } }
+        }
+    }
+
+    fn lives() -> Vec<LoopLife> {
+        LIVES.with(|l| l.borrow().clone())
+    }
+
+    #[test]
+    fn swapping_scenes_kills_only_the_departing_loop() {
+        // The manim-rs#4 repro: a picker swaps one player for another. The old
+        // loop must learn it is done; the new one must not be collateral damage.
+        LIVES.with(|l| l.borrow_mut().clear());
+        SHOW_SECOND.with(|s| s.set(false));
+
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+        assert_eq!(lives().len(), 1, "one player mounted");
+        assert!(lives()[0].is_alive(), "its loop runs");
+
+        SHOW_SECOND.with(|s| s.set(true));
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate(&mut dioxus_core::NoOpMutations);
+
+        let after = lives();
+        assert_eq!(after.len(), 2, "the replacement mounted");
+        assert!(
+            !after[0].is_alive(),
+            "the unmounted player's loop stops — without this its next queued \
+             frame reads a dropped signal and traps the wasm module"
+        );
+        assert!(after[1].is_alive(), "the live player keeps rendering");
+    }
+
+    /// A trivial scene so a real [`Figure`] can be mounted in these tests.
+    #[derive(Clone, PartialEq)]
+    struct Dot;
+
+    impl manim_core::scene::SceneBuilder for Dot {
+        fn construct(&self, scene: &mut manim_core::scene::Scene) -> manim_core::error::Result<()> {
+            scene.add(manim_core::geometry::Circle::new());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn unmounting_a_real_figure_runs_its_drop_hook() {
+        // The stand-in above pins Dioxus's contract; this pins *our* wiring on
+        // the shipped component. `Figure`'s unmount kills its `LoopLife` and
+        // kicks the (usually parked) loop so it can observe the kill — the kick
+        // is `mark_dirty`, which is visible through a caller-owned controller.
+        thread_local! {
+            static MOUNTED: Cell<bool> = const { Cell::new(true) };
+        }
+        let ctrl = FigureController::new();
+
+        fn page(ctrl: FigureController) -> Element {
+            if MOUNTED.with(|m| m.get()) {
+                rsx! { Figure { scene: Dot, controller: ctrl.clone(), lazy: false } }
+            } else {
+                rsx! { div { "gone" } }
+            }
+        }
+
+        let mut dom = VirtualDom::new_with_props(page, ctrl.clone());
+        dom.rebuild_in_place();
+
+        // Consume the mount frame so the schedule is quiet and any later wake is
+        // unambiguously the unmount's doing.
+        ctrl.schedule().borrow_mut().should_render(0.0);
+        assert!(
+            !ctrl.schedule().borrow().wants_frame(),
+            "figure parks after its mount draw"
+        );
+
+        MOUNTED.with(|m| m.set(false));
+        dom.mark_dirty(ScopeId::APP);
+        dom.render_immediate(&mut dioxus_core::NoOpMutations);
+
+        assert!(
+            ctrl.schedule().borrow().is_dirty(),
+            "unmount wakes the parked loop so it can stop and release its state"
+        );
+    }
+
+    #[test]
+    fn tearing_down_the_page_kills_the_loop() {
+        LIVES.with(|l| l.borrow_mut().clear());
+        SHOW_SECOND.with(|s| s.set(false));
+
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+        let life = lives().pop().expect("mounted");
+        assert!(life.is_alive());
+
+        drop(dom);
+        assert!(!life.is_alive(), "dropping the app stops its loops");
     }
 }
