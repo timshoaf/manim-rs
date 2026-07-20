@@ -1,13 +1,37 @@
 [package]
 name = "manim-signal"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-description = "Signal-processing visualization kit for manim_rust"
+description = "Signal-processing visualization kit for manim_rust: Fourier epicycles, sampling and aliasing, convolution buildup, filter design, and spectrograms."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["manim", "visualization", "fourier", "dsp", "signal-processing"]
+categories = ["graphics", "mathematics", "multimedia::audio"]
 
 [dependencies]
 manim-fields = { workspace = true }
 manim-core = { workspace = true }
+manim-math = { workspace = true }
 manim-sci = { workspace = true }
 glam = { workspace = true }
 rustfft = { workspace = true }
+# Only the renderable examples pull in the GPU renderer — gated so the library
+# and its tests never depend on it (keeps them light and wasm-clean).
+manim-render = { workspace = true, optional = true }
+
+[features]
+## Enables the GPU-rendering examples (pulls in `manim-render`).
+render-examples = ["dep:manim-render"]
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[[example]]
+name = "epicycles"
+required-features = ["render-examples"]
+
+[lints]
+workspace = true

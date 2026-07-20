@@ -1,12 +1,36 @@
 [package]
 name = "manim-dynamics"
-version = "0.1.0"
-edition = "2021"
-license = "MIT"
-description = "Dynamical-systems visualization kit for manim_rust"
+description = "Dynamical-systems visualization kit for manim_rust: phase portraits, equilibrium classification, nullclines, separatrices, limit cycles, and bifurcation diagrams."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["manim", "visualization", "dynamical-systems", "phase-portrait", "bifurcation"]
+categories = ["graphics", "mathematics", "science"]
 
 [dependencies]
 manim-fields = { workspace = true }
 manim-core = { workspace = true }
+manim-math = { workspace = true }
 manim-sci = { workspace = true }
 glam = { workspace = true }
+# Only the renderable examples pull in the GPU renderer — gated so the library
+# and its tests never depend on it (keeps them light and wasm-clean).
+manim-render = { workspace = true, optional = true }
+
+[features]
+## Enables the GPU-rendering examples (pulls in `manim-render`).
+render-examples = ["dep:manim-render"]
+
+[dev-dependencies]
+approx = { workspace = true }
+
+[[example]]
+name = "van_der_pol"
+required-features = ["render-examples"]
+
+[lints]
+workspace = true

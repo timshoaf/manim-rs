@@ -2558,9 +2558,12 @@ dependencies = [
 name = "manim-dynamics"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "glam",
  "manim-core",
  "manim-fields",
+ "manim-math",
+ "manim-render",
  "manim-sci",
 ]
 
