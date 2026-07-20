@@ -1,0 +1,25 @@
+[package]
+name = "manim-book-template"
+description = "Template site for authoring an interactive textbook with manim-book"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# Standalone — excluded from the root workspace (see the workspace `exclude`), so
+# the heavy dioxus tree doesn't burden native workspace builds. Path deps reach
+# the real crates. Modelled on examples/dioxus-app.
+
+[dependencies]
+dioxus = { version = "0.6", features = ["web"] }
+manim-book = { path = "../../crates/manim-book" }
+manim-dioxus = { path = "../../crates/manim-dioxus" }
+manim-core = { path = "../../crates/manim-core" }
+# Drag-handle colours beyond the prelude's basics.
+manim-color = { path = "../../crates/manim-color" }
+# The chapter's figures: domain-coloring quads (manim-sci) over complex fields
+# (manim-fields). Default features only — no manim-render — so this stays
+# wasm-clean.
+manim-sci = { path = "../../crates/manim-sci" }
+manim-fields = { path = "../../crates/manim-fields" }
+glam = "0.30"
