@@ -79,7 +79,7 @@ pub use readout::{AngleMarker, CoordinateReadout, DecimalReadout};
 pub use schedule::RenderSchedule;
 pub use url_state::{FigureState, UrlState};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use dioxus::prelude::*;
@@ -151,6 +151,47 @@ pub struct LiveUpdater(Rc<LiveFn>);
 
 /// The per-frame mutator a [`LiveUpdater`] wraps: `(scene, pointer, elapsed)`.
 type LiveFn = dyn Fn(&mut SceneState, &PointerState, f32);
+
+/// Shared liveness flag between a component and its `requestAnimationFrame`
+/// loop.
+///
+/// A scheduled animation frame outlives the component that scheduled it: when
+/// an app swaps one player for another, Dioxus drops the old scope — and every
+/// [`Signal`] it owns — while the browser still has a frame queued. That frame
+/// then runs the old loop, which reads a dropped signal and panics; on wasm the
+/// panic machinery itself fails, surfacing as `RuntimeError: memory access out
+/// of bounds`. The detached canvas keeps rendering until then, too.
+///
+/// So every loop holds one of these, checks [`is_alive`](Self::is_alive) before
+/// touching anything it captured, and stops rescheduling once the component is
+/// gone. The component flips it in `use_drop`.
+#[derive(Clone)]
+pub(crate) struct LoopLife(Rc<Cell<bool>>);
+
+impl LoopLife {
+    /// A handle for a component that is mounting: alive until told otherwise.
+    pub(crate) fn new() -> Self {
+        Self(Rc::new(Cell::new(true)))
+    }
+
+    /// Marks the component unmounted. The loop stops at its next tick — this
+    /// cannot cancel an already-queued frame, which is exactly why the loop
+    /// checks rather than assuming.
+    pub(crate) fn kill(&self) {
+        self.0.set(false);
+    }
+
+    /// Whether the owning component is still mounted.
+    pub(crate) fn is_alive(&self) -> bool {
+        self.0.get()
+    }
+}
+
+impl Default for LoopLife {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LiveUpdater {
     /// Wraps a per-frame `(scene, pointer, time) -> ()` mutator.
@@ -566,6 +607,13 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
     // Stable per-instance canvas id.
     let canvas_id = use_hook(next_canvas_id);
 
+    // Tells the render loop when this component goes away; see [`LoopLife`].
+    let life = use_hook(LoopLife::new);
+    {
+        let life = life.clone();
+        use_drop(move || life.kill());
+    }
+
     // Boot the browser render loop after mount (client + wasm only). `use_effect`
     // runs post-commit, so the canvas element already exists; it reads no signals
     // here, so it runs once.
@@ -581,6 +629,7 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
             live: live.clone(),
             canvas_id: canvas_id.clone(),
             shared: shared_gpu_from_context(),
+            life: life.clone(),
         };
         use_effect(move || {
             wasm::spawn_player(boot.clone());
@@ -1285,6 +1334,20 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
     let first_frame = use_signal(|| false);
     let canvas_id = use_hook(next_canvas_id);
 
+    // Tells the render loop when this component goes away; see [`LoopLife`].
+    // A render-on-demand loop is usually *parked* at unmount, so the kill also
+    // kicks it awake: it then runs one tick, observes the kill, and releases
+    // its closure (and the scene frames it captured) instead of leaking them.
+    let life = use_hook(LoopLife::new);
+    {
+        let life = life.clone();
+        let controller = controller.clone();
+        use_drop(move || {
+            life.kill();
+            controller.mark_dirty();
+        });
+    }
+
     // Boot the render-on-demand loop after mount (client + wasm only).
     #[cfg(target_arch = "wasm32")]
     {
@@ -1298,6 +1361,7 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
             lazy,
             canvas_id: canvas_id.clone(),
             shared: shared_gpu_from_context(),
+            life: life.clone(),
         };
         use_effect(move || {
             wasm::spawn_figure(boot.clone());
@@ -1453,6 +1517,8 @@ struct FigureBoot {
     lazy: bool,
     canvas_id: String,
     shared: Option<ManimGpu>,
+    /// Goes false when the component unmounts; see [`LoopLife`].
+    life: LoopLife,
 }
 
 /// The built-in controls bar: play/pause, a scrubber, a speed selector, an
@@ -1650,6 +1716,8 @@ struct PlayerBoot {
     /// the surface is built with `CanvasSurface::with_shared` once the device is
     /// ready; otherwise the loop requests a private per-canvas device.
     shared: Option<ManimGpu>,
+    /// Goes false when the component unmounts; see [`LoopLife`].
+    life: LoopLife,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1664,6 +1732,25 @@ mod wasm {
 
     use super::{sample_router, FigureBoot, PlayerBoot, PointerState, SceneData};
 
+    /// The self-referential rAF closure cell: the closure reschedules itself, so
+    /// it has to be reachable from inside its own body.
+    type RafCell = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
+
+    /// Drops a stopped loop's closure once the current tick has returned.
+    ///
+    /// Dropping it inline would free the closure while it is still executing.
+    /// Deferring to a microtask is sound (the tick has returned by then, and no
+    /// frame is queued — callers only release when they are not rescheduling)
+    /// and it breaks the `Rc` cycle that would otherwise leak the closure and
+    /// everything it captured — including the scene's precomputed frames — for
+    /// the life of the page.
+    fn release(cb: &RafCell) {
+        let cb = Rc::clone(cb);
+        wasm_bindgen_futures::spawn_local(async move {
+            cb.borrow_mut().take();
+        });
+    }
+
     /// Builds the canvas surface and starts the `requestAnimationFrame` loop.
     pub(super) fn spawn_player(boot: PlayerBoot) {
         wasm_bindgen_futures::spawn_local(async move {
@@ -1677,6 +1764,7 @@ mod wasm {
                 live,
                 canvas_id,
                 shared,
+                life,
             } = boot;
 
             let Some(canvas) = get_canvas(&canvas_id) else {
@@ -1699,17 +1787,31 @@ mod wasm {
                     }
                 }
             };
+            // The component can unmount while the device request above is in
+            // flight; starting a loop for a dead scope would panic on its first
+            // signal write.
+            if !life.is_alive() {
+                return;
+            }
+
             // Live scenes mutate their own SceneState clone each frame.
             let live_state = Rc::new(RefCell::new(data.initial_state.clone()));
 
             // Self-referential rAF closure, kept alive via Rc.
-            type RafCell = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
             let cb: RafCell = Rc::new(RefCell::new(None));
             let cb2 = Rc::clone(&cb);
             let last = Rc::new(RefCell::new(None::<f64>));
             let start = Rc::new(RefCell::new(None::<f64>));
             let mut last_pub = 0.0f64;
             *cb2.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+                // Before anything else, and before touching a single captured
+                // signal: this frame may have been queued before the component
+                // unmounted, and reading a dropped signal panics.
+                if !life.is_alive() {
+                    release(&cb);
+                    return;
+                }
+
                 let dt = match *last.borrow() {
                     Some(prev) => ((ts - prev) / 1000.0) as f32,
                     None => 0.0,
@@ -1842,7 +1944,12 @@ mod wasm {
                         o.disconnect();
                     }
                     if let Some(b) = boot_cb.borrow_mut().take() {
-                        start_figure_loop(b);
+                        // A lazy figure can be unmounted before it ever scrolls
+                        // into view; starting its loop now would render into a
+                        // detached canvas and write dropped signals.
+                        if b.life.is_alive() {
+                            start_figure_loop(b);
+                        }
                     }
                 }
             },
@@ -1896,6 +2003,7 @@ mod wasm {
                 time,
                 canvas_id,
                 shared,
+                life,
                 ..
             } = boot;
             let Some(canvas) = get_canvas(&canvas_id) else {
@@ -1918,10 +2026,15 @@ mod wasm {
                     }
                 }
             };
+            // As in the player loop: the component may have gone away while the
+            // device request was in flight.
+            if !life.is_alive() {
+                return;
+            }
+
             let live_state = Rc::new(RefCell::new(data.initial_state.clone()));
             let schedule = controller.schedule();
 
-            type RafCell = Rc<RefCell<Option<Closure<dyn FnMut(f64)>>>>;
             let cb: RafCell = Rc::new(RefCell::new(None));
             let cb2 = Rc::clone(&cb);
             let start = Rc::new(RefCell::new(None::<f64>));
@@ -1943,6 +2056,13 @@ mod wasm {
             }
 
             *cb2.borrow_mut() = Some(Closure::wrap(Box::new(move |ts: f64| {
+                // The unmount path kicks a parked loop awake precisely so it
+                // reaches this check and lets go of everything it captured.
+                if !life.is_alive() {
+                    release(&cb);
+                    return;
+                }
+
                 let elapsed = {
                     let mut s = start.borrow_mut();
                     let s0 = *s.get_or_insert(ts);
@@ -2236,6 +2356,61 @@ mod figure_tests {
         c.set_pointer_active(true);
         assert!(c.schedule().borrow().is_pointer_active());
         assert_eq!(kicks.get(), 1);
+    }
+
+    /// Models a frame loop that honours [`LoopLife`]: it ticks while alive and
+    /// stops (and releases its state) once the component is gone. Mirrors the
+    /// guard at the top of both rAF closures.
+    ///
+    /// Returns `(frames drawn, released?)`.
+    fn run_guarded_loop(life: &LoopLife, unmount_after: u32, ticks: u32) -> (u32, bool) {
+        // Stands in for everything the real closure captures and must let go of
+        // (signals, scene frames, the canvas).
+        let captured = Rc::new(Cell::new(Some(())));
+        let mut drawn = 0;
+        for tick in 0..ticks {
+            if tick == unmount_after {
+                life.kill();
+            }
+            if !life.is_alive() {
+                captured.set(None); // `release(&cb)`
+                break;
+            }
+            drawn += 1;
+        }
+        (drawn, captured.get().is_none())
+    }
+
+    #[test]
+    fn a_live_component_keeps_its_loop_running() {
+        let life = LoopLife::new();
+        let (drawn, released) = run_guarded_loop(&life, u32::MAX, 120);
+        assert_eq!(drawn, 120, "a mounted player draws every frame");
+        assert!(!released, "and holds on to its state");
+    }
+
+    #[test]
+    fn unmounting_stops_the_loop_at_the_next_frame() {
+        // The crash in manim-rs#4: a frame queued before unmount still fires,
+        // and the old loop read a dropped signal (memory access out of bounds).
+        // The guard must stop it *before* it touches anything it captured.
+        let life = LoopLife::new();
+        let (drawn, released) = run_guarded_loop(&life, 30, 5000);
+        assert_eq!(drawn, 30, "no frames drawn after unmount");
+        assert!(released, "the loop releases its captured state");
+        assert!(!life.is_alive());
+    }
+
+    #[test]
+    fn kill_is_idempotent_and_visible_through_clones() {
+        // The component holds one handle and the loop another; killing either
+        // (twice, as an unmount-during-teardown can) must stop the loop once.
+        let life = LoopLife::new();
+        let loop_side = life.clone();
+        assert!(loop_side.is_alive());
+        life.kill();
+        life.kill();
+        assert!(!loop_side.is_alive(), "the loop sees the component's kill");
     }
 
     #[test]
