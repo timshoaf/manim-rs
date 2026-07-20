@@ -10,6 +10,8 @@
 
 use manim_core::prelude::Point;
 
+use crate::constraint::DragConstraint;
+
 /// A set of draggable handles at scene-space positions, with hover detection and
 /// pointer capture.
 ///
@@ -36,20 +38,57 @@ pub struct DragSet {
     /// Offset (handle − cursor) captured at grab, so the handle keeps its
     /// relative position under the cursor instead of snapping to it.
     grab_offset: Point,
+    /// The grabbed handle's position at grab time — the anchor a
+    /// [`DragConstraint::Axis`] rail passes through.
+    grab_anchor: Point,
     was_pressed: bool,
+    /// Per-handle movement constraints (FE-145), parallel to `positions`.
+    constraints: Vec<DragConstraint>,
 }
 
 impl DragSet {
     /// A drag set over `positions`, each grabbable within `radius` scene units.
     pub fn new(positions: Vec<Point>, radius: f32) -> Self {
+        let constraints = vec![DragConstraint::Free; positions.len()];
         Self {
             positions,
             radius: radius.max(0.0),
             hovered: None,
             grabbed: None,
             grab_offset: Point::ZERO,
+            grab_anchor: Point::ZERO,
             was_pressed: false,
+            constraints,
         }
+    }
+
+    /// Constrains handle `i` (builder form) — see [`DragConstraint`].
+    ///
+    /// ```
+    /// use manim_dioxus::{DragSet, constraint::DragConstraint};
+    /// use manim_core::prelude::Point;
+    /// // A handle that only slides horizontally.
+    /// let mut d = DragSet::new(vec![Point::ZERO], 0.3)
+    ///     .with_constraint(0, DragConstraint::Axis(Point::new(1.0, 0.0, 0.0)));
+    /// d.update(Point::ZERO, true);
+    /// d.update(Point::new(2.0, 5.0, 0.0), true);
+    /// assert_eq!(d.position(0), Point::new(2.0, 0.0, 0.0));
+    /// ```
+    pub fn with_constraint(mut self, i: usize, c: DragConstraint) -> Self {
+        self.set_constraint(i, c);
+        self
+    }
+
+    /// Constrains handle `i` in place. Out-of-range indices are ignored.
+    pub fn set_constraint(&mut self, i: usize, c: DragConstraint) {
+        if let Some(slot) = self.constraints.get_mut(i) {
+            *slot = c;
+        }
+    }
+
+    /// Handle `i`'s constraint.
+    pub fn constraint(&self, i: usize) -> &DragConstraint {
+        &self.constraints[i]
     }
 
     /// Current handle positions.
@@ -86,13 +125,20 @@ impl DragSet {
     /// The **nearest** handle within `radius` of `p`, or `None`. Nearest wins, so
     /// overlapping handles resolve to the closest one deterministically.
     pub fn hit_test(&self, p: Point) -> Option<usize> {
+        self.hit_test_dist(p).map(|(i, _)| i)
+    }
+
+    /// [`hit_test`](Self::hit_test) plus the distance to that handle's center,
+    /// for arbitrating against a mobject hit
+    /// ([`resolve_hit`](crate::constraint::resolve_hit)).
+    pub fn hit_test_dist(&self, p: Point) -> Option<(usize, f32)> {
         self.positions
             .iter()
             .enumerate()
             .map(|(i, q)| (i, dist2(*q, p)))
             .filter(|(_, d2)| *d2 <= self.radius * self.radius)
             .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(i, _)| i)
+            .map(|(i, d2)| (i, d2.sqrt()))
     }
 
     /// Advances the state machine one frame from `(pointer, pressed)`. Returns
@@ -110,6 +156,7 @@ impl DragSet {
             self.grabbed = self.hit_test(pointer);
             if let Some(i) = self.grabbed {
                 self.grab_offset = self.positions[i] - pointer;
+                self.grab_anchor = self.positions[i];
             }
         }
         if just_released {
@@ -124,7 +171,9 @@ impl DragSet {
         if let Some(i) = self.grabbed {
             // Pointer capture: follow the cursor (keeping the grab offset)
             // regardless of radius.
-            let target = pointer + self.grab_offset;
+            // The cursor asks; the constraint decides (a free handle takes the
+            // request verbatim, so the unconstrained path is unchanged).
+            let target = self.constraints[i].apply(self.grab_anchor, pointer + self.grab_offset);
             if self.positions[i] != target {
                 self.positions[i] = target;
                 return Some(i);
@@ -284,6 +333,62 @@ mod tests {
         assert!(!d.is_dragging());
         d.update(p(2.0, 0.0), false);
         assert_eq!(d.hovered(), None);
+    }
+
+    #[test]
+    fn a_constrained_handle_snaps_to_its_grid_while_dragging() {
+        let mut d =
+            DragSet::new(vec![p(0.0, 0.0)], 0.4).with_constraint(0, DragConstraint::Grid(0.5));
+        d.update(p(0.0, 0.0), true);
+        d.update(p(1.2, -0.9), true);
+        assert_eq!(d.position(0), p(1.0, -1.0));
+    }
+
+    #[test]
+    fn a_region_constrained_handle_cannot_leave_its_box() {
+        use manim_core::mobject::BoundingBox;
+        let mut d = DragSet::new(vec![p(0.0, 0.0)], 0.4).with_constraint(
+            0,
+            DragConstraint::Region(BoundingBox::new(p(-1.0, -1.0), p(1.0, 1.0))),
+        );
+        d.update(p(0.0, 0.0), true);
+        d.update(p(9.0, 9.0), true);
+        assert_eq!(d.position(0), p(1.0, 1.0));
+    }
+
+    #[test]
+    fn a_curve_constrained_handle_rides_the_rail() {
+        use crate::constraint::CurveRail;
+        let rail = CurveRail::new(|t: f32| p(t.cos(), t.sin()), 0.0, std::f32::consts::TAU);
+        let mut d =
+            DragSet::new(vec![p(1.0, 0.0)], 0.4).with_constraint(0, DragConstraint::Curve(rail));
+        d.update(p(1.0, 0.0), true);
+        d.update(p(0.1, 3.0), true); // yanked far off the circle
+        let q = d.position(0);
+        assert!(
+            (q.x * q.x + q.y * q.y - 1.0).abs() < 1e-3,
+            "{q:?} left the unit circle"
+        );
+        assert!(q.y > 0.9, "it should ride round to the top: {q:?}");
+    }
+
+    #[test]
+    fn the_axis_rail_passes_through_the_grab_point_not_the_origin() {
+        let mut d = DragSet::new(vec![p(0.0, 2.0)], 0.5)
+            .with_constraint(0, DragConstraint::Axis(p(1.0, 0.0)));
+        // Grab slightly off-center: the offset is kept, the rail is y = 2.
+        d.update(p(0.2, 2.0), true);
+        d.update(p(3.2, -5.0), true);
+        assert_eq!(d.position(0), p(3.0, 2.0));
+    }
+
+    #[test]
+    fn hit_test_dist_reports_the_distance_for_arbitration() {
+        let d = DragSet::new(vec![p(0.0, 0.0)], 0.5);
+        let (i, dist) = d.hit_test_dist(p(0.3, 0.0)).expect("hit");
+        assert_eq!(i, 0);
+        assert!((dist - 0.3).abs() < 1e-6);
+        assert!(d.hit_test_dist(p(0.6, 0.0)).is_none());
     }
 
     #[test]

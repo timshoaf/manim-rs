@@ -22,4 +22,8 @@ manim-color = { path = "../../crates/manim-color" }
 # (that's behind manim-sci's `render-examples` gate), so this stays wasm-clean.
 manim-sci = { path = "../../crates/manim-sci" }
 manim-fields = { path = "../../crates/manim-fields" }
+# Text mobjects for the constrained-handle readouts (FE-145). The readout kit in
+# manim-dioxus takes a text *builder* rather than depending on a typesetter, so
+# only this demo pays for typst/cosmic-text.
+manim-text = { path = "../../crates/manim-text" }
 glam = "0.30"

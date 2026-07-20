@@ -58,13 +58,26 @@
 
 #![allow(missing_docs)] // dioxus macro codegen; hand-written items are documented.
 
+pub mod constraint;
+pub mod exercise;
+pub mod gesture;
 pub mod interaction;
+pub mod panzoom;
 pub mod player;
+pub mod readout;
 pub mod schedule;
+pub mod url;
+pub mod url_state;
 
+pub use constraint::{DragConstraint, HitTarget};
+pub use exercise::{use_exercise, Exercise, ExerciseState};
+pub use gesture::{GestureDelta, GestureMode, GestureRouter, PointerRole};
 pub use interaction::{DragSet, OrbitState};
+pub use panzoom::{PanZoom, PanZoomState};
 pub use player::PlayerState;
+pub use readout::{AngleMarker, CoordinateReadout, DecimalReadout};
 pub use schedule::RenderSchedule;
+pub use url_state::{FigureState, UrlState};
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -101,6 +114,15 @@ pub struct PointerState {
     ///
     /// [`position`]: Self::position
     pub frac: (f32, f32),
+    /// This frame's accumulated pan/zoom intent (FE-144) — from a two-finger
+    /// pinch, a ctrl+wheel, or a middle-button drag alike. Consume it with
+    /// [`PanZoom::sync`](crate::PanZoom::sync), or read it directly for a custom
+    /// camera. The identity ([`GestureDelta::is_identity`]) when nothing
+    /// happened.
+    ///
+    /// While a pinch is in progress [`pressed`](Self::pressed) is `false`, so a
+    /// [`DragSet`] sees a clean release and no handle is dragged by the pinch.
+    pub gesture: gesture::GestureDelta,
 }
 
 /// A per-frame scene mutator for live, input-driven scenes.
@@ -255,34 +277,62 @@ fn element_fraction(x: f32, y: f32, cw: f32, ch: f32) -> (f32, f32) {
 
 /// Raw pointer input in element (CSS) pixels, written by the DOM event handlers
 /// and read by the render loop, which converts it to scene coordinates.
-#[derive(Clone, Copy, Default)]
+///
+/// The multi-contact bookkeeping — which pointer owns the drag, when a second
+/// contact promotes the gesture to a pinch, when the survivor of a pinch must
+/// be ignored — lives in the pure [`GestureRouter`]; this struct is just the
+/// mailbox between the DOM handlers and the render loop.
+#[derive(Clone, Default)]
 struct RawPointer {
-    /// X offset from the canvas's top-left, in CSS pixels.
-    x: f32,
-    /// Y offset from the canvas's top-left, in CSS pixels.
-    y: f32,
-    /// Whether a button is currently pressed.
-    pressed: bool,
-    /// Accumulated vertical wheel delta since the render loop last consumed it.
+    /// Contact tracking + drag/pan/pinch arbitration.
+    router: GestureRouter,
+    /// Accumulated vertical wheel delta since the render loop last consumed it
+    /// (plain scroll only — a ctrl+wheel becomes a zoom in the router instead).
     wheel: f32,
-    /// The pointer id that started the active press, if any. Only that
-    /// pointer's events drive the gesture until it releases: on a touch screen
-    /// a second contact (palm edge, stray finger) otherwise interleaves its
-    /// positions into this single slot and the derived deltas ping-pong
-    /// between the two contact points.
-    active_id: Option<i32>,
 }
 
-impl RawPointer {
-    /// Whether an event from `id` may drive the gesture: any pointer may hover,
-    /// but once a press is active only the pressing pointer counts.
-    fn admits(&self, id: i32) -> bool {
-        match self.active_id {
-            Some(active) => active == id,
-            None => !self.pressed,
-        }
+/// One frame's drain of the [`RawPointer`] mailbox: where the pointer is, the
+/// drag/gesture state the router arbitrated, and the wheel accumulated since the
+/// previous frame.
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PointerSample {
+    /// Pointer position in element CSS pixels.
+    x: f32,
+    /// Pointer position in element CSS pixels.
+    y: f32,
+    /// Whether a one-finger drag is in progress (`false` during a pinch/pan).
+    pressed: bool,
+    /// Wheel delta since the last frame (plain scroll only).
+    wheel: f32,
+    /// Pan/zoom accumulated since the last frame.
+    gesture: gesture::GestureDelta,
+}
+
+/// Drains the pointer mailbox for one rendered frame, telling the router the
+/// element size first (it needs it to express pan in element fractions).
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+fn sample_router(raw: &Rc<RefCell<RawPointer>>, cw: f32, ch: f32) -> PointerSample {
+    let mut raw = raw.borrow_mut();
+    raw.router.set_size(cw, ch);
+    let (x, y) = raw.router.pointer();
+    PointerSample {
+        x,
+        y,
+        pressed: raw.router.pressed(),
+        wheel: std::mem::take(&mut raw.wheel),
+        gesture: raw.router.take_gesture(),
     }
 }
+
+/// Zoom applied per ctrl+wheel notch, matched to the wheel-delta scaling below
+/// so one notch is a comfortable step rather than a jump.
+const WHEEL_ZOOM_STEP: f32 = 1.15;
+
+/// How many wheel "notches" a CSS-pixel delta counts as. Browsers report ~100 px
+/// per detent on a mouse and much smaller continuous deltas on a trackpad, so
+/// dividing keeps both feeling like the same gesture.
+const WHEEL_PIXELS_PER_NOTCH: f32 = 100.0;
 
 /// A shared, framework-independent handle to a player's transport state.
 ///
@@ -569,49 +619,33 @@ pub fn ManimPlayer<S: SceneBuilder + Clone + PartialEq + 'static>(
                 height: "{config.pixel_height}",
                 style: "{CANVAS_STYLE}",
                 onpointermove: move |e| {
-                    let mut p = rp_move.borrow_mut();
-                    if p.admits(e.pointer_id()) {
-                        let c = e.element_coordinates();
-                        p.x = c.x as f32;
-                        p.y = c.y as f32;
-                    }
+                    let c = e.element_coordinates();
+                    rp_move.borrow_mut().router.on_move(e.pointer_id(), c.x as f32, c.y as f32);
                 },
                 onpointerdown: move |e| {
                     e.prevent_default();
-                    {
-                        let mut p = rp_down.borrow_mut();
-                        // A second contact while pressed is ignored, not
-                        // adopted — see RawPointer::active_id.
-                        if p.pressed {
-                            return;
-                        }
-                        let c = e.element_coordinates();
-                        p.x = c.x as f32;
-                        p.y = c.y as f32;
-                        p.pressed = true;
-                        p.active_id = Some(e.pointer_id());
+                    let c = e.element_coordinates();
+                    let adopted = rp_down.borrow_mut().router.on_down(
+                        e.pointer_id(),
+                        c.x as f32,
+                        c.y as f32,
+                        pointer_role(&e),
+                    );
+                    if adopted {
+                        capture_pointer(&id_down, e.pointer_id());
                     }
-                    capture_pointer(&id_down, e.pointer_id());
                     focus_player(&id_down);
                 },
                 onpointerup: move |e| {
-                    let mut p = rp_up.borrow_mut();
-                    if p.admits(e.pointer_id()) {
-                        p.pressed = false;
-                        p.active_id = None;
-                        release_pointer(&id_up, e.pointer_id());
-                    }
+                    rp_up.borrow_mut().router.on_up(e.pointer_id());
+                    release_pointer(&id_up, e.pointer_id());
                 },
                 // A mobile browser that takes over a gesture (scroll hand-off,
                 // system edge swipe) sends `pointercancel` and no `pointerup`;
                 // without this the drag would stay latched down forever.
                 onpointercancel: move |e| {
-                    let mut p = rp_cancel.borrow_mut();
-                    if p.admits(e.pointer_id()) {
-                        p.pressed = false;
-                        p.active_id = None;
-                        release_pointer(&id_cancel, e.pointer_id());
-                    }
+                    rp_cancel.borrow_mut().router.on_up(e.pointer_id());
+                    release_pointer(&id_cancel, e.pointer_id());
                 },
             }
             if show_poster {
@@ -1061,9 +1095,33 @@ impl DragHandleLayer {
         }
     }
 
+    /// Constrains handle `i` (builder form) — see [`DragConstraint`].
+    pub fn with_constraint(mut self, i: usize, c: DragConstraint) -> Self {
+        self.drag.set_constraint(i, c);
+        self
+    }
+
+    /// Constrains handle `i` in place (e.g. a control that toggles snapping).
+    pub fn set_constraint(&mut self, i: usize, c: DragConstraint) {
+        self.drag.set_constraint(i, c);
+    }
+
     /// The current handle positions (scene space).
     pub fn positions(&self) -> &[Point] {
         self.drag.positions()
+    }
+
+    /// Moves handle `i` from outside a drag (a slider, a URL restore, an
+    /// exercise reset). Ignores out-of-range indices.
+    pub fn set_position(&mut self, i: usize, p: Point) {
+        if i < self.drag.positions().len() {
+            self.drag.set_position(i, p);
+        }
+    }
+
+    /// The handle under the cursor, if any (hover affordances, cursor styling).
+    pub fn hovered(&self) -> Option<usize> {
+        self.drag.hovered()
     }
 
     /// The position of handle `i`.
@@ -1292,50 +1350,43 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 style: "{CANVAS_STYLE}",
                 onpointermove: move |e| {
                     if interactive {
-                        {
-                            let mut p = rp_move.borrow_mut();
-                            if !p.admits(e.pointer_id()) {
-                                return;
-                            }
-                            let c = e.element_coordinates();
-                            p.x = c.x as f32;
-                            p.y = c.y as f32;
-                        }
+                        let c = e.element_coordinates();
+                        rp_move.borrow_mut().router.on_move(e.pointer_id(), c.x as f32, c.y as f32);
                         c_move.mark_dirty();
                     }
                 },
                 onpointerdown: move |e| {
                     if interactive {
                         e.prevent_default();
-                        {
-                            let mut p = rp_down.borrow_mut();
-                            // A second contact while pressed is ignored, not
-                            // adopted — see RawPointer::active_id.
-                            if p.pressed {
-                                return;
-                            }
-                            let c = e.element_coordinates();
-                            p.x = c.x as f32;
-                            p.y = c.y as f32;
-                            p.pressed = true;
-                            p.active_id = Some(e.pointer_id());
+                        let c = e.element_coordinates();
+                        let adopted = rp_down.borrow_mut().router.on_down(
+                            e.pointer_id(),
+                            c.x as f32,
+                            c.y as f32,
+                            pointer_role(&e),
+                        );
+                        if adopted {
+                            capture_pointer(&id_down, e.pointer_id());
                         }
-                        capture_pointer(&id_down, e.pointer_id());
                         c_down.set_pointer_active(true);
                     }
                 },
                 onpointerup: move |e| {
                     if interactive {
-                        {
+                        let idle = {
                             let mut p = rp_up.borrow_mut();
-                            if !p.admits(e.pointer_id()) {
-                                return;
-                            }
-                            p.pressed = false;
-                            p.active_id = None;
-                        }
+                            p.router.on_up(e.pointer_id());
+                            p.router.contact_count() == 0
+                        };
                         release_pointer(&id_up, e.pointer_id());
-                        c_up.set_pointer_active(false);
+                        // Only the *last* contact ends the interaction: lifting
+                        // one finger of a pinch must not start the settle timer
+                        // while the other is still down.
+                        if idle {
+                            c_up.set_pointer_active(false);
+                        } else {
+                            c_up.mark_dirty();
+                        }
                     }
                 },
                 // A mobile browser that takes over a gesture sends `pointercancel`
@@ -1343,23 +1394,36 @@ pub fn Figure<S: SceneBuilder + Clone + PartialEq + 'static>(
                 // "pointer active" and never park.
                 onpointercancel: move |e| {
                     if interactive {
-                        {
+                        let idle = {
                             let mut p = rp_cancel.borrow_mut();
-                            if !p.admits(e.pointer_id()) {
-                                return;
-                            }
-                            p.pressed = false;
-                            p.active_id = None;
-                        }
+                            p.router.on_up(e.pointer_id());
+                            p.router.contact_count() == 0
+                        };
                         release_pointer(&id_cancel, e.pointer_id());
-                        c_cancel.set_pointer_active(false);
+                        if idle {
+                            c_cancel.set_pointer_active(false);
+                        } else {
+                            c_cancel.mark_dirty();
+                        }
                     }
                 },
                 onwheel: move |e| {
                     if interactive {
                         e.prevent_default();
                         let dy = e.delta().strip_units().y as f32;
-                        rp_wheel.borrow_mut().wheel += dy;
+                        {
+                            let mut p = rp_wheel.borrow_mut();
+                            if e.modifiers().ctrl() || e.modifiers().meta() {
+                                // The desktop pinch: ctrl+wheel zooms about the
+                                // cursor, matching every map and image viewer
+                                // (and what a trackpad pinch already sends).
+                                let notches = -dy / WHEEL_PIXELS_PER_NOTCH;
+                                let anchor = p.router.pointer_fraction();
+                                p.router.push_wheel_zoom(notches, WHEEL_ZOOM_STEP, anchor);
+                            } else {
+                                p.wheel += dy;
+                            }
+                        }
                         // A discrete zoom: one redraw applies it, then park.
                         c_wheel.mark_dirty();
                     }
@@ -1547,6 +1611,22 @@ fn capture_pointer(_canvas_id: &str, _pointer_id: i32) {}
 #[cfg(not(target_arch = "wasm32"))]
 fn release_pointer(_canvas_id: &str, _pointer_id: i32) {}
 
+/// What a press means: the middle button (or a shift-held press) pans the view,
+/// anything else drags.
+///
+/// Shift stands in for the "space-drag" idiom because a canvas cannot see a
+/// space bar it does not have focus for, whereas a modifier rides along on the
+/// pointer event itself and works identically on a trackpad.
+fn pointer_role(e: &PointerEvent) -> PointerRole {
+    use dioxus::html::input_data::MouseButton;
+    let pans = matches!(e.trigger_button(), Some(MouseButton::Auxiliary)) || e.modifiers().shift();
+    if pans {
+        PointerRole::Pan
+    } else {
+        PointerRole::Drag
+    }
+}
+
 /// A process-wide counter for unique canvas element ids.
 fn next_canvas_id() -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1582,7 +1662,7 @@ mod wasm {
     use wasm_bindgen::prelude::*;
     use wasm_bindgen::JsCast;
 
-    use super::{FigureBoot, PlayerBoot, PointerState, SceneData};
+    use super::{sample_router, FigureBoot, PlayerBoot, PointerState, SceneData};
 
     /// Builds the canvas surface and starts the `requestAnimationFrame` loop.
     pub(super) fn spawn_player(boot: PlayerBoot) {
@@ -1660,18 +1740,19 @@ mod wasm {
 
                 // Convert the raw pointer (CSS px) to scene coordinates.
                 let ptr = {
-                    let raw = *raw_pointer.borrow();
                     let (cw, ch) = (canvas.client_width() as f32, canvas.client_height() as f32);
+                    let sample = sample_router(&raw_pointer, cw, ch);
                     let position = surface
                         .borrow()
                         .as_ref()
-                        .and_then(|s| s.client_to_scene(raw.x, raw.y, cw, ch))
+                        .and_then(|s| s.client_to_scene(sample.x, sample.y, cw, ch))
                         .unwrap_or_default();
                     PointerState {
                         position,
-                        pressed: raw.pressed,
+                        pressed: sample.pressed,
                         wheel: 0.0,
-                        frac: crate::element_fraction(raw.x, raw.y, cw, ch),
+                        frac: crate::element_fraction(sample.x, sample.y, cw, ch),
+                        gesture: sample.gesture,
                     }
                 };
 
@@ -1887,23 +1968,20 @@ mod wasm {
 
                 if schedule.borrow_mut().should_render(elapsed) {
                     let ptr = {
-                        let (x, y, pressed, wheel) = {
-                            let mut raw = raw_pointer.borrow_mut();
-                            let wheel = std::mem::take(&mut raw.wheel);
-                            (raw.x, raw.y, raw.pressed, wheel)
-                        };
                         let (cw, ch) =
                             (canvas.client_width() as f32, canvas.client_height() as f32);
+                        let sample = sample_router(&raw_pointer, cw, ch);
                         let position = surface
                             .borrow()
                             .as_ref()
-                            .and_then(|s| s.client_to_scene(x, y, cw, ch))
+                            .and_then(|s| s.client_to_scene(sample.x, sample.y, cw, ch))
                             .unwrap_or_default();
                         PointerState {
                             position,
-                            pressed,
-                            wheel,
-                            frac: crate::element_fraction(x, y, cw, ch),
+                            pressed: sample.pressed,
+                            wheel: sample.wheel,
+                            frac: crate::element_fraction(sample.x, sample.y, cw, ch),
+                            gesture: sample.gesture,
                         }
                     };
                     if let Some(updater) = &live {
@@ -1960,6 +2038,102 @@ mod wasm {
         if let Some(win) = web_sys::window() {
             let _ = win.request_animation_frame(f.as_ref().unchecked_ref());
         }
+    }
+}
+
+#[cfg(test)]
+mod pointer_driver_tests {
+    //! The seam between the DOM handlers and the render loop. The handlers
+    //! themselves are one-liners into [`GestureRouter`]; what is worth pinning
+    //! natively is that a frame's *drain* reports what the loop expects — and,
+    //! above all, that a pinch never reaches the loop as a press.
+    use super::*;
+
+    fn mailbox() -> Rc<RefCell<RawPointer>> {
+        Rc::new(RefCell::new(RawPointer::default()))
+    }
+
+    #[test]
+    fn a_single_contact_reaches_the_loop_as_a_pressed_pointer() {
+        let raw = mailbox();
+        raw.borrow_mut()
+            .router
+            .on_down(1, 40.0, 60.0, PointerRole::Drag);
+        let s = sample_router(&raw, 200.0, 100.0);
+        assert!(s.pressed);
+        assert_eq!((s.x, s.y), (40.0, 60.0));
+        assert!(s.gesture.is_identity());
+    }
+
+    #[test]
+    fn a_pinch_reaches_the_loop_as_a_gesture_and_never_as_a_press() {
+        let raw = mailbox();
+        {
+            let r = &mut raw.borrow_mut().router;
+            r.set_size(200.0, 100.0);
+            r.on_down(1, 60.0, 50.0, PointerRole::Drag);
+            r.on_down(2, 140.0, 50.0, PointerRole::Drag);
+            r.on_move(1, 40.0, 50.0);
+            r.on_move(2, 160.0, 50.0);
+        }
+        let s = sample_router(&raw, 200.0, 100.0);
+        assert!(!s.pressed, "a pinch must not read as a drag");
+        assert!(s.gesture.active && s.gesture.scale > 1.0);
+        // Drained: the next frame is quiet unless the fingers move again.
+        let s2 = sample_router(&raw, 200.0, 100.0);
+        assert!(s2.gesture.is_identity());
+    }
+
+    #[test]
+    fn releasing_one_finger_of_a_pinch_does_not_press_the_survivor() {
+        let raw = mailbox();
+        {
+            let r = &mut raw.borrow_mut().router;
+            r.on_down(1, 60.0, 50.0, PointerRole::Drag);
+            r.on_down(2, 140.0, 50.0, PointerRole::Drag);
+            r.on_up(2);
+            r.on_move(1, 20.0, 50.0);
+        }
+        let s = sample_router(&raw, 200.0, 100.0);
+        assert!(!s.pressed);
+        assert!(s.gesture.is_identity());
+    }
+
+    #[test]
+    fn the_wheel_accumulates_between_frames_and_drains_once() {
+        let raw = mailbox();
+        raw.borrow_mut().wheel += 100.0;
+        raw.borrow_mut().wheel += 20.0;
+        assert_eq!(sample_router(&raw, 200.0, 100.0).wheel, 120.0);
+        assert_eq!(sample_router(&raw, 200.0, 100.0).wheel, 0.0);
+    }
+
+    #[test]
+    fn a_ctrl_wheel_zoom_arrives_as_a_gesture_anchored_at_the_cursor() {
+        let raw = mailbox();
+        {
+            let r = &mut raw.borrow_mut().router;
+            r.set_size(200.0, 100.0);
+            r.on_move(1, 50.0, 25.0); // hover
+            let anchor = r.pointer_fraction();
+            r.push_wheel_zoom(1.0, WHEEL_ZOOM_STEP, anchor);
+        }
+        let s = sample_router(&raw, 200.0, 100.0);
+        assert!((s.gesture.scale - WHEEL_ZOOM_STEP).abs() < 1e-5);
+        assert_eq!(s.gesture.anchor, (0.25, 0.25));
+        assert_eq!(s.wheel, 0.0, "a zoom wheel is not also a scroll");
+    }
+
+    #[test]
+    fn the_element_size_reaches_the_router_so_pan_is_a_fraction() {
+        let raw = mailbox();
+        raw.borrow_mut()
+            .router
+            .on_down(1, 0.0, 0.0, PointerRole::Pan);
+        sample_router(&raw, 400.0, 200.0); // publishes the size
+        raw.borrow_mut().router.on_move(1, 100.0, 0.0);
+        let s = sample_router(&raw, 400.0, 200.0);
+        assert!((s.gesture.pan.0 - 0.25).abs() < 1e-5, "{:?}", s.gesture.pan);
     }
 }
 
@@ -2171,6 +2345,7 @@ mod figure_tests {
             vec![Color::from_rgba(1.0, 0.0, 0.0, 1.0)],
         );
         let ptr = |x: f32, y: f32, pressed: bool| PointerState {
+            gesture: gesture::GestureDelta::default(),
             position: Point::new(x, y, 0.0),
             pressed,
             wheel: 0.0,

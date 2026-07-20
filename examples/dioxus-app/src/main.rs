@@ -15,9 +15,12 @@ use manim_core::mesh::{HeightField, Mesh, MeshMaterial, Surface3D};
 use manim_core::mobject::{AnyId, MobjectId};
 use manim_core::prelude::*;
 use manim_core::vector_field::ArrowVectorField;
+use manim_dioxus::constraint::{CurveRail, DragConstraint};
+use manim_dioxus::exercise::{Exercise, ExerciseHandle, ExerciseState, ExerciseTarget};
+use manim_dioxus::readout::{AngleMarker, CoordStyle, CoordinateReadout, DecimalReadout};
 use manim_dioxus::{
-    use_parameter, use_parameters, DragHandleLayer, Figure, LiveUpdater, ManimGpuProvider,
-    ManimPlayer, OrbitControls, Parameters, ParametersProvider,
+    url, use_exercise, use_parameter, use_parameters, DragHandleLayer, Figure, LiveUpdater,
+    ManimGpuProvider, ManimPlayer, OrbitControls, PanZoom, Parameters, ParametersProvider,
 };
 use manim_fields::complex::{Complex, Mobius};
 use manim_fields::field::ComplexField;
@@ -25,6 +28,7 @@ use manim_fields::map::SpaceMap;
 use manim_sci::complex_viz::RiemannSphere;
 use manim_sci::deform::{ApplyMap, DeformationGrid};
 use manim_sci::material_quad::MaterialQuad;
+use manim_text::Text;
 
 /// The canonical square → circle animation.
 #[derive(Clone, PartialEq)]
@@ -234,9 +238,8 @@ fn orbit_updater() -> LiveUpdater {
             Some(id) => id,
             None => {
                 let id = state.add(
-                    HeightField::from_fn(N, N, (EXTENT, EXTENT), |_, _| 0.0).with_material(
-                        MeshMaterial::new(TEAL_D).with_lighting(0.28, 0.72, 0.45),
-                    ),
+                    HeightField::from_fn(N, N, (EXTENT, EXTENT), |_, _| 0.0)
+                        .with_material(MeshMaterial::new(TEAL_D).with_lighting(0.28, 0.72, 0.45)),
                 );
                 field.set(Some(id));
                 id
@@ -517,7 +520,7 @@ fn mobius_map(m: Mobius) -> SpaceMap {
         move |p| {
             let denom = m.c * Complex::new(p.x, p.y) + m.d;
             let wp = det / (denom * denom); // complex derivative
-            // Holomorphic ⇒ conformal Jacobian; z passes through.
+                                            // Holomorphic ⇒ conformal Jacobian; z passes through.
             DMat3::from_cols(
                 DVec3::new(wp.re, wp.im, 0.0),
                 DVec3::new(-wp.im, wp.re, 0.0),
@@ -536,30 +539,90 @@ impl SceneBuilder for VcaPlaneScene {
     }
 }
 
+/// The fragment key Fig 1's state is shared under (FE-147): `#vca=phase:…,z0:…`.
+const VCA_URL_KEY: &str = "vca";
+
+/// Fig 1's starting handle layout: two zeros (teal), two poles (red).
+const VCA_START: [Point; 4] = [
+    Point::new(-1.0, 0.6, 0.0),
+    Point::new(1.0, -0.5, 0.0),
+    Point::new(0.4, 1.1, 0.0),
+    Point::new(-0.7, -1.0, 0.0),
+];
+
+/// Fig 1's exercise: both zeros on the unit circle (the poles are free).
+fn zeros_on_unit_circle(s: &ExerciseState) -> bool {
+    [s.handle(0), s.handle(1)]
+        .iter()
+        .all(|h| h.is_some_and(|p| ((p.x * p.x + p.y * p.y).sqrt() - 1.0).abs() < 0.06))
+}
+
 /// The live updater for Fig 1: a domain-coloring quad under four drag handles (2
 /// zeros, 2 poles). Dragging a handle rebuilds the rational field and resamples
 /// the quad — at reduced resolution while dragging, full resolution on settle.
 /// A `phase` parameter (slider) rotates the coloring.
-fn vca_plane_updater(params: Parameters) -> LiveUpdater {
+///
+/// It also carries the FE-144/147 wiring: a [`PanZoom`] consumes the frame's
+/// pinch / ctrl+wheel / middle-drag gesture before anything else, the handle
+/// layout is restored from (and written back to) the URL fragment on settle, and
+/// the enclosing [`Exercise`] is reported to each frame.
+fn vca_plane_updater(params: Parameters, exercise: Option<ExerciseHandle>) -> LiveUpdater {
+    // Restore a shared link's state at build time; fall back to the default
+    // layout for anything the fragment does not carry.
+    let saved = url::read_figure(VCA_URL_KEY);
+    let mut start = VCA_START.to_vec();
+    if let Some(f) = &saved {
+        for (i, p) in f.points("z").into_iter().enumerate().take(start.len()) {
+            start[i] = p;
+        }
+        if let Some(phase) = f.scalar("phase") {
+            params.set("phase", phase);
+        }
+    }
+
     let handles = Rc::new(RefCell::new(DragHandleLayer::new(
-        vec![
-            Point::new(-1.0, 0.6, 0.0), // zero 0
-            Point::new(1.0, -0.5, 0.0), // zero 1
-            Point::new(0.4, 1.1, 0.0),  // pole 0
-            Point::new(-0.7, -1.0, 0.0),// pole 1
-        ],
+        start,
         0.3,
         vec![TEAL_D, TEAL_D, RED, RED],
     )));
     let quad = Rc::new(Cell::new(None::<AnyId>));
     // (phase, resolution) last sampled — NaN forces the first sample.
     let last = Rc::new(Cell::new((f32::NAN, 0usize)));
+    let panzoom = Rc::new(Cell::new(PanZoom::new().with_zoom_range(0.5, 8.0)));
+    let was_dragging = Rc::new(Cell::new(false));
+    let last_epoch = Rc::new(Cell::new(exercise.as_ref().map_or(0, |e| e.reset_epoch())));
+
     LiveUpdater::new(move |state, pointer, _t| {
+        // 1. The view gesture first: a pinch/ctrl-wheel/middle-drag moves the
+        //    camera, and never reaches the handles (the router reports the drag
+        //    as released for the whole two-finger gesture).
+        let mut pz = panzoom.get();
+        pz.sync(state, pointer);
+        panzoom.set(pz);
+
         let mut hl = handles.borrow_mut();
+
+        // 2. An exercise reset puts the figure back where it started.
+        if let Some(ex) = &exercise {
+            if ex.reset_epoch() != last_epoch.get() {
+                last_epoch.set(ex.reset_epoch());
+                for (i, p) in VCA_START.iter().enumerate() {
+                    hl.set_position(i, *p);
+                }
+                last.set((f32::NAN, 0));
+                url::update(VCA_URL_KEY, |f| {
+                    f.set_points("z", &VCA_START);
+                });
+            }
+        }
 
         // Frame 1: create the quad *under* the handles.
         if quad.get().is_none() {
-            let f = rational_field(&hl.positions()[0..2], &hl.positions()[2..4], params.get("phase"));
+            let f = rational_field(
+                &hl.positions()[0..2],
+                &hl.positions()[2..4],
+                params.get("phase"),
+            );
             let id = MaterialQuad::domain_coloring(
                 VCA_DOMAIN,
                 VCA_DOMAIN,
@@ -578,7 +641,8 @@ fn vca_plane_updater(params: Parameters) -> LiveUpdater {
             VCA_HI_RES
         };
         let (last_phase, last_res) = last.get();
-        if moved.is_some() || phase != last_phase || res != last_res {
+        let phase_changed = phase != last_phase;
+        if moved.is_some() || phase_changed || res != last_res {
             let f = rational_field(&hl.positions()[0..2], &hl.positions()[2..4], phase);
             let material =
                 MaterialQuad::domain_coloring_material(VCA_DOMAIN, VCA_DOMAIN, (res, res), &f);
@@ -586,6 +650,29 @@ fn vca_plane_updater(params: Parameters) -> LiveUpdater {
                 MaterialQuad::resample(state, id, material);
             }
             last.set((phase, res));
+        }
+
+        // 3. Report to the enclosing exercise, if any (cheap: the machine only
+        //    publishes on a transition).
+        if let Some(ex) = &exercise {
+            ex.report(
+                &ExerciseState::new()
+                    .with_handles(hl.positions().to_vec())
+                    .with_param("phase", phase),
+            );
+        }
+
+        // 4. Share the state — on *settle*, never per frame: a drag that just
+        //    ended, or a slider move while nothing is being dragged.
+        let dragging = hl.is_dragging();
+        let settled = was_dragging.get() && !dragging;
+        was_dragging.set(dragging);
+        if settled || (phase_changed && !dragging && last_phase.is_finite()) {
+            let positions = hl.positions().to_vec();
+            url::update(VCA_URL_KEY, |f| {
+                f.set_scalar("phase", phase);
+                f.set_points("z", &positions);
+            });
         }
     })
 }
@@ -599,7 +686,8 @@ fn VcaPlaneFigure() -> Element {
     // The phase slider; its value is read by the updater each frame.
     let (_phase, slider) = use_parameter("phase", [-PI, PI], 0.0);
     // Build the updater once so the handle/quad state persists across renders.
-    let updater = use_hook(|| vca_plane_updater(params.clone()));
+    let exercise = use_exercise();
+    let updater = use_hook(|| vca_plane_updater(params.clone(), exercise));
     rsx! {
         div { style: "padding:8px 12px;background:#181818;", {slider} }
         Figure {
@@ -659,9 +747,13 @@ fn VcaPage() -> Element {
     let cap = "margin:0;padding:8px 12px;color:#9aa;font-size:0.84rem;background:#181818;";
     rsx! {
         ManimGpuProvider {
-            div { style: "{card}",
+            Exercise {
+                prompt: "Place both zeros on the unit circle |z| = 1.",
+                target: ExerciseTarget::new(zeros_on_unit_circle),
+                hint: "Drag the two teal handles until each sits one unit from the origin. Pinch (or ctrl+scroll) to zoom in while you aim; the link in your address bar carries the layout, so you can share it.",
+                hold: 2,
                 ParametersProvider { VcaPlaneFigure {} }
-                p { style: "{cap}", "Fig 1. Domain coloring of f(z) = Π(z−zᵢ)/Π(z−pⱼ). Drag the teal zeros and red poles; the phase slider rotates the hue. Resamples at 128² while dragging, 256² on release." }
+                p { style: "{cap}", "Fig 1. Domain coloring of f(z) = Π(z−zᵢ)/Π(z−pⱼ). Drag the teal zeros and red poles; the phase slider rotates the hue. Pinch / ctrl+scroll to zoom, two-finger or middle-drag to pan. Resamples at 128² while dragging, 256² on release." }
             }
             div { style: "{card}",
                 ManimPlayer { scene: VcaDeformScene, autoplay: true, loop_playback: true, controls: true, width: "100%" }
@@ -671,6 +763,144 @@ fn VcaPage() -> Element {
                 Figure { scene: VcaSphereScene, live: OrbitControls::new().updater(), width: "100%", lazy: false }
                 p { style: "{cap}", "Fig 3. The Riemann sphere with a stereographic grid. Drag to orbit, wheel to zoom." }
             }
+            div { style: "{card}",
+                ConstraintFigure {}
+                p { style: "{cap}", "Fig 4. Constrained handles (FE-145): teal snaps to a ½-unit grid, yellow rides the unit circle (its angle read off a live marker), green slides along a horizontal rail, blue is clamped inside the box. Each label is a readout following its handle." }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constrained handles + readouts (FE-145): every constraint kind on one figure,
+// each labelled by the readout kit.
+// ---------------------------------------------------------------------------
+
+/// The backdrop for the constrained-handle demo: a number plane, the unit circle
+/// the angle handle rides, and the box the clamped handle is confined to.
+#[derive(Clone, PartialEq)]
+struct ConstraintScene;
+impl SceneBuilder for ConstraintScene {
+    fn construct(&self, scene: &mut Scene) -> Result<()> {
+        scene.add(NumberPlane::new([-6.0, 6.0, 1.0], [-3.5, 3.5, 1.0]));
+        scene.add(Circle::new().with_stroke(WHITE, 2.0, 0.35));
+        // The `Region` handle's box, drawn so the clamp is visible rather than
+        // felt: an invisible wall reads as a bug.
+        scene.add(
+            Rectangle::with_size(2.0, 1.4)
+                .with_move_to(Point::new(-3.6, 1.6, 0.0))
+                .with_stroke(BLUE, 2.0, 0.6),
+        );
+        Ok(())
+    }
+}
+
+/// The rail the angle handle is pinned to.
+fn unit_circle_rail() -> CurveRail {
+    CurveRail::new(|t: f32| Point::new(t.cos(), t.sin(), 0.0), 0.0, TAU)
+}
+
+/// The clamp box for the `Region` handle.
+fn region_box() -> manim_core::mobject::BoundingBox {
+    manim_core::mobject::BoundingBox::new(Point::new(-4.6, 0.9, 0.0), Point::new(-2.6, 2.3, 0.0))
+}
+
+/// The live updater for the constrained-handle figure: four handles, one per
+/// [`DragConstraint`] kind, each with its own readout.
+///
+/// - **Grid** — snaps to a half-unit lattice, labelled with its coordinates.
+/// - **Curve** — rides the unit circle; an [`AngleMarker`] measures it from the
+///   +x axis and a [`DecimalReadout`] shows the angle in degrees.
+/// - **Axis** — slides along a horizontal rail, labelled with its x only.
+/// - **Region** — clamped inside the blue box, labelled with its coordinates.
+fn constraint_updater() -> LiveUpdater {
+    let handles = Rc::new(RefCell::new(
+        DragHandleLayer::new(
+            vec![
+                Point::new(2.5, -1.5, 0.0), // grid-snapped
+                Point::new(1.0, 0.0, 0.0),  // on the unit circle
+                Point::new(3.0, 2.5, 0.0),  // on a horizontal rail
+                Point::new(-3.6, 1.6, 0.0), // inside the box
+            ],
+            0.32,
+            vec![TEAL_D, YELLOW, GREEN, BLUE],
+        )
+        .with_constraint(0, DragConstraint::Grid(0.5))
+        .with_constraint(1, DragConstraint::Curve(unit_circle_rail()))
+        .with_constraint(2, DragConstraint::Axis(RIGHT))
+        .with_constraint(3, DragConstraint::Region(region_box())),
+    ));
+    // Readouts. The kit takes a text *builder*, so the typesetter dependency
+    // lives here in the demo rather than in the component crate.
+    let grid_label = Rc::new(RefCell::new(CoordinateReadout::<Text>::new(Point::new(
+        0.0, 0.45, 0.0,
+    ))));
+    let angle_label = Rc::new(RefCell::new(
+        DecimalReadout::<Text>::new(Point::new(1.6, 0.5, 0.0))
+            .decimals(1)
+            .suffix("°"),
+    ));
+    let rail_label = Rc::new(RefCell::new(
+        DecimalReadout::<Text>::new(Point::new(0.0, 3.0, 0.0))
+            .decimals(2)
+            .prefix("x = "),
+    ));
+    let box_label = Rc::new(RefCell::new(
+        CoordinateReadout::<Text>::new(Point::new(0.0, -0.5, 0.0))
+            .with_format(|f| f.decimals(1).style(CoordStyle::Complex)),
+    ));
+    let marker = Rc::new(RefCell::new(AngleMarker::new(0.45, YELLOW)));
+    let radius: Rc<Cell<Option<MobjectId<Line>>>> = Rc::new(Cell::new(None));
+
+    let text = |s: &str| Text::new(s).font_size(22.0);
+
+    LiveUpdater::new(move |state, pointer, _t| {
+        let mut hl = handles.borrow_mut();
+        hl.sync(state, pointer);
+        let (p_grid, p_arc, p_rail, p_box) = (
+            hl.position(0),
+            hl.position(1),
+            hl.position(2),
+            hl.position(3),
+        );
+
+        // The angle handle's radius line, replaced in place (same arena slot,
+        // bumped generation) so the tessellation cache invalidates exactly once.
+        let fresh = Line::new(Point::ZERO, p_arc).with_stroke(YELLOW, 3.0, 0.9);
+        match radius.get() {
+            None => radius.set(Some(state.add(fresh))),
+            Some(id) => {
+                let generation = state.get(id).data().generation;
+                let slot = state.get_mut(id);
+                *slot = fresh;
+                slot.data_mut().generation = generation + 1;
+            }
+        }
+        let degrees = marker
+            .borrow_mut()
+            .sync(state, RIGHT, Point::ZERO, p_arc)
+            .to_degrees();
+
+        grid_label.borrow_mut().sync(state, p_grid, text);
+        angle_label.borrow_mut().sync(state, degrees, text);
+        rail_label
+            .borrow_mut()
+            .move_to(p_rail + Point::new(0.0, 0.45, 0.0));
+        rail_label.borrow_mut().sync(state, p_rail.x, text);
+        box_label.borrow_mut().sync(state, p_box, text);
+    })
+}
+
+/// The constrained-handle + readout figure (FE-145) with its caption.
+#[component]
+fn ConstraintFigure() -> Element {
+    let updater = use_hook(constraint_updater);
+    rsx! {
+        Figure {
+            scene: ConstraintScene,
+            live: updater.clone(),
+            width: "100%",
+            lazy: false,
         }
     }
 }
@@ -821,18 +1051,20 @@ mod vca_timing {
         for res in [VCA_DRAG_RES, VCA_HI_RES, 512] {
             let t = Instant::now();
             for _ in 0..iters {
-                let m = MaterialQuad::domain_coloring_material(
-                    VCA_DOMAIN,
-                    VCA_DOMAIN,
-                    (res, res),
-                    &f,
-                );
+                let m =
+                    MaterialQuad::domain_coloring_material(VCA_DOMAIN, VCA_DOMAIN, (res, res), &f);
                 std::hint::black_box(&m);
             }
             let per_ms = t.elapsed().as_secs_f64() * 1000.0 / iters as f64;
-            println!("VCA resample {res}²: {per_ms:.3} ms/frame ({} samples)", res * res);
+            println!(
+                "VCA resample {res}²: {per_ms:.3} ms/frame ({} samples)",
+                res * res
+            );
             // Sanity ceiling so a pathological regression fails the suite.
-            assert!(per_ms < 250.0, "resample {res}² far too slow: {per_ms:.1} ms");
+            assert!(
+                per_ms < 250.0,
+                "resample {res}² far too slow: {per_ms:.1} ms"
+            );
         }
     }
 
