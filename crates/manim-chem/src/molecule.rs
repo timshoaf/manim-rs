@@ -2,29 +2,57 @@
 
 use glam::Vec3;
 
-/// A single atom: its element symbol and position (ångström).
+/// A single atom: its element symbol, position (ångström), and optional formal
+/// charge.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Atom {
     /// Element symbol, e.g. `"C"`, `"O"`, `"Na"` (case as written).
     pub element: String,
     /// Position in ångström.
     pub pos: Vec3,
+    /// Formal charge (oxidation state), when known.
+    ///
+    /// Only consulted when sizing atoms by
+    /// [`RadiusSource::Ionic`](crate::render::RadiusSource::Ionic); `None` falls
+    /// back to the element's
+    /// [`common_charge`](crate::element::common_charge). Parsers leave this
+    /// `None` — set it with [`with_charge`](Self::with_charge) when a structure
+    /// has an oxidation state the common one gets wrong.
+    pub charge: Option<i8>,
 }
 
 impl Atom {
-    /// An atom of `element` at `pos`.
+    /// An atom of `element` at `pos`, with no explicit charge.
     ///
     /// ```
     /// use manim_chem::molecule::Atom;
     /// use glam::Vec3;
     /// let a = Atom::new("C", Vec3::ZERO);
     /// assert_eq!(a.element, "C");
+    /// assert_eq!(a.charge, None);
     /// ```
     pub fn new(element: impl Into<String>, pos: Vec3) -> Self {
         Self {
             element: element.into(),
             pos,
+            charge: None,
         }
+    }
+
+    /// Sets this atom's formal charge (builder), overriding the element's
+    /// common oxidation state when sizing by
+    /// [`RadiusSource::Ionic`](crate::render::RadiusSource::Ionic).
+    ///
+    /// ```
+    /// use manim_chem::molecule::Atom;
+    /// use glam::Vec3;
+    /// // Iron is Fe(III) by default; say so explicitly when it is Fe(II).
+    /// let fe = Atom::new("Fe", Vec3::ZERO).with_charge(2);
+    /// assert_eq!(fe.charge, Some(2));
+    /// ```
+    pub fn with_charge(mut self, charge: i8) -> Self {
+        self.charge = Some(charge);
+        self
     }
 }
 

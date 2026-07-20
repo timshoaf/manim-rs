@@ -11,14 +11,17 @@
 //! ions closer than 3.4 Å, so they trace exactly those octahedra — count the six
 //! mutually perpendicular sticks on any interior ion.
 //!
-//! The spheres are drawn at CPK *neutral-atom covalent* radii, so sodium
-//! (purple, 1.66 Å) comes out larger than chlorine (green, 1.02 Å). Worth
-//! knowing that ionisation **reverses** this: Na⁺ has lost its whole 3s shell
-//! and shrinks to 1.02 Å, while Cl⁻ gains an electron and swells to 1.81 Å, so
-//! the real crystal is a close-packed array of big chloride ions with small
-//! sodium ions tucked into its octahedral holes. The yellow wireframe is one
-//! unit cell from [`Lattice::cell_edges`](manim_chem::lattice::Lattice::cell_edges),
-//! marking out the cube that tiles the block.
+//! The spheres are drawn at **Shannon effective ionic radii**
+//! ([`RadiusSource::Ionic`](manim_chem::render::RadiusSource::Ionic)), which is
+//! the honest choice for a salt: Na⁺ has lost its whole 3s shell and shrinks to
+//! 1.02 Å, while Cl⁻ gains an electron and swells to 1.81 Å. So the crystal
+//! reads as it really is — a close-packed array of big green chloride ions with
+//! small purple sodium ions tucked into its octahedral holes. (Neutral-atom
+//! *covalent* radii would reverse this, drawing sodium at 1.66 Å against
+//! chlorine's 1.02 Å, and give exactly the wrong intuition.) The yellow
+//! wireframe is one unit cell from
+//! [`Lattice::cell_edges`](manim_chem::lattice::Lattice::cell_edges), marking
+//! out the cube that tiles the block.
 //!
 //! Run with:
 //!
@@ -29,8 +32,8 @@
 //! Frames land in `out/nacl_lattice/frame_NNNNN.png`.
 
 use manim_chem::lattice::nacl;
-use manim_chem::molecule::{Atom, Bond, Molecule};
-use manim_chem::render;
+use manim_chem::molecule::{Atom, Molecule};
+use manim_chem::render::{self, BondRule, RadiusSource};
 use manim_core::prelude::*;
 use manim_render::export::VideoExporter;
 
@@ -42,10 +45,6 @@ const REPS: usize = 2;
 /// side, which would overflow the 14-unit frame once the turntable swings its
 /// body diagonal (19.5 Å) across the screen.
 const FIT: f32 = 0.55;
-
-/// Na–Cl contact cutoff (ångström): comfortably above a/2 = 2.82 Å and well
-/// below the next Na–Cl shell at a·√3/2 = 4.88 Å.
-const CONTACT: f32 = 3.4;
 
 /// Scene builder for the rock-salt lattice turntable.
 pub struct Demo;
@@ -59,26 +58,30 @@ impl SceneBuilder for Demo {
         // `replicate` tiles outward from the origin corner, so the block sits in
         // the +++ octant; recentre it on the origin the turntable orbits.
         let mid = block.centroid();
+        // Recentre while preserving each ion's formal charge — `RadiusSource::Ionic`
+        // reads it to pick Na⁺ vs Cl⁻ radii.
         let atoms: Vec<Atom> = block
             .atoms
             .iter()
-            .map(|a| Atom::new(a.element.clone(), a.pos - mid))
+            .map(|a| Atom {
+                pos: a.pos - mid,
+                ..a.clone()
+            })
             .collect();
 
-        // Contacts drawn by hand rather than by `render::perceive_bonds`: that
-        // helper's 1.3× covalent-radius cutoff also links Na–Na across the 3.99 Å
-        // face diagonal, burying the structure in sticks. The rock-salt contact
-        // is *unlike ions only*, at a/2 = 2.82 Å — exactly the octahedron.
-        let mut bonds = Vec::new();
-        for i in 0..atoms.len() {
-            for j in (i + 1)..atoms.len() {
-                let contact = (atoms[i].pos - atoms[j].pos).length() < CONTACT;
-                if contact && atoms[i].element != atoms[j].element {
-                    bonds.push(Bond::new(i, j, 1));
-                }
-            }
-        }
-        let ions = render::ball_and_stick(scene.state_mut(), &Molecule { atoms, bonds });
+        // `BondRule::UnlikeOnly` keeps only Na–Cl contacts. The plain covalent
+        // heuristic would also link Na–Na across the 3.99 Å face diagonal
+        // (sodium's covalent radius is large), burying the structure in sticks;
+        // requiring unlike, strongly-polarized partners leaves exactly the
+        // octahedral a/2 = 2.82 Å contacts.
+        let molecule = render::with_perceived_bonds_using(
+            &Molecule {
+                atoms,
+                bonds: Vec::new(),
+            },
+            BondRule::UnlikeOnly,
+        );
+        let ions = render::ball_and_stick_sized(scene.state_mut(), &molecule, RadiusSource::Ionic);
 
         // One unit cell, translated by the same offset so it lands on the block's
         // origin-corner cell rather than floating beside it.

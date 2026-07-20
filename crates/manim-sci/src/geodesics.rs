@@ -178,6 +178,42 @@ pub fn geodesic<Sm: SurfaceSampler + ?Sized>(
     out
 }
 
+/// Embeds a parameter-space path into 3-D by evaluating the surface at each
+/// `(u, v)`.
+///
+/// The bridge from [`geodesic`]'s parameter-space output to something drawable:
+/// feed the result to
+/// [`SpaceCurve`](crate::curveviz::SpaceCurve) to get a depth-tested tube that
+/// the surface correctly occludes.
+///
+/// ```
+/// use manim_fields::ad::Scalar;
+/// use manim_sci::diffgeo::SurfaceSampler;
+/// use manim_sci::geodesics::{embed_path, geodesic};
+///
+/// struct UnitSphere;
+/// impl SurfaceSampler for UnitSphere {
+///     fn eval<S: Scalar>(&self, u: S, v: S) -> [S; 3] {
+///         [u.sin() * v.cos(), u.sin() * v.sin(), u.cos()]
+///     }
+/// }
+/// let path = geodesic(&UnitSphere, 0.5, 0.3, 1.0, 0.0, 1.0, 20);
+/// let pts = embed_path(&UnitSphere, &path);
+/// assert_eq!(pts.len(), path.len());
+/// // A geodesic of the unit sphere stays on it.
+/// for p in &pts {
+///     assert!((p.length() - 1.0).abs() < 1e-5);
+/// }
+/// ```
+pub fn embed_path<Sm: SurfaceSampler + ?Sized>(s: &Sm, path: &[(f64, f64)]) -> Vec<glam::Vec3> {
+    path.iter()
+        .map(|&(u, v)| {
+            let [x, y, z] = s.eval::<f64>(u, v);
+            glam::Vec3::new(x as f32, y as f32, z as f32)
+        })
+        .collect()
+}
+
 /// Parallel-transports a tangent vector `w0` (in the `(u, v)` basis) along a
 /// discrete path in parameter space, returning the vector's history.
 ///

@@ -96,7 +96,12 @@ impl Lattice {
                 for l in 0..k {
                     let shift = i as f32 * av + j as f32 * bv + l as f32 * cv;
                     for atom in &self.basis {
-                        atoms.push(Atom::new(atom.element.clone(), atom.pos + shift));
+                        // Carry the basis atom's charge through: an ionic cell
+                        // must stay ionic once tiled.
+                        atoms.push(Atom {
+                            pos: atom.pos + shift,
+                            ..atom.clone()
+                        });
                     }
                 }
             }
@@ -145,9 +150,18 @@ impl Lattice {
 /// sub-lattices, so the basis has 8 atoms and the nearest Na–Cl separation is
 /// `a/2 ≈ 2.82 Å`.
 ///
+/// The basis atoms carry their formal charges (Na⁺, Cl⁻), so sizing the cell
+/// with [`RadiusSource::Ionic`](crate::render::RadiusSource::Ionic) draws the
+/// chloride anion larger than the sodium cation, as it is in the real crystal.
+/// Pair it with [`BondRule::UnlikeOnly`](crate::render::BondRule::UnlikeOnly)
+/// to keep the second-nearest Na–Na contacts from hairballing the picture.
+///
 /// ```
 /// use manim_chem::lattice::nacl;
-/// assert_eq!(nacl().basis.len(), 8);
+/// let cell = nacl();
+/// assert_eq!(cell.basis.len(), 8);
+/// assert_eq!(cell.basis[0].charge, Some(1)); // Na+
+/// assert_eq!(cell.basis[4].charge, Some(-1)); // Cl-
 /// ```
 pub fn nacl() -> Lattice {
     let a = 5.64_f32;
@@ -159,11 +173,11 @@ pub fn nacl() -> Lattice {
     ];
     let mut basis = Vec::with_capacity(8);
     for f in fcc {
-        basis.push(Atom::new("Na", f * a));
+        basis.push(Atom::new("Na", f * a).with_charge(1));
     }
     // Cl shifted by half a cell edge along x.
     for f in fcc {
-        basis.push(Atom::new("Cl", (f + Vec3::new(0.5, 0.0, 0.0)) * a));
+        basis.push(Atom::new("Cl", (f + Vec3::new(0.5, 0.0, 0.0)) * a).with_charge(-1));
     }
     Lattice {
         a,

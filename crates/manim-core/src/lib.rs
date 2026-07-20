@@ -60,6 +60,20 @@ pub mod timeline;
 pub mod vector_field;
 pub mod vector_space;
 
+/// The full color library, re-exported so downstream crates reach the whole
+/// palette without adding their own `manim-color` dependency.
+///
+/// The [`prelude`] carries only the handful of colors most scenes use; anything
+/// else — the rest of the named palette, color spaces, gradients — lives here.
+///
+/// ```
+/// use manim_core::manim_color::TEAL;
+/// use manim_core::prelude::*;
+/// let mut scene = SceneState::new();
+/// let _ = scene.add(Circle::new().with_fill(TEAL, 1.0));
+/// ```
+pub use manim_color;
+
 pub use animation::{AnimConfig, Animation, IntoAnimations};
 pub use camera::{Camera2D, CameraFrame};
 pub use config::Config;
@@ -81,6 +95,18 @@ pub use timeline::Section;
 /// use manim_core::prelude::*;
 /// let mut scene = SceneState::new();
 /// let _ = scene.add(Circle::new());
+/// ```
+///
+/// Only a handful of colors are re-exported here. For the rest of the palette,
+/// reach through the [`manim_color`] re-export rather than
+/// depending on that crate directly:
+///
+/// ```
+/// use manim_core::manim_color::{MAROON, TEAL};
+/// use manim_core::prelude::*;
+/// let mut scene = SceneState::new();
+/// let _ = scene.add(Square::new().with_fill(MAROON, 1.0));
+/// let _ = scene.add(Circle::new().with_stroke(TEAL, 2.0, 1.0));
 /// ```
 pub mod prelude {
     pub use crate::animated_boundary::AnimatedBoundary;

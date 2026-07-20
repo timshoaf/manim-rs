@@ -294,6 +294,106 @@ mod tests {
         assert!(!MeshMaterial::new(RED).is_translucent());
     }
 
+    /// `SceneState`'s family ops are mesh-aware for free, because a mesh's model
+    /// matrix *is* its path (see [`frame`]). These lock that in: the ops are the
+    /// ones most likely to be "optimized" into a path-only fast path someday.
+    mod scene_family_ops_reach_meshes {
+        use crate::mesh::Mesh;
+        use crate::mobject::MobjectExt;
+        use crate::scene_state::SceneState;
+        use glam::{Mat4, Vec3};
+
+        fn assert_close(a: Mat4, b: Mat4) {
+            for i in 0..4 {
+                assert!(
+                    (a.col(i) - b.col(i)).length() < 1e-4,
+                    "column {i}: {:?} vs {:?}",
+                    a.col(i),
+                    b.col(i)
+                );
+            }
+        }
+
+        #[test]
+        fn shift_translates_the_model_matrix() {
+            let mut scene = SceneState::new();
+            let m = scene.add(Mesh::sphere());
+            scene.shift(m, Vec3::new(2.0, -1.0, 0.5));
+            assert_close(
+                scene[m].transform(),
+                Mat4::from_translation(Vec3::new(2.0, -1.0, 0.5)),
+            );
+        }
+
+        /// A shifted mesh's bounding box must follow it — meshes contribute to
+        /// the family box through the same six anchors.
+        #[test]
+        fn shift_moves_the_bounding_box() {
+            let mut scene = SceneState::new();
+            let m = scene.add(Mesh::sphere());
+            scene.shift(m, Vec3::X * 3.0);
+            let center = scene.family_bounding_box(m).center();
+            assert!((center - Vec3::X * 3.0).length() < 1e-4, "{center:?}");
+        }
+
+        /// `scale`/`rotate` are about the family center, so an off-origin mesh
+        /// must come back conjugated by that point, not applied at the origin.
+        #[test]
+        fn scale_and_rotate_conjugate_by_the_center() {
+            let mut scene = SceneState::new();
+            let m = scene.add(Mesh::sphere());
+            scene.shift(m, Vec3::X * 2.0);
+            scene.scale(m, 3.0);
+            // Scaling about its own center leaves the center put, scales the basis.
+            assert_close(
+                scene[m].transform(),
+                Mat4::from_translation(Vec3::X * 2.0) * Mat4::from_scale(Vec3::splat(3.0)),
+            );
+
+            let angle = std::f32::consts::FRAC_PI_2;
+            scene.rotate(m, angle);
+            assert_close(
+                scene[m].transform(),
+                Mat4::from_translation(Vec3::X * 2.0)
+                    * Mat4::from_rotation_z(angle)
+                    * Mat4::from_scale(Vec3::splat(3.0)),
+            );
+        }
+
+        #[test]
+        fn move_to_places_the_mesh_center() {
+            let mut scene = SceneState::new();
+            let m = scene.add(Mesh::sphere());
+            scene.move_to(m, Vec3::new(-1.0, 4.0, 0.0));
+            let center = scene.family_bounding_box(m).center();
+            assert!(
+                (center - Vec3::new(-1.0, 4.0, 0.0)).length() < 1e-4,
+                "{center:?}"
+            );
+        }
+
+        /// The mixed case: a path mobject and a mesh under one group must move
+        /// together, by the same delta, from one family op.
+        #[test]
+        fn mixed_family_moves_path_and_mesh_consistently() {
+            use crate::geometry::Circle;
+            use crate::prelude::VGroup;
+
+            let mut scene = SceneState::new();
+            let g = scene.add(VGroup::new());
+            let circle = scene.add(Circle::new());
+            let mesh = scene.add(Mesh::sphere());
+            scene.add_child(g.erase(), circle.erase());
+            scene.add_child(g.erase(), mesh.erase());
+
+            let delta = Vec3::new(2.0, 3.0, 0.0);
+            scene.shift(g.erase(), delta);
+
+            assert!((scene.get(circle).get_center() - delta).length() < 1e-4);
+            assert_close(scene[mesh].transform(), Mat4::from_translation(delta));
+        }
+    }
+
     #[test]
     fn material_builders_chain() {
         let m = MeshMaterial::new(RED)

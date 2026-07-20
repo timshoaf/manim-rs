@@ -15,6 +15,14 @@
 //!   "A cartography of the van der Waals territories", *Dalton Trans.* **42**
 //!   (2013) 8617.
 //!
+//! - **Ionic radii** (ångström) are Shannon effective ionic radii for
+//!   **coordination number 6**: R. D. Shannon, "Revised effective ionic radii
+//!   and systematic studies of interatomic distances in halides and
+//!   chalcogenides", *Acta Cryst.* **A32** (1976) 751–767. See
+//!   [`ionic_radius`] for the caveats that come with using one CN.
+//! - **Electronegativities** are Pauling-scale values (CRC Handbook), used only
+//!   by the [`BondRule`](crate::render::BondRule) ionic heuristic.
+//!
 //! ```
 //! use manim_chem::element::data;
 //! let o = data("O").unwrap();
@@ -155,6 +163,178 @@ pub fn data(symbol: &str) -> Option<ElementData> {
         })
 }
 
+/// One row of the ionic table: symbol, charge, Shannon CN-6 radius (ångström).
+struct IonRow {
+    symbol: &'static str,
+    charge: i8,
+    radius: f32,
+}
+
+/// Shannon effective ionic radii at **coordination number 6**, in ångström.
+///
+/// The *first* row for an element is its common/default oxidation state, which
+/// is what [`common_charge`] returns and what [`ionic_radius`] uses when no
+/// charge is supplied. Elements with no common monatomic ion (the noble gases,
+/// and H, whose cation is a bare proton with no meaningful radius) are absent.
+///
+/// Transition-metal values are high-spin where the distinction applies.
+#[rustfmt::skip]
+static IONIC: &[IonRow] = &[
+    IonRow { symbol: "Li", charge:  1, radius: 0.76 },
+    IonRow { symbol: "Be", charge:  2, radius: 0.45 },
+    IonRow { symbol: "B",  charge:  3, radius: 0.27 },
+    IonRow { symbol: "C",  charge:  4, radius: 0.16 },
+    IonRow { symbol: "N",  charge: -3, radius: 1.46 },
+    IonRow { symbol: "O",  charge: -2, radius: 1.40 },
+    IonRow { symbol: "F",  charge: -1, radius: 1.33 },
+    IonRow { symbol: "Na", charge:  1, radius: 1.02 },
+    IonRow { symbol: "Mg", charge:  2, radius: 0.72 },
+    IonRow { symbol: "Al", charge:  3, radius: 0.535 },
+    IonRow { symbol: "Si", charge:  4, radius: 0.40 },
+    IonRow { symbol: "P",  charge:  5, radius: 0.38 },
+    IonRow { symbol: "S",  charge: -2, radius: 1.84 },
+    IonRow { symbol: "Cl", charge: -1, radius: 1.81 },
+    IonRow { symbol: "K",  charge:  1, radius: 1.38 },
+    IonRow { symbol: "Ca", charge:  2, radius: 1.00 },
+    IonRow { symbol: "Sc", charge:  3, radius: 0.745 },
+    IonRow { symbol: "Ti", charge:  4, radius: 0.605 },
+    IonRow { symbol: "Ti", charge:  3, radius: 0.67 },
+    IonRow { symbol: "V",  charge:  5, radius: 0.54 },
+    IonRow { symbol: "V",  charge:  3, radius: 0.64 },
+    IonRow { symbol: "Cr", charge:  3, radius: 0.615 },
+    IonRow { symbol: "Cr", charge:  6, radius: 0.44 },
+    IonRow { symbol: "Mn", charge:  2, radius: 0.83 },
+    IonRow { symbol: "Mn", charge:  4, radius: 0.53 },
+    IonRow { symbol: "Fe", charge:  3, radius: 0.645 },
+    IonRow { symbol: "Fe", charge:  2, radius: 0.78 },
+    IonRow { symbol: "Co", charge:  2, radius: 0.745 },
+    IonRow { symbol: "Co", charge:  3, radius: 0.61 },
+    IonRow { symbol: "Ni", charge:  2, radius: 0.69 },
+    IonRow { symbol: "Cu", charge:  2, radius: 0.73 },
+    IonRow { symbol: "Cu", charge:  1, radius: 0.77 },
+    IonRow { symbol: "Zn", charge:  2, radius: 0.74 },
+    IonRow { symbol: "Ga", charge:  3, radius: 0.62 },
+    IonRow { symbol: "Ge", charge:  4, radius: 0.53 },
+    IonRow { symbol: "As", charge:  3, radius: 0.58 },
+    IonRow { symbol: "Se", charge: -2, radius: 1.98 },
+    IonRow { symbol: "Br", charge: -1, radius: 1.96 },
+    IonRow { symbol: "Rb", charge:  1, radius: 1.52 },
+    IonRow { symbol: "Sr", charge:  2, radius: 1.18 },
+    IonRow { symbol: "Y",  charge:  3, radius: 0.90 },
+    IonRow { symbol: "Zr", charge:  4, radius: 0.72 },
+    IonRow { symbol: "Nb", charge:  5, radius: 0.64 },
+    IonRow { symbol: "Mo", charge:  6, radius: 0.59 },
+    IonRow { symbol: "Mo", charge:  4, radius: 0.65 },
+    IonRow { symbol: "Tc", charge:  4, radius: 0.645 },
+    IonRow { symbol: "Ru", charge:  3, radius: 0.68 },
+    IonRow { symbol: "Rh", charge:  3, radius: 0.665 },
+    IonRow { symbol: "Pd", charge:  2, radius: 0.86 },
+    IonRow { symbol: "Ag", charge:  1, radius: 1.15 },
+    IonRow { symbol: "Cd", charge:  2, radius: 0.95 },
+    IonRow { symbol: "In", charge:  3, radius: 0.80 },
+    IonRow { symbol: "Sn", charge:  4, radius: 0.69 },
+    IonRow { symbol: "Sb", charge:  3, radius: 0.76 },
+    IonRow { symbol: "Te", charge: -2, radius: 2.21 },
+    IonRow { symbol: "I",  charge: -1, radius: 2.20 },
+];
+
+/// Pauling-scale electronegativities (CRC Handbook), by symbol.
+///
+/// Elements with no accepted Pauling value (He, Ne, Ar) are absent.
+#[rustfmt::skip]
+static ELECTRONEGATIVITY: &[(&str, f32)] = &[
+    ("H", 2.20),
+    ("Li", 0.98), ("Be", 1.57), ("B", 2.04), ("C", 2.55), ("N", 3.04),
+    ("O", 3.44), ("F", 3.98),
+    ("Na", 0.93), ("Mg", 1.31), ("Al", 1.61), ("Si", 1.90), ("P", 2.19),
+    ("S", 2.58), ("Cl", 3.16),
+    ("K", 0.82), ("Ca", 1.00), ("Sc", 1.36), ("Ti", 1.54), ("V", 1.63),
+    ("Cr", 1.66), ("Mn", 1.55), ("Fe", 1.83), ("Co", 1.88), ("Ni", 1.91),
+    ("Cu", 1.90), ("Zn", 1.65), ("Ga", 1.81), ("Ge", 2.01), ("As", 2.18),
+    ("Se", 2.55), ("Br", 2.96), ("Kr", 3.00),
+    ("Rb", 0.82), ("Sr", 0.95), ("Y", 1.22), ("Zr", 1.33), ("Nb", 1.60),
+    ("Mo", 2.16), ("Tc", 1.90), ("Ru", 2.20), ("Rh", 2.28), ("Pd", 2.20),
+    ("Ag", 1.93), ("Cd", 1.69), ("In", 1.78), ("Sn", 1.96), ("Sb", 2.05),
+    ("Te", 2.10), ("I", 2.66), ("Xe", 2.60),
+];
+
+/// Normalizes `symbol` to the exact spelling used as a table key, or `None` if
+/// it is not a plausible element symbol.
+fn table_key(symbol: &str) -> Option<String> {
+    let key = canonical(symbol)?;
+    let want: &[u8] = if key[1] == b'\0' {
+        &key[0..1]
+    } else {
+        &key[0..2]
+    };
+    let mut s = std::str::from_utf8(want).ok()?.to_string();
+    // `canonical` lowercases; the tables are keyed with a capital first letter.
+    s[0..1].make_ascii_uppercase();
+    Some(s)
+}
+
+/// The common (default) oxidation state of `symbol`, or `None` when the element
+/// has no common monatomic ion in the table (noble gases, hydrogen).
+///
+/// ```
+/// use manim_chem::element::common_charge;
+/// assert_eq!(common_charge("Na"), Some(1));
+/// assert_eq!(common_charge("Cl"), Some(-1));
+/// assert_eq!(common_charge("Ar"), None);
+/// ```
+pub fn common_charge(symbol: &str) -> Option<i8> {
+    let key = table_key(symbol)?;
+    IONIC.iter().find(|r| r.symbol == key).map(|r| r.charge)
+}
+
+/// The Shannon effective ionic radius of `symbol` in ångström, for `charge` —
+/// or for the element's [`common_charge`] when `charge` is `None`.
+///
+/// Returns `None` when the element has no ion in the table, or when it has ions
+/// but not the requested `charge`.
+///
+/// **Caveats.** Every value is the **CN = 6** (octahedral) radius. Real ionic
+/// radii grow with coordination number — Na⁺ is 1.02 Å at CN 6 but 1.18 Å at
+/// CN 8 — so a structure with a different coordination will be drawn slightly
+/// off. Values for transition metals are high-spin where the spin state
+/// matters. These are *effective* radii from crystal-structure fits, not
+/// physical boundaries: they are the right choice for showing the relative size
+/// of ions in a lattice, and the wrong one for a covalent molecule (use
+/// [`RadiusSource::Covalent`](crate::render::RadiusSource::Covalent) there).
+///
+/// ```
+/// use manim_chem::element::ionic_radius;
+/// // Rock salt: the anion is much the larger of the pair.
+/// assert!(ionic_radius("Cl", None).unwrap() > ionic_radius("Na", None).unwrap());
+/// // An explicit charge selects a different oxidation state.
+/// assert!(ionic_radius("Fe", Some(2)).unwrap() > ionic_radius("Fe", Some(3)).unwrap());
+/// assert!(ionic_radius("Ar", None).is_none());
+/// assert!(ionic_radius("Na", Some(7)).is_none());
+/// ```
+pub fn ionic_radius(symbol: &str, charge: Option<i8>) -> Option<f32> {
+    let key = table_key(symbol)?;
+    IONIC
+        .iter()
+        .find(|r| r.symbol == key && charge.is_none_or(|c| r.charge == c))
+        .map(|r| r.radius)
+}
+
+/// The Pauling-scale electronegativity of `symbol`, or `None` for the elements
+/// with no accepted value (He, Ne, Ar).
+///
+/// ```
+/// use manim_chem::element::electronegativity;
+/// assert!(electronegativity("F").unwrap() > electronegativity("Na").unwrap());
+/// assert!(electronegativity("Ne").is_none());
+/// ```
+pub fn electronegativity(symbol: &str) -> Option<f32> {
+    let key = table_key(symbol)?;
+    ELECTRONEGATIVITY
+        .iter()
+        .find(|(s, _)| *s == key)
+        .map(|(_, v)| *v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +388,65 @@ mod tests {
             assert!(r.covalent > 0.0, "{} covalent", r.symbol);
             assert!(r.vdw > 0.0, "{} vdw", r.symbol);
         }
+    }
+
+    #[test]
+    fn ionic_radii_are_positive_and_in_the_element_table() {
+        for r in IONIC {
+            assert!(r.radius > 0.0, "{} ionic", r.symbol);
+            assert!(
+                data(r.symbol).is_some(),
+                "{} not in element table",
+                r.symbol
+            );
+        }
+    }
+
+    /// The whole point of the ionic source: anions are big, cations are small,
+    /// which is the opposite of what the *covalent* radii say for Na/Cl.
+    #[test]
+    fn anions_outsize_cations_unlike_covalent_radii() {
+        let na = ionic_radius("Na", None).unwrap();
+        let cl = ionic_radius("Cl", None).unwrap();
+        assert!(cl > na, "Cl- {cl} should exceed Na+ {na}");
+        // Covalent radii have it the other way round — this is the bug FE-142a fixes.
+        let na_cov = data("Na").unwrap().covalent_radius;
+        let cl_cov = data("Cl").unwrap().covalent_radius;
+        assert!(na_cov > cl_cov);
+    }
+
+    #[test]
+    fn explicit_charge_overrides_the_common_one() {
+        assert_eq!(common_charge("Fe"), Some(3));
+        assert_eq!(ionic_radius("Fe", None), ionic_radius("Fe", Some(3)));
+        assert_ne!(ionic_radius("Fe", Some(2)), ionic_radius("Fe", Some(3)));
+        assert!(ionic_radius("Fe", Some(9)).is_none());
+    }
+
+    #[test]
+    fn ionic_lookup_is_case_insensitive_like_data() {
+        assert_eq!(ionic_radius("cl", None), ionic_radius("Cl", None));
+        assert_eq!(ionic_radius("NA", None), ionic_radius("Na", None));
+        assert_eq!(electronegativity("fe"), electronegativity("Fe"));
+    }
+
+    #[test]
+    fn elements_without_common_ions_are_absent() {
+        for noble in ["He", "Ne", "Ar", "Kr", "Xe"] {
+            assert!(ionic_radius(noble, None).is_none(), "{noble}");
+            assert!(common_charge(noble).is_none(), "{noble}");
+        }
+        assert!(ionic_radius("H", None).is_none());
+    }
+
+    #[test]
+    fn electronegativity_is_in_pauling_range() {
+        for (s, v) in ELECTRONEGATIVITY {
+            assert!((0.7..=4.0).contains(v), "{s} = {v}");
+            assert!(data(s).is_some(), "{s} not in element table");
+        }
+        // The canonical extremes among the elements we carry.
+        assert_eq!(electronegativity("F"), Some(3.98));
+        assert_eq!(electronegativity("Cs"), None); // beyond Xe
     }
 }

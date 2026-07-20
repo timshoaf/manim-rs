@@ -6,11 +6,21 @@
 //!   curve using a **rotation-minimizing frame** (not the raw Frenet frame),
 //!   which stays well-defined through inflection points where the Frenet normal
 //!   flips.
+//! - [`TubeMesh::along_polyline`] does the same for an already-sampled polyline
+//!   — a traced geodesic, an integrated field line — where there is no
+//!   closed-form curve to differentiate.
+//! - [`SpaceCurve`] is the mobject-level builder over those: it puts a curve in
+//!   a scene as a **depth-tested tube** by default, so a curve drawn on a
+//!   surface is occluded by it instead of floating over it, with a
+//!   [`flat`](SpaceCurve::flat) opt-out back to a 2-D stroke.
 //! - [`trefoil`] / [`figure_eight`] are ready-made knot curves.
 
 use glam::{DVec3, Vec3};
 
 use manim_core::display::Colormap;
+// The full palette, reached through manim-core's re-export rather than a
+// direct `manim-color` dependency.
+use manim_core::manim_color::{Color, WHITE};
 use manim_core::mesh::{Mesh, TriMesh};
 use manim_core::mobject::MobjectId;
 use manim_core::scene_state::SceneState;
@@ -215,6 +225,232 @@ impl TubeMesh {
             indices,
         }
     }
+
+    /// Sweeps a circle of `radius` along an already-sampled polyline, using the
+    /// same rotation-minimizing frame as [`along_curve`](Self::along_curve).
+    ///
+    /// Use this when the curve exists only as points — a traced geodesic, an
+    /// integrated streamline, imported data — so there is no analytic `eval` to
+    /// differentiate. Tangents come from central differences between
+    /// neighbouring samples, so the tube is only as smooth as the sampling.
+    /// Consecutive duplicate points are dropped (a zero-length segment has no
+    /// tangent); fewer than two distinct points yields an empty mesh.
+    ///
+    /// ```
+    /// use glam::Vec3;
+    /// use manim_sci::curveviz::TubeMesh;
+    ///
+    /// let pts: Vec<Vec3> = (0..32)
+    ///     .map(|i| {
+    ///         let t = i as f32 / 31.0 * std::f32::consts::TAU;
+    ///         Vec3::new(t.cos(), t.sin(), 0.0)
+    ///     })
+    ///     .collect();
+    /// let tube = TubeMesh::along_polyline(&pts, 0.1, 12, false);
+    /// assert_eq!(tube.positions.len(), 32 * 12);
+    /// ```
+    pub fn along_polyline(points: &[Vec3], radius: f64, n_around: usize, closed: bool) -> TriMesh {
+        let n_around = n_around.max(3);
+
+        // Drop consecutive duplicates: a repeated point has no tangent.
+        let mut centers: Vec<DVec3> = Vec::with_capacity(points.len());
+        for p in points {
+            let p = DVec3::new(p.x as f64, p.y as f64, p.z as f64);
+            if centers.last().is_none_or(|last| last.distance(p) > 1e-12) {
+                centers.push(p);
+            }
+        }
+        // A closed loop whose ends coincide has one redundant sample.
+        if closed && centers.len() > 2 && centers[0].distance(*centers.last().unwrap()) < 1e-12 {
+            centers.pop();
+        }
+        let n_along = centers.len();
+        if n_along < 2 {
+            return TriMesh::default();
+        }
+
+        // Central-difference tangents; one-sided at the ends of an open curve.
+        let tangents: Vec<DVec3> = (0..n_along)
+            .map(|i| {
+                let d = if closed {
+                    centers[(i + 1) % n_along] - centers[(i + n_along - 1) % n_along]
+                } else if i == 0 {
+                    centers[1] - centers[0]
+                } else if i == n_along - 1 {
+                    centers[n_along - 1] - centers[n_along - 2]
+                } else {
+                    centers[i + 1] - centers[i - 1]
+                };
+                d.normalize_or_zero()
+            })
+            .collect();
+
+        let mut nrm = seed_normal(tangents[0]);
+        let mut frames = Vec::with_capacity(n_along);
+        frames.push(nrm);
+        for i in 1..n_along {
+            nrm = rmf_step(
+                centers[i - 1],
+                centers[i],
+                tangents[i - 1],
+                tangents[i],
+                nrm,
+            );
+            frames.push(nrm);
+        }
+
+        let mut positions = Vec::with_capacity(n_along * n_around);
+        let mut vnormals = Vec::with_capacity(n_along * n_around);
+        for i in 0..n_along {
+            let n = frames[i];
+            let b = tangents[i].cross(n).normalize_or_zero();
+            for j in 0..n_around {
+                let theta = std::f64::consts::TAU * j as f64 / n_around as f64;
+                let dir = n * theta.cos() + b * theta.sin();
+                positions.push(to_vec3(centers[i] + dir * radius));
+                vnormals.push(to_vec3(dir));
+            }
+        }
+
+        let ring_count = if closed { n_along } else { n_along - 1 };
+        let mut indices = Vec::with_capacity(ring_count * n_around * 6);
+        for i in 0..ring_count {
+            let i1 = (i + 1) % n_along;
+            for j in 0..n_around {
+                let j1 = (j + 1) % n_around;
+                let a = (i * n_around + j) as u32;
+                let b = (i1 * n_around + j) as u32;
+                let c = (i1 * n_around + j1) as u32;
+                let d = (i * n_around + j1) as u32;
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+
+        TriMesh {
+            positions,
+            normals: vnormals,
+            colors: None,
+            uvs: None,
+            indices,
+        }
+    }
+}
+
+/// Default tube radius for [`SpaceCurve`], in scene units.
+pub const DEFAULT_CURVE_TUBE_RADIUS: f64 = 0.03;
+
+/// Default cross-section sides for a [`SpaceCurve`] tube. Eight reads as round
+/// at typical curve radii without spending triangles on a thin object.
+pub const DEFAULT_CURVE_TUBE_SIDES: usize = 8;
+
+/// Default stroke width used by [`SpaceCurve::flat`].
+pub const DEFAULT_CURVE_STROKE_WIDTH: f32 = 5.0;
+
+/// A space curve placed in a scene, as a depth-tested tube by default.
+///
+/// A curve that lives *on* a surface — a geodesic, a curvature line, a flow
+/// line — must be occluded by that surface where it passes behind. A 2-D
+/// stroked path cannot be: the vector pipeline draws over the mesh pass, so the
+/// curve floats on top and the picture reads inside-out. Sweeping a tube puts
+/// the curve in the mesh pass, where the depth buffer settles it correctly.
+///
+/// [`flat`](Self::flat) opts back out to a stroke, which is the right choice in
+/// a genuinely 2-D scene (a plane plot), where a tube would be pointless
+/// geometry and a hairline stroke reads better.
+///
+/// ```
+/// use glam::Vec3;
+/// use manim_core::scene_state::SceneState;
+/// use manim_sci::curveviz::SpaceCurve;
+/// use manim_core::manim_color::TEAL;
+///
+/// let pts: Vec<Vec3> = (0..20).map(|i| Vec3::new(i as f32 * 0.1, 0.0, 0.0)).collect();
+/// let mut scene = SceneState::new();
+///
+/// // Depth-tested by default: it lands on the mesh channel.
+/// let _tube = SpaceCurve::new(pts.clone()).with_color(TEAL).add_to(&mut scene);
+/// assert_eq!(scene.display_list().meshes().len(), 1);
+///
+/// // …and `.flat()` puts it back on the 2-D draw list.
+/// let _stroke = SpaceCurve::new(pts).flat().add_to(&mut scene);
+/// assert_eq!(scene.display_list().len(), 1);
+/// ```
+pub struct SpaceCurve {
+    points: Vec<Vec3>,
+    radius: f64,
+    sides: usize,
+    closed: bool,
+    flat: bool,
+    color: Color,
+}
+
+impl SpaceCurve {
+    /// A curve through `points`, as a tube of [`DEFAULT_CURVE_TUBE_RADIUS`].
+    pub fn new(points: impl Into<Vec<Vec3>>) -> Self {
+        Self {
+            points: points.into(),
+            radius: DEFAULT_CURVE_TUBE_RADIUS,
+            sides: DEFAULT_CURVE_TUBE_SIDES,
+            closed: false,
+            flat: false,
+            color: WHITE,
+        }
+    }
+
+    /// Sets the tube radius in scene units (ignored when [`flat`](Self::flat)).
+    pub fn with_radius(mut self, radius: f64) -> Self {
+        self.radius = radius;
+        self
+    }
+
+    /// Sets the tube's cross-section sides (ignored when [`flat`](Self::flat)).
+    pub fn with_sides(mut self, sides: usize) -> Self {
+        self.sides = sides;
+        self
+    }
+
+    /// Sets the curve color.
+    pub fn with_color(mut self, color: Color) -> Self {
+        self.color = color;
+        self
+    }
+
+    /// Welds the curve's end back to its start (a closed loop).
+    pub fn closed(mut self) -> Self {
+        self.closed = true;
+        self
+    }
+
+    /// Draws a flat 2-D stroke instead of a tube.
+    ///
+    /// The opt-out for 2-D scenes. In a 3-D scene this reintroduces the
+    /// draw-over-the-mesh problem the tube exists to solve.
+    pub fn flat(mut self) -> Self {
+        self.flat = true;
+        self
+    }
+
+    /// Adds the curve to `scene`, returning its erased id (a mesh mobject, or a
+    /// [`VMobject`](manim_core::geometry::VMobject) when [`flat`](Self::flat)).
+    pub fn add_to(self, scene: &mut SceneState) -> manim_core::mobject::AnyId {
+        // `with_stroke` is a `Buildable` builder, not a `MobjectExt` transform.
+        use manim_core::mobject::Buildable;
+
+        if self.flat {
+            let path = manim_math::path::Path::from_corners(&self.points, self.closed);
+            let vm = manim_core::geometry::VMobject::from_path(path).with_stroke(
+                self.color,
+                DEFAULT_CURVE_STROKE_WIDTH,
+                1.0,
+            );
+            return scene.add(vm).erase();
+        }
+
+        let mesh = TubeMesh::along_polyline(&self.points, self.radius, self.sides, self.closed);
+        scene
+            .add(Mesh::new(mesh).with_material(manim_core::mesh::MeshMaterial::new(self.color)))
+            .erase()
+    }
 }
 
 /// A unit-length vector perpendicular to `t`.
@@ -298,6 +534,81 @@ mod tests {
             let d = ((planar - 1.0).powi(2) + p.z * p.z).sqrt();
             assert!((d - r as f32).abs() < 1e-4, "off-tube distance {d}");
         }
+    }
+
+    /// A polyline sampling of the same circle must produce the same tube
+    /// geometry as the analytic sweep, to sampling accuracy.
+    #[test]
+    fn polyline_tube_matches_the_analytic_sweep() {
+        let r = 0.15;
+        let n = 60;
+        let pts: Vec<Vec3> = (0..n)
+            .map(|i| {
+                let t = TAU * i as f64 / n as f64;
+                Vec3::new(t.cos() as f32, t.sin() as f32, 0.0)
+            })
+            .collect();
+        let tube = TubeMesh::along_polyline(&pts, r, 10, true);
+        assert_eq!(tube.positions.len(), n * 10);
+        for p in &tube.positions {
+            let planar = (p.x * p.x + p.y * p.y).sqrt();
+            let d = ((planar - 1.0).powi(2) + p.z * p.z).sqrt();
+            assert!((d - r as f32).abs() < 1e-4, "off-tube distance {d}");
+        }
+    }
+
+    #[test]
+    fn polyline_tube_tolerates_degenerate_input() {
+        // Duplicate points carry no tangent and must be dropped, not divided by.
+        let dupes = vec![Vec3::ZERO, Vec3::ZERO, Vec3::X, Vec3::X, 2.0 * Vec3::X];
+        let tube = TubeMesh::along_polyline(&dupes, 0.1, 6, false);
+        assert_eq!(tube.positions.len(), 3 * 6);
+        assert!(tube.positions.iter().all(|p| p.is_finite()));
+
+        // Too few distinct points → an empty mesh rather than a panic.
+        assert!(TubeMesh::along_polyline(&[Vec3::ZERO; 4], 0.1, 6, false)
+            .positions
+            .is_empty());
+        assert!(TubeMesh::along_polyline(&[], 0.1, 6, false)
+            .positions
+            .is_empty());
+    }
+
+    /// The FE-142b contract: tubes go on the depth-tested mesh channel, and
+    /// only `.flat()` puts a curve back on the 2-D draw list.
+    #[test]
+    fn space_curve_is_depth_tested_unless_flattened() {
+        let pts: Vec<Vec3> = (0..10)
+            .map(|i| Vec3::new(i as f32 * 0.2, 0.0, 0.0))
+            .collect();
+
+        let mut scene = SceneState::new();
+        SpaceCurve::new(pts.clone()).add_to(&mut scene);
+        let dl = scene.display_list();
+        assert_eq!(dl.meshes().len(), 1, "tube should be a mesh");
+        assert_eq!(dl.len(), 0, "tube should emit no 2-D draw items");
+
+        let mut flat_scene = SceneState::new();
+        SpaceCurve::new(pts).flat().add_to(&mut flat_scene);
+        let dl = flat_scene.display_list();
+        assert_eq!(dl.meshes().len(), 0);
+        assert_eq!(dl.len(), 1, "flat curve should be a 2-D stroke");
+    }
+
+    #[test]
+    fn space_curve_builders_apply() {
+        let pts: Vec<Vec3> = (0..8)
+            .map(|i| Vec3::new(i as f32 * 0.3, 0.0, 0.0))
+            .collect();
+        let mut scene = SceneState::new();
+        SpaceCurve::new(pts)
+            .with_radius(0.5)
+            .with_sides(16)
+            .add_to(&mut scene);
+        let meshes = scene.display_list();
+        let mesh = &meshes.meshes()[0];
+        // 8 samples × 16 sides.
+        assert_eq!(mesh.mesh.positions.len(), 8 * 16);
     }
 
     #[test]

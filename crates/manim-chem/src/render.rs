@@ -62,6 +62,115 @@ const ORBITAL_HALF_EXTENT: f64 = 6.0;
 /// Colour and radii used when an element symbol is not in the table.
 const FALLBACK: (Color, f32, f32) = (Color::from_rgb(0.5, 0.5, 0.5), 0.7, 1.6);
 
+/// Which per-element radius sizes an atom sphere.
+///
+/// Ball-and-stick defaults to [`Covalent`](Self::Covalent), which is right for
+/// molecules but actively misleading for an ionic solid: covalent radii make
+/// Na *bigger* than Cl, while in rock salt the chloride **anion** is much the
+/// larger of the two. Size ionic crystals with [`Ionic`](Self::Ionic).
+///
+/// ```
+/// use manim_chem::molecule::Atom;
+/// use manim_chem::render::RadiusSource;
+/// use glam::Vec3;
+///
+/// let na = Atom::new("Na", Vec3::ZERO);
+/// let cl = Atom::new("Cl", Vec3::X);
+/// // Covalent radii say sodium is larger…
+/// assert!(RadiusSource::Covalent.radius_for(&na) > RadiusSource::Covalent.radius_for(&cl));
+/// // …ionic radii, correctly for a salt, say chloride is.
+/// assert!(RadiusSource::Ionic.radius_for(&cl) > RadiusSource::Ionic.radius_for(&na));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadiusSource {
+    /// Single-bond covalent radius (Cordero 2008). The default: correct for
+    /// molecules, wrong for salts.
+    #[default]
+    Covalent,
+    /// Van-der-Waals radius (Bondi 1964 / Alvarez 2013) — what
+    /// [`space_filling`] uses.
+    VdW,
+    /// Shannon effective ionic radius at CN 6, for the atom's
+    /// [`charge`](crate::molecule::Atom::charge) or the element's common
+    /// oxidation state. Falls back to [`Covalent`](Self::Covalent) for elements
+    /// with no ion in the table (noble gases, hydrogen) or an unlisted charge,
+    /// so a mixed structure never loses an atom.
+    Ionic,
+}
+
+impl RadiusSource {
+    /// The radius (ångström) this source assigns to `atom`.
+    ///
+    /// Unknown element symbols get the generic fallback radii rather than zero.
+    ///
+    /// ```
+    /// use manim_chem::molecule::Atom;
+    /// use manim_chem::render::RadiusSource;
+    /// use glam::Vec3;
+    /// // Argon has no common ion, so Ionic falls back to the covalent radius.
+    /// let ar = Atom::new("Ar", Vec3::ZERO);
+    /// assert_eq!(
+    ///     RadiusSource::Ionic.radius_for(&ar),
+    ///     RadiusSource::Covalent.radius_for(&ar),
+    /// );
+    /// ```
+    pub fn radius_for(&self, atom: &Atom) -> f32 {
+        let (_, covalent, vdw) = element_info(&atom.element);
+        match self {
+            Self::Covalent => covalent,
+            Self::VdW => vdw,
+            Self::Ionic => crate::element::ionic_radius(&atom.element, atom.charge)
+                // An explicit but unlisted charge still deserves *an* ion radius
+                // if the element has one; only then fall back to covalent.
+                .or_else(|| crate::element::ionic_radius(&atom.element, None))
+                .unwrap_or(covalent),
+        }
+    }
+}
+
+/// Electronegativity difference (Pauling) above which
+/// [`BondRule::UnlikeOnly`] treats a pair as an ionic contact worth drawing.
+///
+/// `1.7` is the classic Pauling cutoff for ~50% ionic character. Na–Cl is 2.23
+/// and passes; C–H is 0.35 and does not.
+pub const IONIC_ELECTRONEGATIVITY_THRESHOLD: f32 = 1.7;
+
+/// How [`perceive_bonds_with`] decides which atom pairs are bonded.
+///
+/// ```
+/// use manim_chem::lattice::nacl;
+/// use manim_chem::render::{perceive_bonds_with, BondRule};
+///
+/// let crystal = nacl().replicate(1, 1, 1);
+/// let covalent = perceive_bonds_with(&crystal, BondRule::CovalentHeuristic);
+/// let ionic = perceive_bonds_with(&crystal, BondRule::UnlikeOnly);
+/// // The covalent heuristic also "bonds" Na to Na; the ionic rule does not.
+/// assert!(ionic.len() < covalent.len());
+/// assert!(perceive_bonds_with(&crystal, BondRule::Explicit).is_empty());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BondRule {
+    /// The distance heuristic: bond any pair closer than `1.3 ×` the sum of
+    /// their covalent radii. The default; right for molecules.
+    #[default]
+    CovalentHeuristic,
+    /// The distance heuristic **plus** an unlike-ions filter: the two atoms must
+    /// be different elements whose Pauling electronegativity difference exceeds
+    /// [`IONIC_ELECTRONEGATIVITY_THRESHOLD`].
+    ///
+    /// This is what keeps an ionic lattice from hairballing. In rock salt the
+    /// second-nearest neighbours are Na–Na and Cl–Cl at `a/√2 ≈ 3.99 Å`, and
+    /// the covalent criterion happily bonds the Na pairs (sodium's covalent
+    /// radius is large); the resulting cat's-cradle obscures the structure.
+    /// Requiring unlike, strongly-polarized partners leaves only the Na–Cl
+    /// octahedral contacts that make the rock-salt motif legible.
+    UnlikeOnly,
+    /// Perceive nothing — keep whatever bonds the molecule already carries.
+    /// Use when connectivity came from the source file, or for a structure
+    /// (a metal, an extended solid) where no distance rule is honest.
+    Explicit,
+}
+
 /// Grey stick colour for bonds.
 const BOND_COLOR: Color = Color::from_rgb(0.6, 0.6, 0.6);
 
@@ -174,12 +283,39 @@ fn cloud_material() -> MeshMaterial {
 /// assert_eq!(scene.family(model).len(), 3);
 /// ```
 pub fn ball_and_stick(scene: &mut SceneState, mol: &Molecule) -> MobjectId<VGroup> {
+    ball_and_stick_sized(scene, mol, RadiusSource::Covalent)
+}
+
+/// [`ball_and_stick`] with an explicit [`RadiusSource`] for the atom spheres.
+///
+/// Use [`RadiusSource::Ionic`] for a salt, where covalent radii would draw the
+/// cation larger than the anion.
+///
+/// ```
+/// use manim_chem::lattice::nacl;
+/// use manim_chem::render::{ball_and_stick_sized, RadiusSource};
+/// use manim_core::scene_state::SceneState;
+///
+/// let crystal = nacl().replicate(1, 1, 1);
+/// let mut scene = SceneState::new();
+/// let model = ball_and_stick_sized(&mut scene, &crystal, RadiusSource::Ionic);
+/// assert_eq!(scene.family(model).len(), 3); // group + atoms + bonds
+/// ```
+pub fn ball_and_stick_sized(
+    scene: &mut SceneState,
+    mol: &Molecule,
+    radius: RadiusSource,
+) -> MobjectId<VGroup> {
     let atom_instances: Vec<Instance> = mol
         .atoms
         .iter()
         .map(|a| {
-            let (color, cov, _) = element_info(&a.element);
-            sphere_instance(a.pos, BALL_AND_STICK_RADIUS_SCALE * cov, color)
+            let (color, _, _) = element_info(&a.element);
+            sphere_instance(
+                a.pos,
+                BALL_AND_STICK_RADIUS_SCALE * radius.radius_for(a),
+                color,
+            )
         })
         .collect();
     let atoms = scene.add(
@@ -223,8 +359,8 @@ pub fn space_filling(scene: &mut SceneState, mol: &Molecule) -> MobjectId<Instan
         .atoms
         .iter()
         .map(|a| {
-            let (color, _, vdw) = element_info(&a.element);
-            sphere_instance(a.pos, vdw, color)
+            let (color, _, _) = element_info(&a.element);
+            sphere_instance(a.pos, RadiusSource::VdW.radius_for(a), color)
         })
         .collect();
     scene.add(
@@ -289,6 +425,40 @@ pub fn wireframe(scene: &mut SceneState, mol: &Molecule) -> MobjectId<InstancedM
 /// assert_eq!(perceive_bonds(&mol).len(), 2);
 /// ```
 pub fn perceive_bonds(mol: &Molecule) -> Vec<Bond> {
+    perceive_bonds_with(mol, BondRule::CovalentHeuristic)
+}
+
+/// Infers bonds under an explicit [`BondRule`].
+///
+/// [`perceive_bonds`] is this with [`BondRule::CovalentHeuristic`]; reach for
+/// [`BondRule::UnlikeOnly`] on an ionic lattice.
+///
+/// **Limits:** every rule here is geometric plus, at most, a two-element
+/// electronegativity test. All bonds come out order 1 — no double/triple bonds,
+/// no aromaticity, no hypervalency. [`BondRule::UnlikeOnly`] is a *legibility*
+/// heuristic, not a bonding theory: it will also suppress genuine like-atom
+/// bonds (the Si–Si framework of a silicate, a metal–metal bond), and its
+/// electronegativity cutoff is a convention with no sharp physical meaning.
+/// When connectivity matters, read bonds from the source file and use
+/// [`BondRule::Explicit`].
+///
+/// ```
+/// use manim_chem::molecule::{Atom, Molecule};
+/// use manim_chem::render::{perceive_bonds_with, BondRule};
+/// use glam::Vec3;
+///
+/// // Two sodiums at a distance the covalent heuristic would bond.
+/// let mol = Molecule {
+///     atoms: vec![Atom::new("Na", Vec3::ZERO), Atom::new("Na", 3.5 * Vec3::X)],
+///     bonds: vec![],
+/// };
+/// assert_eq!(perceive_bonds_with(&mol, BondRule::CovalentHeuristic).len(), 1);
+/// assert_eq!(perceive_bonds_with(&mol, BondRule::UnlikeOnly).len(), 0);
+/// ```
+pub fn perceive_bonds_with(mol: &Molecule, rule: BondRule) -> Vec<Bond> {
+    if rule == BondRule::Explicit {
+        return Vec::new();
+    }
     let radii: Vec<f32> = mol
         .atoms
         .iter()
@@ -298,12 +468,34 @@ pub fn perceive_bonds(mol: &Molecule) -> Vec<Bond> {
     for i in 0..mol.atoms.len() {
         for j in (i + 1)..mol.atoms.len() {
             let d = (mol.atoms[i].pos - mol.atoms[j].pos).length();
-            if d > 0.4 && d < 1.3 * (radii[i] + radii[j]) {
-                bonds.push(Bond::new(i, j, 1));
+            if !(d > 0.4 && d < 1.3 * (radii[i] + radii[j])) {
+                continue;
             }
+            if rule == BondRule::UnlikeOnly && !is_unlike_ion_pair(&mol.atoms[i], &mol.atoms[j]) {
+                continue;
+            }
+            bonds.push(Bond::new(i, j, 1));
         }
     }
     bonds
+}
+
+/// Whether `a` and `b` are different elements polarized enough to count as an
+/// ionic contact (see [`IONIC_ELECTRONEGATIVITY_THRESHOLD`]).
+///
+/// An element with no tabulated electronegativity can never qualify, so an
+/// exotic pair is left unbonded rather than bonded on a guess.
+fn is_unlike_ion_pair(a: &Atom, b: &Atom) -> bool {
+    if a.element.eq_ignore_ascii_case(&b.element) {
+        return false;
+    }
+    let (Some(ea), Some(eb)) = (
+        crate::element::electronegativity(&a.element),
+        crate::element::electronegativity(&b.element),
+    ) else {
+        return false;
+    };
+    (ea - eb).abs() > IONIC_ELECTRONEGATIVITY_THRESHOLD
 }
 
 /// Returns `mol` with its `bonds` filled by [`perceive_bonds`] when it has none;
@@ -321,9 +513,27 @@ pub fn perceive_bonds(mol: &Molecule) -> Vec<Bond> {
 /// assert_eq!(with_perceived_bonds(&bare).bonds.len(), 1);
 /// ```
 pub fn with_perceived_bonds(mol: &Molecule) -> Molecule {
+    with_perceived_bonds_using(mol, BondRule::CovalentHeuristic)
+}
+
+/// [`with_perceived_bonds`] under an explicit [`BondRule`]: fills empty `bonds`
+/// with [`perceive_bonds_with`], leaving already-bonded molecules alone.
+///
+/// ```
+/// use manim_chem::lattice::nacl;
+/// use manim_chem::render::{with_perceived_bonds_using, BondRule};
+///
+/// let crystal = nacl().replicate(1, 1, 1);
+/// let bonded = with_perceived_bonds_using(&crystal, BondRule::UnlikeOnly);
+/// // Only unlike Na–Cl contacts survive.
+/// for b in &bonded.bonds {
+///     assert_ne!(bonded.atoms[b.a].element, bonded.atoms[b.b].element);
+/// }
+/// ```
+pub fn with_perceived_bonds_using(mol: &Molecule, rule: BondRule) -> Molecule {
     let mut out = mol.clone();
     if out.bonds.is_empty() {
-        out.bonds = perceive_bonds(mol);
+        out.bonds = perceive_bonds_with(mol, rule);
     }
     out
 }
@@ -485,6 +695,86 @@ mod tests {
     fn perceive_bonds_benzene_finds_twelve() {
         // 6 ring C–C + 6 radial C–H.
         assert_eq!(perceive_bonds(&benzene()).len(), 12);
+    }
+
+    /// The FE-142a headline: rock salt must draw Cl⁻ bigger than Na⁺.
+    #[test]
+    fn ionic_sizing_makes_chloride_outsize_sodium() {
+        let crystal = crate::lattice::nacl().replicate(1, 1, 1);
+        let na = crystal.atoms.iter().find(|a| a.element == "Na").unwrap();
+        let cl = crystal.atoms.iter().find(|a| a.element == "Cl").unwrap();
+
+        assert!(RadiusSource::Ionic.radius_for(cl) > RadiusSource::Ionic.radius_for(na));
+        // …and the covalent default is what got it backwards.
+        assert!(RadiusSource::Covalent.radius_for(na) > RadiusSource::Covalent.radius_for(cl));
+    }
+
+    /// `replicate` must carry basis charges into every tiled cell, or ionic
+    /// sizing silently degrades to the common-charge default.
+    #[test]
+    fn replicate_preserves_formal_charges() {
+        let crystal = crate::lattice::nacl().replicate(2, 2, 2);
+        assert_eq!(crystal.atoms.len(), 64);
+        for atom in &crystal.atoms {
+            let want = if atom.element == "Na" { 1 } else { -1 };
+            assert_eq!(atom.charge, Some(want), "{}", atom.element);
+        }
+    }
+
+    #[test]
+    fn unlike_only_drops_like_contacts_in_rock_salt() {
+        let crystal = crate::lattice::nacl().replicate(2, 2, 2);
+        let covalent = perceive_bonds_with(&crystal, BondRule::CovalentHeuristic);
+        let ionic = perceive_bonds_with(&crystal, BondRule::UnlikeOnly);
+
+        assert!(
+            ionic.len() < covalent.len(),
+            "unlike-only {} should be below covalent {}",
+            ionic.len(),
+            covalent.len()
+        );
+        // Every surviving bond joins unlike elements.
+        for b in &ionic {
+            assert_ne!(crystal.atoms[b.a].element, crystal.atoms[b.b].element);
+        }
+        // The covalent heuristic really does produce like-element bonds here —
+        // that is the hairball this rule exists to cut.
+        assert!(covalent
+            .iter()
+            .any(|b| crystal.atoms[b.a].element == crystal.atoms[b.b].element));
+    }
+
+    /// The ionic rule must not disturb ordinary molecules' perception… and it
+    /// must be honest that it *does* suppress genuine covalent bonds.
+    #[test]
+    fn unlike_only_suppresses_covalent_molecules() {
+        // Water's O–H difference is 1.24 — below the 1.7 ionic cutoff.
+        assert_eq!(perceive_bonds_with(&water(), BondRule::UnlikeOnly).len(), 0);
+        // Benzene's C–C and C–H likewise vanish; documented as a known limit.
+        assert_eq!(
+            perceive_bonds_with(&benzene(), BondRule::UnlikeOnly).len(),
+            0
+        );
+        // The default rule is untouched.
+        assert_eq!(perceive_bonds(&water()).len(), 2);
+    }
+
+    #[test]
+    fn explicit_rule_perceives_nothing() {
+        assert!(perceive_bonds_with(&water(), BondRule::Explicit).is_empty());
+        // …and leaves an already-bonded molecule alone.
+        let bonded = with_perceived_bonds_using(&water(), BondRule::Explicit);
+        assert!(bonded.bonds.is_empty());
+    }
+
+    #[test]
+    fn explicit_atom_charge_overrides_the_common_state() {
+        use crate::molecule::Atom;
+        let default_fe = Atom::new("Fe", Vec3::ZERO); // Fe(III) by default
+        let fe_two = Atom::new("Fe", Vec3::ZERO).with_charge(2);
+        assert!(
+            RadiusSource::Ionic.radius_for(&fe_two) > RadiusSource::Ionic.radius_for(&default_fe)
+        );
     }
 
     #[test]
