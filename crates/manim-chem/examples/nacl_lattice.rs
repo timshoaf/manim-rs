@@ -12,7 +12,7 @@
 //! mutually perpendicular sticks on any interior ion.
 //!
 //! The spheres are drawn at **Shannon effective ionic radii**
-//! ([`RadiusSource::Ionic`](manim_chem::render::RadiusSource::Ionic)), which is
+//! ([`RadiusSource::Ionic`]), which is
 //! the honest choice for a salt: Na⁺ has lost its whole 3s shell and shrinks to
 //! 1.02 Å, while Cl⁻ gains an electron and swells to 1.81 Å. So the crystal
 //! reads as it really is — a close-packed array of big green chloride ions with
